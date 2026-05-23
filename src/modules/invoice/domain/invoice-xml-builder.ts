@@ -35,7 +35,7 @@ export interface InvoiceXmlInput {
     unitPrice: number;
     discount: number;
     subtotal: number;
-    taxCodigoPorcentaje: number;
+    taxCode: number;
     taxRate: number;
     taxAmount: number;
   }>;
@@ -60,8 +60,8 @@ function formatDate(d: Date): string {
 function getInvoiceData(input: InvoiceXmlInput) {
   const taxGroups = new Map<number, { baseImponible: number; valor: number }>();
   for (const item of input.items) {
-    const existing = taxGroups.get(item.taxCodigoPorcentaje) ?? { baseImponible: 0, valor: 0 };
-    taxGroups.set(item.taxCodigoPorcentaje, {
+    const existing = taxGroups.get(item.taxCode) ?? { baseImponible: 0, valor: 0 };
+    taxGroups.set(item.taxCode, {
       baseImponible: existing.baseImponible + item.subtotal,
       valor: existing.valor + item.taxAmount,
     });
@@ -158,7 +158,7 @@ function getInvoiceData(input: InvoiceXmlInput) {
         impuesto: [
           {
             codigo: 2,
-            codigoPorcentaje: item.taxCodigoPorcentaje,
+            codigoPorcentaje: item.taxCode,
             tarifa: item.taxRate,
             baseImponible: item.subtotal,
             valor: item.taxAmount,

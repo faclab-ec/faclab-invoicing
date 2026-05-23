@@ -5,7 +5,7 @@ import { generateAccessCode } from '../../domain/access-code-generator';
 import { Invoice } from '../../domain/invoice';
 import { buildInvoiceXml } from '../../domain/invoice-xml-builder';
 import { InvoiceRepository } from '../../domain/repository';
-import { PAYMENT_METHOD_CODES, TAX_RATE_CODES, TAX_TYPE_CODES } from '../../domain/sri-catalogs';
+import { IVA_CODES, PAYMENT_METHOD_CODES, TAX_TYPE_CODES } from '../../domain/sri-catalogs';
 import { SaleConfirmedMessage } from '../../infra/messaging/schemas';
 
 const VOUCHER_TYPE_CODE = '01';
@@ -70,7 +70,7 @@ export class CreateInvoiceCommand {
         amount: parseFloat(p.amount),
       })),
       items: payload.items.map((item) => {
-        const taxRateKey = String(Math.round(parseFloat(item.tax_rate)));
+        const iva = IVA_CODES[item.tax_code];
         return {
           productId: String(item.product_id),
           sku: item.sku,
@@ -79,8 +79,8 @@ export class CreateInvoiceCommand {
           unitPrice: parseFloat(item.unit_price),
           discount: parseFloat(item.discount),
           subtotal: parseFloat(item.subtotal),
-          taxCodigoPorcentaje: TAX_RATE_CODES[taxRateKey] ?? 4,
-          taxRate: parseFloat(item.tax_rate),
+          taxCode: iva.code,
+          taxRate: iva.rate,
           taxAmount: parseFloat(item.tax_amount),
         };
       }),
