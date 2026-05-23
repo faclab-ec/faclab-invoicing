@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { InvoiceStatus } from '../../domain/invoice';
+import { IVA_CODE_KEYS } from '../../domain/sri-catalogs';
 
 // --- Kafka Message Schemas ---
 
@@ -31,7 +32,7 @@ const SaleConfirmedItemSchema = z.object({
   quantity: z.number(),
   unit_price: z.string(),
   discount: z.string(),
-  tax_rate: z.string(),
+  tax_code: z.enum(IVA_CODE_KEYS),
   tax_amount: z.string(),
   subtotal: z.string(),
 });
