@@ -34,6 +34,11 @@ export interface AppConfig {
       bucket: string;
     };
   };
+  auth: {
+    // faclab-core's JWT_SECRET and JWT_ISSUER: access tokens are checked here
+    jwtSecret: string;
+    jwtIssuer: string;
+  };
   timezone: string;
   environment: string;
 }

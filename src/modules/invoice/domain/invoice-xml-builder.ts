@@ -23,18 +23,18 @@ export interface InvoiceXmlInput {
     phone?: string | null;
     address?: string | null;
   };
-  subtotal: number;
-  totalDiscount: number;
   total: number;
   payments: Array<{ formaPago: string; amount: number }>;
+  // Amounts as faclab-core sends them: rounded to cents, with the sale-level
+  // discount already prorated into each line
   items: Array<{
     productId: string;
     sku: string;
     description: string;
     quantity: number;
     unitPrice: number;
-    discount: number;
-    subtotal: number;
+    discount: number; // line discount plus its share of the sale discount
+    taxableBase: number; // precioTotalSinImpuesto and baseImponible
     taxCode: number;
     taxRate: number;
     taxAmount: number;
@@ -57,21 +57,39 @@ function formatDate(d: Date): string {
   );
 }
 
+// Money is summed in whole cents and written with two decimals, as the SRI
+// expects; adding floats would leave values like 0.30000000000000004
+function toCents(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+function formatCents(cents: number): string {
+  return (cents / 100).toFixed(2);
+}
+
+function formatMoney(amount: number): string {
+  return formatCents(toCents(amount));
+}
+
 function getInvoiceData(input: InvoiceXmlInput) {
   const taxGroups = new Map<number, { baseImponible: number; valor: number }>();
+  let totalSinImpuestos = 0;
+  let totalDescuento = 0;
   for (const item of input.items) {
     const existing = taxGroups.get(item.taxCode) ?? { baseImponible: 0, valor: 0 };
     taxGroups.set(item.taxCode, {
-      baseImponible: existing.baseImponible + item.subtotal,
-      valor: existing.valor + item.taxAmount,
+      baseImponible: existing.baseImponible + toCents(item.taxableBase),
+      valor: existing.valor + toCents(item.taxAmount),
     });
+    totalSinImpuestos += toCents(item.taxableBase);
+    totalDescuento += toCents(item.discount);
   }
 
   const totalImpuesto = Array.from(taxGroups.entries()).map(([codigoPorcentaje, group]) => ({
     codigo: 2,
     codigoPorcentaje,
-    baseImponible: group.baseImponible,
-    valor: group.valor,
+    baseImponible: formatCents(group.baseImponible),
+    valor: formatCents(group.valor),
   }));
 
   const campoAdicional = buildCampoAdicional(input.customer);
@@ -100,16 +118,16 @@ function getInvoiceData(input: InvoiceXmlInput) {
         tipoIdentificacionComprador: input.customer.taxIdCode,
         razonSocialComprador: input.customer.name,
         identificacionComprador: input.customer.taxId,
-        totalSinImpuestos: input.subtotal,
-        totalDescuento: input.totalDiscount,
+        totalSinImpuestos: formatCents(totalSinImpuestos),
+        totalDescuento: formatCents(totalDescuento),
         totalConImpuestos: {
           totalImpuesto,
         },
         propina: 0,
-        importeTotal: input.total,
+        importeTotal: formatMoney(input.total),
         moneda: 'DOLAR',
         pagos: {
-          pago: [] as { formaPago: string; total: number }[],
+          pago: [] as { formaPago: string; total: string }[],
         },
       },
       detalles: {
@@ -119,15 +137,15 @@ function getInvoiceData(input: InvoiceXmlInput) {
           descripcion: string;
           cantidad: number;
           precioUnitario: number;
-          descuento: number;
-          precioTotalSinImpuesto: number;
+          descuento: string;
+          precioTotalSinImpuesto: string;
           impuestos: {
             impuesto: {
               codigo: number;
               codigoPorcentaje: number;
               tarifa: number;
-              baseImponible: number;
-              valor: number;
+              baseImponible: string;
+              valor: string;
             }[];
           };
         }[],
@@ -141,7 +159,7 @@ function getInvoiceData(input: InvoiceXmlInput) {
   input.payments.forEach((payment) => {
     data.factura.infoFactura.pagos.pago.push({
       formaPago: payment.formaPago,
-      total: payment.amount,
+      total: formatMoney(payment.amount),
     });
   });
 
@@ -152,16 +170,16 @@ function getInvoiceData(input: InvoiceXmlInput) {
       descripcion: item.description,
       cantidad: item.quantity,
       precioUnitario: item.unitPrice,
-      descuento: item.discount,
-      precioTotalSinImpuesto: item.subtotal,
+      descuento: formatMoney(item.discount),
+      precioTotalSinImpuesto: formatMoney(item.taxableBase),
       impuestos: {
         impuesto: [
           {
             codigo: 2,
             codigoPorcentaje: item.taxCode,
             tarifa: item.taxRate,
-            baseImponible: item.subtotal,
-            valor: item.taxAmount,
+            baseImponible: formatMoney(item.taxableBase),
+            valor: formatMoney(item.taxAmount),
           },
         ],
       },

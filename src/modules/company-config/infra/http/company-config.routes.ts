@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 
 import { BadRequestError, NotFoundError } from '#/shared/errors/app-error';
+import { Authorize } from '#/shared/infra/http/auth';
 import { logger } from '#/shared/logger';
 
 import {
@@ -19,26 +20,38 @@ export interface CompanyConfigHandlers {
 export function registerCompanyConfigRoutes(
   app: FastifyInstance,
   handlers: CompanyConfigHandlers,
+  authorize: Authorize,
 ): void {
+  // Company settings: same permission as in faclab-web
+  const preHandler = authorize('user:manage');
+
   // PUT /api/company-config — create or update
-  app.put('/api/company-config', { schema: saveCompanyConfigSchema }, async (request, reply) => {
-    try {
-      const config = await handlers.save.execute(request.body as SaveCompanyConfigInput);
-      logger.info('Company config saved');
-      return reply.success(toResponse(config));
-    } catch (error) {
-      logger.error({ error }, 'Failed to save company config');
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      throw new BadRequestError(message);
-    }
-  });
+  app.put(
+    '/api/company-config',
+    { schema: saveCompanyConfigSchema, preHandler },
+    async (request, reply) => {
+      try {
+        const config = await handlers.save.execute(request.body as SaveCompanyConfigInput);
+        logger.info('Company config saved');
+        return reply.success(toResponse(config));
+      } catch (error) {
+        logger.error({ error }, 'Failed to save company config');
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        throw new BadRequestError(message);
+      }
+    },
+  );
 
   // GET /api/company-config — get current config
-  app.get('/api/company-config', { schema: getCompanyConfigSchema }, async (_request, reply) => {
-    const config = await handlers.get.execute();
-    if (!config) {
-      throw new NotFoundError('Company config not found');
-    }
-    return reply.success(toResponse(config));
-  });
+  app.get(
+    '/api/company-config',
+    { schema: getCompanyConfigSchema, preHandler },
+    async (_request, reply) => {
+      const config = await handlers.get.execute();
+      if (!config) {
+        throw new NotFoundError('Company config not found');
+      }
+      return reply.success(toResponse(config));
+    },
+  );
 }

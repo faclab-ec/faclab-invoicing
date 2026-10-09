@@ -35,6 +35,10 @@ const SaleConfirmedItemSchema = z.object({
   tax_code: z.enum(IVA_CODE_KEYS),
   tax_amount: z.string(),
   subtotal: z.string(),
+  // Invoice amounts: rounded to cents, with the sale discount prorated
+  invoice_discount: z.string(),
+  invoice_base: z.string(),
+  invoice_tax: z.string(),
 });
 
 const SaleConfirmedPaymentSchema = z.object({

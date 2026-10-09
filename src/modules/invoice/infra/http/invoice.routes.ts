@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 
 import { NotFoundError } from '#/shared/errors/app-error';
+import { Authorize } from '#/shared/infra/http/auth';
 
 import {
   FindInvoicesBySaleIdQuery,
@@ -16,9 +17,16 @@ export interface InvoiceQueries {
   findBySaleId: FindInvoicesBySaleIdQuery;
 }
 
-export function registerInvoiceRoutes(app: FastifyInstance, queries: InvoiceQueries): void {
+export function registerInvoiceRoutes(
+  app: FastifyInstance,
+  queries: InvoiceQueries,
+  authorize: Authorize,
+): void {
+  // Invoices are read like sales in faclab-core
+  const preHandler = authorize('sale:read');
+
   // GET /api/invoices — list all
-  app.get('/api/invoices', { schema: listInvoicesSchema }, async (_request, reply) => {
+  app.get('/api/invoices', { schema: listInvoicesSchema, preHandler }, async (_request, reply) => {
     const invoices = await queries.list.execute();
     return reply.success(invoices.map(toSummaryResponse));
   });
@@ -26,7 +34,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, queries: InvoiceQuer
   // GET /api/invoices/by-sale/:saleId — find by sale ID
   app.get<{ Params: { saleId: string } }>(
     '/api/invoices/by-sale/:saleId',
-    { schema: findBySaleIdSchema },
+    { schema: findBySaleIdSchema, preHandler },
     async (request, reply) => {
       const invoices = await queries.findBySaleId.execute(request.params.saleId);
       return reply.success(invoices.map(toSummaryResponse));
@@ -36,7 +44,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, queries: InvoiceQuer
   // GET /api/invoices/:id — get by ID
   app.get<{ Params: { id: string } }>(
     '/api/invoices/:id',
-    { schema: getInvoiceSchema },
+    { schema: getInvoiceSchema, preHandler },
     async (request, reply) => {
       const invoice = await queries.get.execute(request.params.id);
       if (!invoice) {

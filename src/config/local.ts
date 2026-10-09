@@ -38,6 +38,11 @@ export default {
   signing: {
     p12Password: process.env.SIGNING_P12_PASSWORD || '',
   },
+  auth: {
+    // Same default as faclab-core in local
+    jwtSecret: process.env.JWT_SECRET || 'dev-only-change-me',
+    jwtIssuer: process.env.JWT_ISSUER || 'faclab-core',
+  },
   timezone: 'America/Guayaquil',
   environment: 'local',
 } as AppConfig;
