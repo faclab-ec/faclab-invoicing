@@ -101,8 +101,7 @@ export const saveCompanyConfigSchema = {
     properties: {
       taxId: {
         type: 'string',
-        minLength: 13,
-        maxLength: 13,
+        pattern: '^\\d{13}$',
         description: 'Company RUC — exactly 13 digits.',
       },
       name: {
@@ -119,13 +118,13 @@ export const saveCompanyConfigSchema = {
       branchAddress: { type: 'string', description: 'Branch address printed on invoices.' },
       branchCode: {
         type: 'string',
-        maxLength: 4,
-        description: 'Branch code (max 4 chars).',
+        pattern: '^\\d{3}$',
+        description: 'Branch code: exactly 3 digits (e.g. `001`).',
       },
       salePointCode: {
         type: 'string',
-        maxLength: 4,
-        description: 'Point-of-sale code (max 4 chars).',
+        pattern: '^\\d{3}$',
+        description: 'Point-of-sale code: exactly 3 digits (e.g. `001`).',
       },
       specialTaxpayerResolution: {
         type: 'string',
@@ -158,10 +157,10 @@ export const saveCompanyConfigSchema = {
           'Seed value for the invoice sequence counter. Optional — preserves the existing counter if omitted.',
       },
       signingCertId: {
-        type: 'string',
+        type: ['string', 'null'],
         format: 'uuid',
         description:
-          'UUID of the signing certificate. Use the `id` returned by POST /api/certificates/upload.',
+          'UUID of the signing certificate. Use the `id` returned by POST /api/certificates. It must exist.',
       },
     },
   },
@@ -171,6 +170,7 @@ export const saveCompanyConfigSchema = {
       description: 'Configuration saved successfully.',
     },
     400: { ...errorResponseSchema, description: 'Validation error or missing required fields.' },
+    422: { ...errorResponseSchema, description: 'The signing certificate does not exist.' },
   },
 } as const;
 

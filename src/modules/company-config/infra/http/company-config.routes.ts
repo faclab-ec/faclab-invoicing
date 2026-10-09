@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 
-import { BadRequestError, NotFoundError } from '#/shared/errors/app-error';
+import { AppError, BadRequestError, NotFoundError } from '#/shared/errors/app-error';
 import { Authorize } from '#/shared/infra/http/auth';
 import { logger } from '#/shared/logger';
 
@@ -35,6 +35,7 @@ export function registerCompanyConfigRoutes(
         logger.info('Company config saved');
         return reply.success(toResponse(config));
       } catch (error) {
+        if (error instanceof AppError) throw error;
         logger.error({ error }, 'Failed to save company config');
         const message = error instanceof Error ? error.message : 'Unknown error';
         throw new BadRequestError(message);

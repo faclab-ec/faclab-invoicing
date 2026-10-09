@@ -21,6 +21,10 @@ export interface ReceiptVoucherResponseDTO {
   };
 }
 
+// SRI reception errors that mean the voucher is already there: 43 "CLAVE ACCESO
+// REGISTRADA" and 70 "CLAVE DE ACCESO EN PROCESAMIENTO"
+const ALREADY_RECEIVED_CODES = new Set(['43', '70']);
+
 function mapValidationStatus(status: string): ValidationVoucherStatus {
   switch (status) {
     case 'RECIBIDA':
@@ -34,12 +38,15 @@ function mapValidationStatus(status: string): ValidationVoucherStatus {
 
 export function mapValidationVoucherToDomain(dto: ReceiptVoucherResponseDTO): ValidationVoucher {
   const voucher = dto.comprobantes?.comprobante?.[0];
+  const messages = voucher?.mensajes?.mensaje ?? [];
+  const status = mapValidationStatus(dto.estado);
 
   return new ValidationVoucher(
-    mapValidationStatus(dto.estado),
+    status,
     voucher?.claveAcceso ?? null,
-    voucher?.mensajes?.mensaje?.map(
-      (m) => `${m.tipo} ${m.identificador} : ${m.mensaje} : ${m.informacionAdicional}`,
-    ) ?? [],
+    messages.map((m) => `${m.tipo} ${m.identificador} : ${m.mensaje} : ${m.informacionAdicional}`),
+    status === ValidationVoucherStatus.REJECTED &&
+      messages.length > 0 &&
+      messages.every((m) => ALREADY_RECEIVED_CODES.has(String(m.identificador))),
   );
 }

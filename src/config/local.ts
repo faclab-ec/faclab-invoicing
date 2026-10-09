@@ -1,4 +1,9 @@
+import { createHash } from 'crypto';
+
 import { AppConfig } from './index';
+
+// Fixed key so certificates uploaded locally survive restarts; never for production
+const DEV_PASSWORD_KEY = createHash('sha256').update('dev-only-change-me').digest('base64');
 
 export default {
   serviceName: 'faclab-invoicing',
@@ -16,6 +21,7 @@ export default {
       'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
     sriQueryWsdl:
       'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
+    sriTimeoutMs: Number(process.env.SRI_TIMEOUT_MS) || 30_000,
   },
   kafka: {
     brokers: ['localhost:29092'],
@@ -36,7 +42,10 @@ export default {
     },
   },
   signing: {
-    p12Password: process.env.SIGNING_P12_PASSWORD || '',
+    passwordKey: process.env.CERTIFICATE_PASSWORD_KEY || DEV_PASSWORD_KEY,
+  },
+  invoiceRecovery: {
+    intervalMs: Number(process.env.INVOICE_RETRY_INTERVAL_MS) || 60_000,
   },
   auth: {
     // Same default as faclab-core in local

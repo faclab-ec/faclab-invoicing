@@ -15,3 +15,9 @@ export interface FileStoragePort {
   download(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
 }
+
+/** Symmetric encryption for secrets kept at rest (certificate passwords) */
+export interface SecretCipherPort {
+  encrypt(plaintext: string): string;
+  decrypt(ciphertext: string): string;
+}

@@ -8,7 +8,7 @@ interface MessageDTO {
 }
 
 interface AuthorizationDTO {
-  estado: 'AUTORIZADO' | 'NO AUTORIZADO';
+  estado: 'AUTORIZADO' | 'NO AUTORIZADO' | 'EN PROCESO';
   fechaAutorizacion: string;
   ambiente: string;
   comprobante: string;
@@ -31,6 +31,8 @@ function mapAuthorizationStatus(status: string): AuthorizationVoucherStatus {
       return AuthorizationVoucherStatus.AUTHORIZED;
     case 'NO AUTORIZADO':
       return AuthorizationVoucherStatus.REJECTED;
+    case 'EN PROCESO':
+      return AuthorizationVoucherStatus.PROCESSING;
     default:
       throw new Error(`Not supported status: ${status}`);
   }
@@ -41,8 +43,11 @@ export function mapAuthorizationVoucherToDomain(
 ): AuthorizationVoucher {
   const authorization = dto.autorizaciones?.autorizacion?.[0];
 
+  // No authorization yet: the SRI is still processing the voucher
   return new AuthorizationVoucher(
-    authorization ? mapAuthorizationStatus(authorization.estado) : null,
+    authorization
+      ? mapAuthorizationStatus(authorization.estado)
+      : AuthorizationVoucherStatus.PROCESSING,
     dto.claveAccesoConsultada,
     authorization?.fechaAutorizacion ? new Date(authorization.fechaAutorizacion) : null,
     authorization?.mensajes?.mensaje?.map(

@@ -10,6 +10,7 @@ import {
   ListCertificatesCommand,
   UploadCertificateCommand,
 } from '#/modules/certificate/app/certificate.commands';
+import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { P12ParserAdapter } from '#/modules/certificate/infra/adapters/p12-parser.adapter';
 import { S3StorageAdapter } from '#/modules/certificate/infra/adapters/s3-storage.adapter';
 import { registerCertificateRoutes } from '#/modules/certificate/infra/http/certificate.routes';
@@ -18,11 +19,18 @@ import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
+import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
+import { IssuerChangeListener } from '#/modules/company-config/domain/readiness';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import { DynamoCompanyConfigRepository } from '#/modules/company-config/infra/persistence/dynamo-company-config.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
-import { CreateInvoiceCommand } from '#/modules/invoice/app/commands/create-invoice';
+import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
+import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
+import {
+  RetryInvoiceCommand,
+  RetryInvoicesCommand,
+} from '#/modules/invoice/app/commands/retry-invoice';
 import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
 import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
@@ -30,8 +38,10 @@ import { SaleConfirmedHandler } from '#/modules/invoice/app/handlers/sale-confir
 import {
   FindInvoicesBySaleIdQuery,
   GetInvoiceQuery,
+  GetInvoicingStatusQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
@@ -45,11 +55,14 @@ import {
 } from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
 import { DynamoInvoiceRepository } from '#/modules/invoice/infra/persistence/dynamo-invoice.repository';
+import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
 import { DlqProducer } from '#/shared/infra/dlq-producer';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
+import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
 import { SoapClient } from '#/shared/infra/soap-client';
+import { logger } from '#/shared/logger';
 
 export async function createContainer(config: AppConfig) {
   // Infra clients
@@ -87,8 +100,14 @@ export async function createContainer(config: AppConfig) {
     ...(config.aws.endpoint && { forcePathStyle: true }),
   });
 
-  const validationClient = new SoapClient(config.externalServices.sriVoucherWsdl);
-  const authorizationClient = new SoapClient(config.externalServices.sriQueryWsdl);
+  const validationClient = new SoapClient(
+    config.externalServices.sriVoucherWsdl,
+    config.externalServices.sriTimeoutMs,
+  );
+  const authorizationClient = new SoapClient(
+    config.externalServices.sriQueryWsdl,
+    config.externalServices.sriTimeoutMs,
+  );
 
   // Repositories
   const invoiceRepository = new DynamoInvoiceRepository(
@@ -104,16 +123,21 @@ export async function createContainer(config: AppConfig) {
     config.aws.dynamoDb.tables.companyConfig,
   );
 
-  // Adapters
+  // Issuer: certificates and readiness
   const s3Storage = new S3StorageAdapter(s3Client, config.aws.s3.bucket, config.aws.endpoint);
-  const xadesSigner = new XadesSigner(config.timezone);
-  const signerAdapter = new SignerAdapter(
-    certificateRepository,
-    s3Storage,
-    xadesSigner,
+  const p12Parser = new P12ParserAdapter();
+  const secretCipher = new AesGcmSecretCipher(config.signing.passwordKey);
+  const certificateKeyLoader = new CertificateKeyLoader(s3Storage, secretCipher);
+  const issuerReadiness = new IssuerReadinessService(
     companyConfigRepository,
-    config.signing.p12Password,
+    certificateRepository,
+    certificateKeyLoader,
+    p12Parser,
   );
+
+  // Adapters
+  const xadesSigner = new XadesSigner(config.timezone);
+  const signerAdapter = new SignerAdapter(issuerReadiness, certificateKeyLoader, xadesSigner);
   const sriValidationAdapter = new SriValidationAdapter(validationClient);
   const sriAuthorizationAdapter = new SriAuthorizationAdapter(authorizationClient);
 
@@ -121,6 +145,11 @@ export async function createContainer(config: AppConfig) {
   const invoiceProducer = new KafkaProducer(producer, KAFKA_TOPICS.INVOICES);
 
   // Commands
+  const prepareInvoiceCommand = new PrepareInvoiceCommand(
+    issuerReadiness,
+    companyConfigRepository,
+    invoiceRepository,
+  );
   const signInvoiceCommand = new SignInvoiceCommand(signerAdapter, invoiceRepository);
   const sendInvoiceCommand = new SendInvoiceCommand(sriValidationAdapter, invoiceRepository);
   const authorizeInvoiceCommand = new AuthorizeInvoiceCommand(
@@ -130,12 +159,13 @@ export async function createContainer(config: AppConfig) {
 
   // Command dispatch map
   const commandMap = new Map<InvoiceStatus, InvoiceCommand>([
+    [InvoiceStatus.PENDING, prepareInvoiceCommand],
     [InvoiceStatus.CREATED, signInvoiceCommand],
     [InvoiceStatus.SIGNED, sendInvoiceCommand],
     [InvoiceStatus.SENT, authorizeInvoiceCommand],
   ]);
 
-  const createInvoiceCommand = new CreateInvoiceCommand(companyConfigRepository, invoiceRepository);
+  const receiveSaleCommand = new ReceiveSaleCommand(invoiceRepository);
 
   // Handlers
   const invoiceEventHandler = new InvoiceEventHandler(
@@ -143,7 +173,27 @@ export async function createContainer(config: AppConfig) {
     commandMap,
     invoiceProducer,
   );
-  const saleConfirmedHandler = new SaleConfirmedHandler(createInvoiceCommand, invoiceProducer);
+  const saleConfirmedHandler = new SaleConfirmedHandler(receiveSaleCommand, invoiceProducer);
+
+  // Recovery: invoices waiting for the issuer, failed or stuck
+  const invoiceRecovery = new InvoiceRecoveryService(
+    invoiceRepository,
+    issuerReadiness,
+    invoiceEventHandler,
+  );
+  const recoveryScheduler = new RecoveryScheduler(
+    invoiceRecovery,
+    config.invoiceRecovery.intervalMs,
+  );
+  // A config or certificate change may unblock pending invoices: check right away
+  const issuerListener: IssuerChangeListener = {
+    issuerChanged: () => {
+      issuerReadiness.invalidate();
+      invoiceRecovery
+        .run()
+        .catch((error) => logger.error({ err: error }, 'Resuming pending invoices failed'));
+    },
+  };
 
   // DLQ
   const dlqProducer = new DlqProducer(producer, KAFKA_TOPICS.DLQ, config.kafka.groupId);
@@ -166,16 +216,21 @@ export async function createContainer(config: AppConfig) {
   );
 
   // Certificate module
-  const p12Parser = new P12ParserAdapter();
-
   const uploadCertificateCommand = new UploadCertificateCommand(
     p12Parser,
     s3Storage,
     certificateRepository,
+    secretCipher,
+    issuerListener,
   );
   const getCertificateCommand = new GetCertificateCommand(certificateRepository);
   const listCertificatesCommand = new ListCertificatesCommand(certificateRepository);
-  const deleteCertificateCommand = new DeleteCertificateCommand(certificateRepository, s3Storage);
+  const deleteCertificateCommand = new DeleteCertificateCommand(
+    certificateRepository,
+    s3Storage,
+    companyConfigRepository,
+    issuerListener,
+  );
 
   // HTTP Server
   const httpServer = await createHttpServer({
@@ -200,7 +255,11 @@ export async function createContainer(config: AppConfig) {
   );
 
   // Company config module
-  const saveCompanyConfigCommand = new SaveCompanyConfigCommand(companyConfigRepository);
+  const saveCompanyConfigCommand = new SaveCompanyConfigCommand(
+    companyConfigRepository,
+    certificateRepository,
+    issuerListener,
+  );
   const getCompanyConfigQuery = new GetCompanyConfigQuery(companyConfigRepository);
 
   registerCompanyConfigRoutes(
@@ -212,21 +271,25 @@ export async function createContainer(config: AppConfig) {
     authorize,
   );
 
-  const getInvoiceQuery = new GetInvoiceQuery(invoiceRepository);
-  const listInvoicesQuery = new ListInvoicesQuery(invoiceRepository);
-  const findInvoicesBySaleIdQuery = new FindInvoicesBySaleIdQuery(invoiceRepository);
-
   registerInvoiceRoutes(
     httpServer,
     {
-      get: getInvoiceQuery,
-      list: listInvoicesQuery,
-      findBySaleId: findInvoicesBySaleIdQuery,
+      get: new GetInvoiceQuery(invoiceRepository),
+      list: new ListInvoicesQuery(invoiceRepository),
+      findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
+      status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),
+      retry: new RetryInvoiceCommand(invoiceRepository, issuerReadiness, invoiceEventHandler),
+      retryAll: new RetryInvoicesCommand(invoiceRepository, issuerReadiness, invoiceRecovery),
     },
     authorize,
   );
 
   await invoiceProducer.connect();
 
-  return { consumer: kafkaConsumer, producer: invoiceProducer, httpServer };
+  return {
+    consumer: kafkaConsumer,
+    producer: invoiceProducer,
+    httpServer,
+    recoveryScheduler,
+  };
 }

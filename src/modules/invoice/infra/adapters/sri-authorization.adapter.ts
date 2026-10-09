@@ -1,5 +1,6 @@
 import { SoapClient } from '#/shared/infra/soap-client';
 
+import { InvoiceIssueError } from '../../domain/issue';
 import { SriAuthorizationPort } from '../../domain/ports';
 import { AuthorizationVoucher } from '../../domain/voucher';
 import {
@@ -11,9 +12,15 @@ export class SriAuthorizationAdapter implements SriAuthorizationPort {
   constructor(private authorizationClient: SoapClient) {}
 
   async authorizeXml(code: string): Promise<AuthorizationVoucher> {
-    const response = (await this.authorizationClient.callMethod('autorizacionComprobante', {
-      claveAccesoComprobante: code,
-    })) as { RespuestaAutorizacionComprobante: AuthorizationVoucherResponseDTO };
+    let response: { RespuestaAutorizacionComprobante: AuthorizationVoucherResponseDTO };
+    try {
+      response = (await this.authorizationClient.callMethod('autorizacionComprobante', {
+        claveAccesoComprobante: code,
+      })) as typeof response;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new InvoiceIssueError('SRI_UNAVAILABLE', `SRI authorization service failed: ${reason}`);
+    }
     return mapAuthorizationVoucherToDomain(response.RespuestaAutorizacionComprobante);
   }
 }

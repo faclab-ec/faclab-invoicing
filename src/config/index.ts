@@ -12,9 +12,14 @@ export interface AppConfig {
   externalServices: {
     sriVoucherWsdl: string;
     sriQueryWsdl: string;
+    sriTimeoutMs: number;
   };
   signing: {
-    p12Password: string;
+    // Base64 of a 32-byte key; encrypts the certificate passwords at rest
+    passwordKey: string;
+  };
+  invoiceRecovery: {
+    intervalMs: number;
   };
   kafka: {
     brokers: string[];

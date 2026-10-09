@@ -23,11 +23,14 @@ export function generateAccessCode(
   return base48 + String(checkDigit);
 }
 
+// Ecuador date (UTC-5), like fechaEmision in the XML: the SRI checks they match,
+// whatever the server's time zone
 function formatDate(d: Date): string {
+  const utcMinus5 = new Date(d.getTime() - 5 * 60 * 60 * 1000);
   return (
-    String(d.getDate()).padStart(2, '0') +
-    String(d.getMonth() + 1).padStart(2, '0') +
-    String(d.getFullYear())
+    String(utcMinus5.getUTCDate()).padStart(2, '0') +
+    String(utcMinus5.getUTCMonth() + 1).padStart(2, '0') +
+    String(utcMinus5.getUTCFullYear())
   );
 }
 

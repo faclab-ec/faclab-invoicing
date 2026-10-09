@@ -1,4 +1,14 @@
+import { READINESS_ERROR_CODES } from '#/modules/company-config/domain/readiness';
 import { errorResponseSchema, successSchema } from '#/shared/infra/http/shared-schemas';
+
+import { InvoiceStatus } from '../../domain/invoice';
+
+const ISSUE_CODES = [
+  ...READINESS_ERROR_CODES,
+  'SRI_UNAVAILABLE',
+  'SRI_PROCESSING',
+  'UNEXPECTED_ERROR',
+];
 
 const statusHistorySchema = {
   type: 'object',
@@ -7,7 +17,7 @@ const statusHistorySchema = {
     name: {
       type: 'string',
       description: 'Status name at the time of the transition.',
-      example: 'SIGNED',
+      example: 'signed',
     },
     statusDate: {
       type: 'string',
@@ -21,38 +31,63 @@ const statusHistorySchema = {
   },
 } as const;
 
+const issueSchema = {
+  type: ['object', 'null'],
+  description:
+    'Why the last attempt could not move the invoice forward. Null once it moves. Issuer codes (`CONFIG_*`, `CERTIFICATE_*`) wait until the config is fixed; the rest are retried automatically.',
+  properties: {
+    code: { type: 'string', enum: ISSUE_CODES },
+    message: { type: 'string' },
+    at: { type: 'string', format: 'date-time' },
+  },
+} as const;
+
 const invoiceSummaryProperties = {
   id: { type: 'string', format: 'uuid', description: 'Unique invoice identifier.' },
   saleId: { type: 'string', description: 'Identifier of the originating sale.' },
   accessCode: {
-    type: 'string',
+    type: ['string', 'null'],
     description:
-      '49-digit SRI access code that uniquely identifies the voucher. Includes emission date, voucher type, RUC, environment, sequence, and a mod-11 check digit.',
+      '49-digit SRI access code that uniquely identifies the voucher. Null while the invoice is `pending`.',
     example: '2412202401179214100100120010010000000011234567811',
   },
   status: {
     type: 'string',
-    description: 'Current lifecycle status of the invoice.',
-    enum: ['CREATED', 'SIGNED', 'SENT', 'AUTHORIZED', 'REJECTED'],
-    example: 'AUTHORIZED',
+    description:
+      'Current lifecycle status. `pending` waits for the issuer to be ready; `authorized` and `rejected` are final.',
+    enum: Object.values(InvoiceStatus),
+    example: 'authorized',
   },
   signatureId: {
-    type: 'string',
+    type: ['string', 'null'],
     format: 'uuid',
-    description: 'ID of the digital certificate used to sign the invoice XML.',
+    description: 'ID of the certificate selected when the XML was built. Null while `pending`.',
   },
   statusHistory: {
     type: 'array',
     description: 'Ordered list of all status transitions the invoice has gone through.',
     items: statusHistorySchema,
   },
+  issue: issueSchema,
+  attempts: {
+    type: 'number',
+    description: 'Failed attempts in the current status.',
+  },
+  nextAttemptAt: {
+    type: ['string', 'null'],
+    format: 'date-time',
+    description:
+      'When it will be retried automatically. Null if it waits for the issuer or reached the automatic limit.',
+  },
+  createdAt: { type: 'string', format: 'date-time' },
+  updatedAt: { type: 'string', format: 'date-time' },
 } as const;
 
 const invoiceDetailProperties = {
   ...invoiceSummaryProperties,
   xml: {
-    type: 'string',
-    description: 'Full signed invoice XML in SRI format. Present only in the detail endpoint.',
+    type: ['string', 'null'],
+    description: 'Invoice XML in SRI format (signed from `signed` on). Null while `pending`.',
   },
 } as const;
 
@@ -68,9 +103,15 @@ const invoiceDetailObjectSchema = {
 
 export const listInvoicesSchema = {
   tags: ['Invoices'],
-  summary: 'List all invoices',
+  summary: 'List invoices',
   description:
-    'Returns a summary list of all invoices stored in the system, ordered by creation time. The XML body is omitted from list responses for performance.',
+    'Returns a summary of every invoice, without the XML. With `attention=true`, only unfinished invoices that are pending or whose last attempt failed, most recently updated first.',
+  querystring: {
+    type: 'object',
+    properties: {
+      attention: { type: 'boolean', description: 'Only invoices that need attention.' },
+    },
+  },
   response: {
     200: successSchema({ type: 'array', items: invoiceSummaryObjectSchema }),
   },
@@ -93,7 +134,7 @@ export const findBySaleIdSchema = {
 export const getInvoiceSchema = {
   tags: ['Invoices'],
   summary: 'Get an invoice by ID',
-  description: 'Returns full invoice detail including the signed XML and complete status history.',
+  description: 'Returns full invoice detail including the XML and complete status history.',
   params: {
     type: 'object',
     properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
@@ -102,5 +143,88 @@ export const getInvoiceSchema = {
   response: {
     200: successSchema(invoiceDetailObjectSchema),
     404: { ...errorResponseSchema, description: 'No invoice found with the given ID.' },
+  },
+} as const;
+
+export const retryInvoiceSchema = {
+  tags: ['Invoices'],
+  summary: 'Retry an invoice',
+  description:
+    'Runs the next step of an unfinished invoice now (build the XML, sign, send or ask for the authorization), ignoring its retry schedule. Returns the invoice after that step; if it fails, `issue` says why.',
+  params: {
+    type: 'object',
+    properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
+    required: ['id'],
+  },
+  response: {
+    200: successSchema(invoiceSummaryObjectSchema),
+    404: { ...errorResponseSchema, description: 'No invoice found with the given ID.' },
+    409: {
+      ...errorResponseSchema,
+      description: '`INVOICE_NOT_RETRYABLE`: the invoice is already authorized or rejected.',
+    },
+  },
+} as const;
+
+export const retryInvoicesSchema = {
+  tags: ['Invoices'],
+  summary: 'Retry every invoice that needs attention',
+  description:
+    'Queues every unfinished invoice that is pending or whose last attempt failed, and processes them in the background. Invoices waiting for the issuer are skipped while it is not ready.',
+  response: {
+    202: successSchema({
+      type: 'object',
+      properties: { queued: { type: 'number', description: 'Invoices that need attention.' } },
+    }),
+  },
+} as const;
+
+export const invoicingStatusSchema = {
+  tags: ['Invoices'],
+  summary: 'Whether the issuer can invoice',
+  description:
+    'Checks the company config and the selected certificate (present, not expired, readable with its password). Errors stop invoicing: new invoices wait as `pending` until they are fixed. Warnings do not. Also counts the unfinished invoices.',
+  response: {
+    200: successSchema({
+      type: 'object',
+      properties: {
+        ready: { type: 'boolean', description: 'False if there is any error issue.' },
+        environment: {
+          type: ['number', 'null'],
+          enum: [1, 2, null],
+          description: 'SRI environment from the config: `1` testing, `2` production.',
+        },
+        certificate: {
+          type: ['object', 'null'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            subject: { type: 'string' },
+            validTo: { type: 'string', format: 'date-time' },
+          },
+        },
+        issues: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              code: {
+                type: 'string',
+                enum: [...READINESS_ERROR_CODES, 'CERTIFICATE_EXPIRING_SOON', 'TEST_ENVIRONMENT'],
+              },
+              severity: { type: 'string', enum: ['error', 'warning'] },
+              message: { type: 'string' },
+            },
+          },
+        },
+        pendingInvoices: {
+          type: 'number',
+          description: 'Invoices not yet authorized or rejected.',
+        },
+        invoicesWithIssues: {
+          type: 'number',
+          description: 'Unfinished invoices whose last attempt failed.',
+        },
+      },
+    }),
   },
 } as const;

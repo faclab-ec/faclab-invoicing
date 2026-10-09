@@ -11,6 +11,7 @@ export interface CertificateRecord {
   s3_key: string;
   s3_url: string;
   uploaded_at: string;
+  password_ciphertext?: string | null;
 }
 
 export function toCertificateRecord(cert: Certificate): CertificateRecord {
@@ -25,6 +26,7 @@ export function toCertificateRecord(cert: Certificate): CertificateRecord {
     s3_key: cert.s3Key,
     s3_url: cert.s3Url,
     uploaded_at: cert.uploadedAt.toISOString(),
+    password_ciphertext: cert.passwordCiphertext,
   };
 }
 
@@ -40,5 +42,6 @@ export function fromCertificateRecord(record: CertificateRecord): Certificate {
     record.s3_key,
     record.s3_url,
     new Date(record.uploaded_at),
+    record.password_ciphertext ?? null,
   );
 }
