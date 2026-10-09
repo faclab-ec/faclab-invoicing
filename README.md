@@ -209,9 +209,22 @@ Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invo
 | `AWS_ACCESS_KEY_ID` | Yes | AWS credentials |
 | `AWS_SECRET_ACCESS_KEY` | Yes | AWS credentials |
 | `AWS_REGION` | Yes | AWS region (e.g. `us-east-1`) |
+| `JWT_SECRET` | Production | faclab-core's `JWT_SECRET` (at least 32 characters; local default `dev-only-change-me`, same as faclab-core) |
+| `JWT_ISSUER` | No | faclab-core's `JWT_ISSUER` (default `faclab-core`) |
 | `HTTP_PORT` | Production | HTTP server port (default `3173`) |
 | `S3_CERTIFICATES_BUCKET` | Production | S3 bucket for certificate storage |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | No | OpenTelemetry log exporter endpoint |
+
+### Authentication
+
+Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ...`); `/health` and `/docs` are public. Tokens are verified with the shared `JWT_SECRET` (HS256), `JWT_ISSUER` and `typ=access`, and the route's permission must be in the token's `perms` claim:
+
+| Routes | Permission |
+|--------|------------|
+| `/api/company-config`, `/api/certificates` | `user:manage` |
+| `/api/invoices` | `sale:read` |
+
+Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
 
 ### SRI Endpoints (hardcoded in config)
 

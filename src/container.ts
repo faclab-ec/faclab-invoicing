@@ -47,6 +47,7 @@ import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
 import { DynamoInvoiceRepository } from '#/modules/invoice/infra/persistence/dynamo-invoice.repository';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
 import { DlqProducer } from '#/shared/infra/dlq-producer';
+import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { SoapClient } from '#/shared/infra/soap-client';
 
@@ -185,31 +186,45 @@ export async function createContainer(config: AppConfig) {
     serviceVersion: config.serviceVersion,
   });
 
-  registerCertificateRoutes(httpServer, {
-    upload: uploadCertificateCommand,
-    get: getCertificateCommand,
-    list: listCertificatesCommand,
-    delete: deleteCertificateCommand,
-  });
+  const authorize = createAuthorize(config.auth);
+
+  registerCertificateRoutes(
+    httpServer,
+    {
+      upload: uploadCertificateCommand,
+      get: getCertificateCommand,
+      list: listCertificatesCommand,
+      delete: deleteCertificateCommand,
+    },
+    authorize,
+  );
 
   // Company config module
   const saveCompanyConfigCommand = new SaveCompanyConfigCommand(companyConfigRepository);
   const getCompanyConfigQuery = new GetCompanyConfigQuery(companyConfigRepository);
 
-  registerCompanyConfigRoutes(httpServer, {
-    save: saveCompanyConfigCommand,
-    get: getCompanyConfigQuery,
-  });
+  registerCompanyConfigRoutes(
+    httpServer,
+    {
+      save: saveCompanyConfigCommand,
+      get: getCompanyConfigQuery,
+    },
+    authorize,
+  );
 
   const getInvoiceQuery = new GetInvoiceQuery(invoiceRepository);
   const listInvoicesQuery = new ListInvoicesQuery(invoiceRepository);
   const findInvoicesBySaleIdQuery = new FindInvoicesBySaleIdQuery(invoiceRepository);
 
-  registerInvoiceRoutes(httpServer, {
-    get: getInvoiceQuery,
-    list: listInvoicesQuery,
-    findBySaleId: findInvoicesBySaleIdQuery,
-  });
+  registerInvoiceRoutes(
+    httpServer,
+    {
+      get: getInvoiceQuery,
+      list: listInvoicesQuery,
+      findBySaleId: findInvoicesBySaleIdQuery,
+    },
+    authorize,
+  );
 
   await invoiceProducer.connect();
 
