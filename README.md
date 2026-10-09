@@ -193,7 +193,9 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 | `sales.confirmed` | Inbound | `SaleConfirmedMessage` (see `messaging/schemas.ts`) |
 | `invoices` | Inbound + Outbound | `InvoiceMessage` (domain events) |
 
-The service acts as both producer and consumer on the `invoices` topic to implement the state machine.
+The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`.
+
+Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invoice_tax`: the line's `descuento`, `precioTotalSinImpuesto`/`baseImponible` and IVA `valor`, already rounded to cents and with the sale-level discount prorated by faclab-core. The XML uses them as they are (the SRI invoice has no sale-level discount), so the bases plus VAT add up to the sale total. Money is summed in cents and written with two decimals.
 
 ---
 

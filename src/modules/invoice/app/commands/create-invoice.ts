@@ -62,8 +62,6 @@ export class CreateInvoiceCommand {
       voucherTypeCode: VOUCHER_TYPE_CODE,
       date,
       customer,
-      subtotal: parseFloat(payload.subtotal),
-      totalDiscount: parseFloat(payload.total_discount),
       total: parseFloat(payload.total),
       payments: payload.payments.map((p) => ({
         formaPago: PAYMENT_METHOD_CODES[p.method] ?? '20',
@@ -77,11 +75,11 @@ export class CreateInvoiceCommand {
           description: item.product_name,
           quantity: item.quantity,
           unitPrice: parseFloat(item.unit_price),
-          discount: parseFloat(item.discount),
-          subtotal: parseFloat(item.subtotal),
+          discount: parseFloat(item.invoice_discount),
+          taxableBase: parseFloat(item.invoice_base),
           taxCode: iva.code,
           taxRate: iva.rate,
-          taxAmount: parseFloat(item.tax_amount),
+          taxAmount: parseFloat(item.invoice_tax),
         };
       }),
     });
