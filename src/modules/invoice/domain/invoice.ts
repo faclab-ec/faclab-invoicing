@@ -1,7 +1,7 @@
-import { v4 as uuidv4 } from 'uuid';
-
 import { AccessCode } from './access-code';
 import { InvoiceDomainEvent, InvoiceStatus, STATUS_EVENT_TYPE } from './events';
+import { InvoiceIssue, nextAttemptAt } from './issue';
+import { SaleData } from './sale';
 
 export { InvoiceStatus } from './events';
 
@@ -13,43 +13,168 @@ export class InvoiceStatusHistory {
   ) {}
 }
 
+export interface InvoiceProps {
+  id: string;
+  saleId: string;
+  status: InvoiceStatus;
+  sale: SaleData | null;
+  accessCode: AccessCode | null;
+  sequence: string | null;
+  signatureId: string | null;
+  xml: string | null;
+  statusHistory: InvoiceStatusHistory[];
+  issue: InvoiceIssue | null;
+  attempts: number;
+  nextAttemptAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  version: number;
+}
+
+const FINAL_STATUSES = [InvoiceStatus.AUTHORIZED, InvoiceStatus.REJECTED];
+
 export class Invoice {
   private _domainEvents: InvoiceDomainEvent[] = [];
-  private _status: InvoiceStatus;
-  private _xml: string;
 
-  constructor(
-    public readonly id: string = uuidv4(),
-    public readonly saleId: string,
-    public readonly accessCode: AccessCode,
-    status: InvoiceStatus,
-    public readonly signatureId: string,
-    xml: string,
-    public readonly statusHistory: InvoiceStatusHistory[] = [],
-  ) {
-    this._status = status;
-    this._xml = xml;
+  readonly id: string;
+  readonly saleId: string;
+  // Kept so the XML can be built whenever the issuer is ready
+  readonly sale: SaleData | null;
+  readonly statusHistory: InvoiceStatusHistory[];
+  readonly createdAt: Date;
+  // Optimistic lock: the repository only saves over the version it read
+  version: number;
+
+  private _status: InvoiceStatus;
+  private _accessCode: AccessCode | null;
+  private _sequence: string | null;
+  private _signatureId: string | null;
+  private _xml: string | null;
+  private _issue: InvoiceIssue | null;
+  private _attempts: number;
+  private _nextAttemptAt: Date | null;
+  private _updatedAt: Date;
+
+  constructor(props: InvoiceProps) {
+    this.id = props.id;
+    this.saleId = props.saleId;
+    this.sale = props.sale;
+    this.statusHistory = props.statusHistory;
+    this.createdAt = props.createdAt;
+    this.version = props.version;
+    this._status = props.status;
+    this._accessCode = props.accessCode;
+    this._sequence = props.sequence;
+    this._signatureId = props.signatureId;
+    this._xml = props.xml;
+    this._issue = props.issue;
+    this._attempts = props.attempts;
+    this._nextAttemptAt = props.nextAttemptAt;
+    this._updatedAt = props.updatedAt;
   }
 
   get status(): InvoiceStatus {
     return this._status;
   }
 
-  get xml(): string {
+  get accessCode(): AccessCode | null {
+    return this._accessCode;
+  }
+
+  get sequence(): string | null {
+    return this._sequence;
+  }
+
+  get signatureId(): string | null {
+    return this._signatureId;
+  }
+
+  get xml(): string | null {
     return this._xml;
   }
 
-  static create(saleId: string, accessCode: AccessCode, signatureId: string, xml: string): Invoice {
-    const invoice = new Invoice(
-      undefined,
-      saleId,
-      accessCode,
-      InvoiceStatus.CREATED,
-      signatureId,
-      xml,
-    );
-    invoice.addStatusHistory(InvoiceStatus.CREATED, new Date(), 'XML created');
+  /** Why the last attempt couldn't move the invoice forward; cleared when it does */
+  get issue(): InvoiceIssue | null {
+    return this._issue;
+  }
+
+  get attempts(): number {
+    return this._attempts;
+  }
+
+  get nextAttemptAt(): Date | null {
+    return this._nextAttemptAt;
+  }
+
+  get updatedAt(): Date {
+    return this._updatedAt;
+  }
+
+  get isFinal(): boolean {
+    return FINAL_STATUSES.includes(this._status);
+  }
+
+  /** A sale has at most one active invoice: a new one only after a rejection */
+  get isActive(): boolean {
+    return this._status !== InvoiceStatus.REJECTED;
+  }
+
+  /** Not finished and either stuck on a problem or still waiting to start */
+  get needsAttention(): boolean {
+    return !this.isFinal && (this._issue !== null || this._status === InvoiceStatus.PENDING);
+  }
+
+  static receive(id: string, sale: SaleData, now: Date = new Date()): Invoice {
+    const invoice = new Invoice({
+      id,
+      saleId: String(sale.sale_id),
+      status: InvoiceStatus.PENDING,
+      sale,
+      accessCode: null,
+      sequence: null,
+      signatureId: null,
+      xml: null,
+      statusHistory: [],
+      issue: null,
+      attempts: 0,
+      nextAttemptAt: null,
+      createdAt: now,
+      updatedAt: now,
+      version: 0,
+    });
+    invoice.addStatusHistory(InvoiceStatus.PENDING, now, 'Sale received');
     return invoice;
+  }
+
+  requireXml(): string {
+    if (this._xml === null) throw new Error(`Invoice ${this.id} has no XML yet`);
+    return this._xml;
+  }
+
+  requireAccessCode(): AccessCode {
+    if (this._accessCode === null) throw new Error(`Invoice ${this.id} has no access code yet`);
+    return this._accessCode;
+  }
+
+  /** The sequence is used up once assigned: a retry of `prepare` keeps it */
+  assignSequence(sequence: string): void {
+    this.assertStatus(InvoiceStatus.PENDING, 'assign a sequence to');
+    if (this._sequence !== null) {
+      throw new Error(`Invoice ${this.id} already has sequence ${this._sequence}`);
+    }
+    this._sequence = sequence;
+    this._updatedAt = new Date();
+  }
+
+  prepare(props: { accessCode: AccessCode; signatureId: string; xml: string }): void {
+    this.assertStatus(InvoiceStatus.PENDING, 'prepare');
+    if (this._sequence === null) {
+      throw new Error(`Cannot prepare invoice ${this.id} without a sequence`);
+    }
+    this._accessCode = props.accessCode;
+    this._signatureId = props.signatureId;
+    this._xml = props.xml;
+    this.addStatusHistory(InvoiceStatus.CREATED, new Date(), 'XML created');
   }
 
   sign(signedXml: string): void {
@@ -69,10 +194,21 @@ export class Invoice {
   }
 
   reject(messages: string[]): void {
-    if ([InvoiceStatus.AUTHORIZED, InvoiceStatus.REJECTED].includes(this._status)) {
+    if (this.isFinal) {
       throw new Error(`Cannot reject invoice in status ${this._status}`);
     }
     this.addStatusHistory(InvoiceStatus.REJECTED, new Date(), messages.join(' >> '));
+  }
+
+  /** The current step failed: keep the status and remember why */
+  recordIssue(issue: InvoiceIssue): void {
+    if (this.isFinal) {
+      throw new Error(`Cannot record an issue on invoice in status ${this._status}`);
+    }
+    this._issue = issue;
+    this._attempts += 1;
+    this._nextAttemptAt = nextAttemptAt(issue.code, this._attempts, issue.at);
+    this._updatedAt = issue.at;
   }
 
   pullEvents(): InvoiceDomainEvent[] {
@@ -89,6 +225,10 @@ export class Invoice {
 
   private addStatusHistory(status: InvoiceStatus, date: Date, description?: string): void {
     this._status = status;
+    this._issue = null;
+    this._attempts = 0;
+    this._nextAttemptAt = null;
+    this._updatedAt = date;
     this.statusHistory.push(new InvoiceStatusHistory(status, date, description));
     this._domainEvents.push({
       type: STATUS_EVENT_TYPE[status],

@@ -1,6 +1,6 @@
-import { FileStoragePort } from '#/modules/certificate/domain/ports';
-import { CertificateRepository } from '#/modules/certificate/domain/repository';
-import { CompanyConfigRepository } from '#/modules/company-config/domain/repository';
+import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
+import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
+import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 
 import { InvoiceSignerPort } from '../../domain/ports';
 import { P12Reader, SigningCredentials } from '../signing/p12-reader';
@@ -8,14 +8,12 @@ import { XadesSigner } from '../signing/xades-signer';
 
 export class SignerAdapter implements InvoiceSignerPort {
   private credentials: SigningCredentials | null = null;
-  private cachedP12Id: string | null = null;
+  private cachedCertificateId: string | null = null;
 
   constructor(
-    private readonly certificateRepository: CertificateRepository,
-    private readonly fileStorage: FileStoragePort,
+    private readonly readiness: IssuerReadinessService,
+    private readonly keyLoader: CertificateKeyLoader,
     private readonly xadesSigner: XadesSigner,
-    private readonly companyConfigRepository: CompanyConfigRepository,
-    private readonly p12Password: string,
   ) {}
 
   async signInvoice(xml: string): Promise<string> {
@@ -24,22 +22,22 @@ export class SignerAdapter implements InvoiceSignerPort {
   }
 
   private async getCredentials(): Promise<SigningCredentials> {
-    const companyConfig = await this.companyConfigRepository.find();
-    if (!companyConfig) throw new Error('Company config not found');
+    // Signs with the certificate selected now, which may differ from the one
+    // the invoice was prepared with
+    const { certificate } = await this.readiness.requireReady();
+    if (this.credentials && this.cachedCertificateId === certificate.id) return this.credentials;
 
-    const { signingCertId } = companyConfig;
-    if (!signingCertId) throw new Error('No signing certificate configured in company config');
-
-    if (this.credentials && this.cachedP12Id === signingCertId) return this.credentials;
-
-    const certificate = await this.certificateRepository.findById(signingCertId);
-    if (!certificate) throw new Error(`Signing certificate not found: ${signingCertId}`);
-
-    const p12Buffer = await this.fileStorage.download(certificate.s3Key);
-    const p12Reader = new P12Reader(p12Buffer, this.p12Password);
-    this.credentials = p12Reader.getCredentials();
-    this.cachedP12Id = signingCertId;
-
+    try {
+      const key = await this.keyLoader.load(certificate);
+      this.credentials = new P12Reader(key.p12, key.password).getCredentials();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new IssuerNotReadyError(
+        'CERTIFICATE_UNREADABLE',
+        `The signing certificate can't be opened: ${reason}`,
+      );
+    }
+    this.cachedCertificateId = certificate.id;
     return this.credentials;
   }
 }

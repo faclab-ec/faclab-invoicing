@@ -46,7 +46,10 @@ Clean Architecture with CQRS and domain events. Dependencies flow inward: infras
 Triggered by a `SaleConfirmed` event on the `sales.confirmed` Kafka topic:
 
 ```
-sales.confirmed ──► CreateInvoice ──► CREATED
+sales.confirmed ──► ReceiveSale ──► PENDING
+                                         │
+                    ◄────── invoices ◄───┘
+                      PrepareInvoice ──► CREATED   (waits while the issuer isn't ready)
                                          │
                     ◄────── invoices ◄───┘
                          SignInvoice ──► SIGNED
@@ -60,6 +63,17 @@ sales.confirmed ──► CreateInvoice ──► CREATED
 
 Each transition is an isolated Command. `InvoiceEventHandler` reads from the `invoices` topic and dispatches to the right command based on the invoice's current status.
 
+### Nothing is lost: pending invoices, issues and recovery
+
+- **The sale is stored first.** `ReceiveSale` saves a `pending` invoice with the sale data before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the issuer is ready. The emission date is the day the XML is built.
+- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`, written with a condition: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`. Updates check a `version` attribute.
+- **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed messages and storage outages.
+  - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`) wait until the issuer is ready.
+  - `SRI_UNAVAILABLE` (SOAP error or timeout), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
+  - A reception `DEVUELTA` whose only messages are 43 (access code already registered) or 70 (access code being processed) means the SRI already has the voucher: the invoice moves on to authorization.
+- **Recovery** (`InvoiceRecoveryService`) runs at start, every `INVOICE_RETRY_INTERVAL_MS`, right after the config or a certificate changes, and from `POST /api/invoices/retry`. It takes invoices waiting for the issuer (once it is ready), transient issues that are due, and invoices without an issue that haven't moved for 5 minutes (lost event). It assumes a single instance of the service.
+- **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`): config saved and valid (13-digit RUC, 3-digit branch and point of sale), a certificate selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute and refreshed on config or certificate changes.
+
 ---
 
 ## Modules
@@ -70,9 +84,9 @@ Core business module. Manages the full invoice lifecycle.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `Invoice` entity, `AccessCode` VO, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces, domain events |
-| `app/` | `CreateInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `InvoiceEventHandler`, `SaleConfirmedHandler`, list/get queries |
-| `infra/` | `DynamoInvoiceRepository`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, HTTP routes |
+| `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces, domain events |
+| `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `InvoiceEventHandler`, `SaleConfirmedHandler`, `InvoiceRecoveryService`, list/get/status queries |
+| `infra/` | `DynamoInvoiceRepository`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
 
 ### `certificate`
 
@@ -80,8 +94,10 @@ Manages PKCS#12 digital signing certificates.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `Certificate` entity, `P12ParserPort`, `FileStoragePort` |
-| `app/` | `UploadCertificateCommand`, `GetCertificateCommand`, `ListCertificatesCommand`, `DeleteCertificateCommand` |
+| `domain/` | `Certificate` entity, `P12ParserPort`, `FileStoragePort`, `SecretCipherPort` |
+| `app/` | `UploadCertificateCommand`, `GetCertificateCommand`, `ListCertificatesCommand`, `DeleteCertificateCommand`, `CertificateKeyLoader` |
+
+Each certificate keeps its `.p12` password encrypted (AES-256-GCM, key in `CERTIFICATE_PASSWORD_KEY`); signing uses the password of the selected certificate. Expired certificates are rejected on upload, and the selected one can't be deleted (`CERTIFICATE_IN_USE`, 409).
 | `infra/` | `DynamoCertificateRepository`, `P12ParserAdapter`, `S3StorageAdapter`, HTTP routes |
 
 ### `company-config`
@@ -90,8 +106,8 @@ Singleton fiscal configuration for the company (RUC, addresses, SRI environment,
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `CompanyConfig` entity |
-| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery` |
+| `domain/` | `CompanyConfig` entity, readiness types |
+| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `IssuerReadinessService` |
 | `infra/` | `DynamoCompanyConfigRepository`, HTTP routes |
 
 ---
@@ -104,8 +120,12 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/invoices` | List all invoices |
+| `GET` | `/api/invoicing/status` | Whether the issuer can invoice, with issues and counts |
+| `GET` | `/api/invoices` | List all invoices (`?attention=true`: only pending or failed ones) |
+| `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
 | `GET` | `/api/invoices/:id` | Get invoice by ID |
+| `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now |
+| `POST` | `/api/invoices/retry` | Retry every invoice that needs attention, in the background (202) |
 
 ### Certificates
 
@@ -172,7 +192,9 @@ All endpoints return a consistent JSON envelope.
 |------|-------------|------|
 | `NOT_FOUND` | 404 | Resource does not exist |
 | `BAD_REQUEST` | 400 | Invalid input (missing file, wrong extension, etc.) |
-| `VALIDATION_ERROR` | 422 | Request body fails schema validation |
+| `VALIDATION_ERROR` | 422 | Request body fails schema validation, unreadable or expired certificate, unknown `signingCertId` |
+| `CERTIFICATE_IN_USE` | 409 | Deleting the certificate selected in the company config |
+| `INVOICE_NOT_RETRYABLE` | 409 | Retrying an invoice that is already authorized or rejected |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
 ### Request ID propagation
@@ -191,7 +213,7 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 | Topic | Direction | Schema |
 |-------|-----------|--------|
 | `sales.confirmed` | Inbound | `SaleConfirmedMessage` (see `messaging/schemas.ts`) |
-| `invoices` | Inbound + Outbound | `InvoiceMessage` (domain events) |
+| `invoices` | Inbound + Outbound | `InvoiceMessage` (domain events: `InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) |
 
 The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`.
 
@@ -205,7 +227,9 @@ Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invo
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SIGNING_P12_PASSWORD` | Yes | Password for the `.p12` certificate |
+| `CERTIFICATE_PASSWORD_KEY` | Production | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts certificate passwords. Losing or changing it makes stored certificates unreadable: upload them again. Local default is a fixed dev key |
+| `INVOICE_RETRY_INTERVAL_MS` | No | How often the recovery runs (default `60000`) |
+| `SRI_TIMEOUT_MS` | No | Timeout for each SRI SOAP call (default `30000`) |
 | `AWS_ACCESS_KEY_ID` | Yes | AWS credentials |
 | `AWS_SECRET_ACCESS_KEY` | Yes | AWS credentials |
 | `AWS_REGION` | Yes | AWS region (e.g. `us-east-1`) |
@@ -222,7 +246,8 @@ Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ..
 | Routes | Permission |
 |--------|------------|
 | `/api/company-config`, `/api/certificates` | `user:manage` |
-| `/api/invoices` | `sale:read` |
+| `GET /api/invoices`, `GET /api/invoicing/status` | `sale:read` |
+| `POST /api/invoices/retry`, `POST /api/invoices/:id/retry` | `sale:write` |
 
 Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
 
@@ -272,7 +297,6 @@ Set via `CompanyConfig.environment`:
    AWS_SECRET_ACCESS_KEY=test
    AWS_ACCESS_KEY_ID=test
    AWS_REGION=us-east-1
-   SIGNING_P12_PASSWORD=<p12-password>
    ```
 
 4. **Run in dev mode**
@@ -293,11 +317,13 @@ npm run lint          # ESLint check
 npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
 npm run format:check  # Prettier check
+npm run typecheck     # tsc over src and test
+npm test              # vitest (test/)
 ```
 
 ### First-Run Setup
 
-Before processing invoices, bootstrap the service via the REST API:
+Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/status`); saving the config resumes them. Bootstrap the service via the REST API:
 
 1. **Upload a signing certificate**
 

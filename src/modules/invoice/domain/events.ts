@@ -1,4 +1,6 @@
 export enum InvoiceStatus {
+  // Sale received; waits here until the issuer can build its XML
+  PENDING = 'pending',
   CREATED = 'created',
   SIGNED = 'signed',
   SENT = 'sent',
@@ -11,6 +13,10 @@ interface BaseInvoiceEvent {
   saleId: string;
   status: InvoiceStatus;
   occurredAt: Date;
+}
+
+export interface InvoiceReceived extends BaseInvoiceEvent {
+  type: 'InvoiceReceived';
 }
 
 export interface InvoiceCreated extends BaseInvoiceEvent {
@@ -34,6 +40,7 @@ export interface InvoiceRejected extends BaseInvoiceEvent {
 }
 
 export type InvoiceDomainEvent =
+  | InvoiceReceived
   | InvoiceCreated
   | InvoiceSigned
   | InvoiceSent
@@ -41,6 +48,7 @@ export type InvoiceDomainEvent =
   | InvoiceRejected;
 
 export const STATUS_EVENT_TYPE: Record<InvoiceStatus, InvoiceDomainEvent['type']> = {
+  [InvoiceStatus.PENDING]: 'InvoiceReceived',
   [InvoiceStatus.CREATED]: 'InvoiceCreated',
   [InvoiceStatus.SIGNED]: 'InvoiceSigned',
   [InvoiceStatus.SENT]: 'InvoiceSent',

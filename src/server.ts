@@ -11,14 +11,16 @@ const main = async () => {
     environment: config.environment,
   });
 
-  const { consumer, producer, httpServer } = await createContainer(config);
+  const { consumer, producer, httpServer, recoveryScheduler } = await createContainer(config);
   await consumer.start();
+  recoveryScheduler.start();
   await httpServer.listen({ port: config.http.port, host: config.http.host });
   logger.info({ env: config.environment, port: config.http.port }, 'Application started');
 
   const shutdown = async () => {
     logger.info('Shutting down...');
     try {
+      recoveryScheduler.stop();
       await consumer.stop();
       await producer.disconnect();
       await httpServer.close();

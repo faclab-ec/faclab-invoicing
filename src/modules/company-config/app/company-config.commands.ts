@@ -1,4 +1,8 @@
+import { CertificateRepository } from '#/modules/certificate/domain/repository';
+import { ValidationError } from '#/shared/errors/app-error';
+
 import { CompanyConfig, EmissionType, Environment } from '../domain/company-config';
+import { IssuerChangeListener } from '../domain/readiness';
 import { CompanyConfigRepository } from '../domain/repository';
 
 export interface SaveCompanyConfigInput {
@@ -19,16 +23,29 @@ export interface SaveCompanyConfigInput {
 }
 
 export class SaveCompanyConfigCommand {
-  constructor(private readonly repository: CompanyConfigRepository) {}
+  constructor(
+    private readonly repository: CompanyConfigRepository,
+    private readonly certificateRepository: CertificateRepository,
+    private readonly issuerListener: IssuerChangeListener,
+  ) {}
 
   async execute(input: SaveCompanyConfigInput): Promise<CompanyConfig> {
+    if (input.signingCertId) {
+      const certificate = await this.certificateRepository.findById(input.signingCertId);
+      if (!certificate) {
+        throw new ValidationError(`Signing certificate ${input.signingCertId} not found`);
+      }
+    }
+
     let invoiceSequence = input.invoiceSequence;
     if (invoiceSequence === undefined) {
       const current = await this.repository.find();
       invoiceSequence = current?.invoiceSequence ?? 1;
     }
     const config = CompanyConfig.create({ ...input, invoiceSequence });
-    return this.repository.save(config);
+    await this.repository.save(config);
+    this.issuerListener.issuerChanged();
+    return config;
   }
 }
 

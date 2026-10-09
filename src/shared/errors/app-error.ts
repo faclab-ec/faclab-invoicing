@@ -29,3 +29,14 @@ export class InternalError extends AppError {
   readonly statusCode = 500;
   readonly code = 'INTERNAL_ERROR';
 }
+
+export class ConflictError extends AppError {
+  readonly statusCode = 409;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}

@@ -12,6 +12,9 @@ export class Certificate {
     public readonly s3Key: string,
     public readonly s3Url: string,
     public readonly uploadedAt: Date,
+    // The .p12 password, encrypted. Null for certificates uploaded before it
+    // was stored: those can't sign until they are uploaded again
+    public readonly passwordCiphertext: string | null,
   ) {}
 
   static create(props: {
@@ -23,6 +26,7 @@ export class Certificate {
     fileName: string;
     s3Key: string;
     s3Url: string;
+    passwordCiphertext: string;
   }): Certificate {
     return new Certificate(
       randomUUID(),
@@ -35,6 +39,11 @@ export class Certificate {
       props.s3Key,
       props.s3Url,
       new Date(),
+      props.passwordCiphertext,
     );
+  }
+
+  isExpired(now: Date = new Date()): boolean {
+    return this.validTo.getTime() <= now.getTime();
   }
 }
