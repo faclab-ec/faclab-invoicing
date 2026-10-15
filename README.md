@@ -12,6 +12,7 @@ Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Re
 - [Kafka Topics](#kafka-topics)
 - [Configuration](#configuration)
 - [Local Development](#local-development)
+- [Docker](#docker)
 - [Project Structure](#project-structure)
 
 ---
@@ -223,21 +224,42 @@ Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invo
 
 ## Configuration
 
+`NODE_ENV` picks the mode: `local` (the default) or `production`; any other value stops the service. Every setting comes from an environment variable, validated with zod in `src/config/` when the process starts:
+
+- **Local:** every variable has a default that points at [faclab-infra](https://github.com/faclab-ec/faclab-infra) from the host.
+- **Production:** the variables that depend on where the service runs have no default. If any is missing or invalid, the process exits with code 1 and lists them by name, never by value:
+
+  ```text
+  Invalid configuration for NODE_ENV=production:
+  - SRI_ENVIRONMENT is required
+  - KAFKA_BROKERS is required
+  ```
+
+`npm run dev` and `npm start` load `.env` when it exists (`node --env-file-if-exists`); variables already set in the environment win. `.env.example` lists them all.
+
 ### Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `CERTIFICATE_PASSWORD_KEY` | Production | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts certificate passwords. Losing or changing it makes stored certificates unreadable: upload them again. Local default is a fixed dev key |
-| `INVOICE_RETRY_INTERVAL_MS` | No | How often the recovery runs (default `60000`) |
-| `SRI_TIMEOUT_MS` | No | Timeout for each SRI SOAP call (default `30000`) |
-| `AWS_ACCESS_KEY_ID` | Yes | AWS credentials |
-| `AWS_SECRET_ACCESS_KEY` | Yes | AWS credentials |
-| `AWS_REGION` | Yes | AWS region (e.g. `us-east-1`) |
-| `JWT_SECRET` | Production | faclab-core's `JWT_SECRET` (at least 32 characters; local default `dev-only-change-me`, same as faclab-core) |
-| `JWT_ISSUER` | No | faclab-core's `JWT_ISSUER` (default `faclab-core`) |
-| `HTTP_PORT` | Production | HTTP server port (default `3173`) |
-| `S3_CERTIFICATES_BUCKET` | Production | S3 bucket for certificate storage |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | No | OpenTelemetry log exporter endpoint |
+| Variable | Local default | Production | Description |
+|----------|---------------|------------|-------------|
+| `SRI_ENVIRONMENT` | `test` (`production` is refused) | **Required** | SRI web services: `test` or `production`. See [SRI environment](#sri-environment) |
+| `KAFKA_BROKERS` | `localhost:29092` | **Required** | Comma-separated brokers. A container on `faclab_network` uses `kafka:9092` |
+| `AWS_REGION` | `us-east-1` | **Required** | AWS region |
+| `AWS_ENDPOINT_URL` | `http://localhost:4566` | Optional | DynamoDB and S3 endpoint (LocalStack); unset means AWS. A container on `faclab_network` uses `http://aws-local:4566` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | — | Read by the AWS SDK's default chain (`test`/`test` for LocalStack) |
+| `DYNAMODB_INVOICES_TABLE` | `invoices` | **Required** | Invoices table |
+| `DYNAMODB_CERTIFICATES_TABLE` | `certificates` | **Required** | Certificates table |
+| `DYNAMODB_COMPANY_CONFIG_TABLE` | `company_config` | **Required** | Issuer configuration table |
+| `S3_CERTIFICATES_BUCKET` | `faclab-invoicing-certificates` | **Required** | Bucket for the `.p12` certificates |
+| `CORS_ORIGINS` | `http://localhost:5173` | **Required**, without `*` | Comma-separated origins allowed to call the API (faclab-web) |
+| `JWT_SECRET` | `dev-only-change-me`, same as faclab-core | **Required**, 32+ characters | faclab-core's `JWT_SECRET` |
+| `CERTIFICATE_PASSWORD_KEY` | Fixed dev key | **Required** | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts certificate passwords. Losing or changing it makes stored certificates unreadable: upload them again |
+| `JWT_ISSUER` | `faclab-core` | Optional | faclab-core's `JWT_ISSUER` |
+| `HTTP_PORT` | `3173` | Optional | HTTP server port |
+| `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
+| `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
+| `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the recovery runs |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts` |
+| `OTEL_SDK_DISABLED` | — | Optional | `true` turns OpenTelemetry off |
 
 ### Authentication
 
@@ -251,19 +273,27 @@ Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ..
 
 Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
 
-### SRI Endpoints (hardcoded in config)
+### SRI environment
 
-- **Voucher validation WSDL:** configured in `config/local.ts` and `config/production.ts`
-- **Authorization WSDL:** configured in `config/local.ts` and `config/production.ts`
+`SRI_ENVIRONMENT` picks the SRI web services (reception and authorization WSDLs) the process calls. The URLs live in a single table, `src/config/sri.ts`:
 
-### Environments
+| Value | Host | Invoices |
+|-------|------|----------|
+| `test` | `celcer.sri.gob.ec` | Testing, without tax validity |
+| `production` | `cel.sri.gob.ec` | Real, with tax validity |
 
-Set via `CompanyConfig.environment`:
+- Production has no default, so it can't reach the test environment by accident. A staging deployment sets `NODE_ENV=production` with `SRI_ENVIRONMENT=test`, and the service logs a warning on startup.
+- Local refuses `production`.
+- Every startup logs `sriEnvironment` and the SRI host.
+
+It is not the issuer's `CompanyConfig.environment`, which goes into the access code and the XML `ambiente`:
 
 | Value | Meaning |
 |-------|---------|
-| `1` | Testing (SRI sandbox) |
+| `1` | Testing |
 | `2` | Production |
+
+Both must agree: an issuer with `environment: 2` needs `SRI_ENVIRONMENT=production`. Nothing checks this yet; in S2.8 the environment becomes a setting of each issuer.
 
 ---
 
@@ -271,9 +301,8 @@ Set via `CompanyConfig.environment`:
 
 ### Prerequisites
 
-- Node.js 22 (the version CI uses)
-- Docker (for LocalStack)
-- A running Kafka broker
+- Node.js 22.9 or later (CI uses 22)
+- Docker, for faclab-infra (Kafka and LocalStack)
 
 ### Setup
 
@@ -283,21 +312,19 @@ Set via `CompanyConfig.environment`:
    npm install
    ```
 
-2. **Start LocalStack** (DynamoDB + S3 emulation)
+2. **Start faclab-infra** (Kafka, plus LocalStack for DynamoDB and S3)
 
    ```bash
-   docker-compose up -d   # or however your local infra is set up
+   cd ../faclab-infra && docker compose up -d
    ```
 
 3. **Configure environment**
 
-   Create a `.env` file:
-
-   ```env
-   AWS_SECRET_ACCESS_KEY=test
-   AWS_ACCESS_KEY_ID=test
-   AWS_REGION=us-east-1
+   ```bash
+   cp .env.example .env
    ```
+
+   The local defaults already point at faclab-infra; `.env` only adds the LocalStack credentials and whatever you override.
 
 4. **Run in dev mode**
 
@@ -310,9 +337,9 @@ Set via `CompanyConfig.environment`:
 ### Available Scripts
 
 ```bash
-npm run dev           # ts-node-dev with hot reload
-npm run build         # Compile TypeScript → dist/
-npm run start         # Run compiled output
+npm run dev           # ts-node-dev with hot reload (loads .env)
+npm run build         # tsc → dist/, then tsc-alias rewrites the #/ imports
+npm run start         # Run compiled output (loads .env)
 npm run lint          # ESLint check
 npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
@@ -323,7 +350,12 @@ npm test              # vitest (test/)
 
 ### Continuous Integration
 
-Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions (job `checks`, Node 22): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`. `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
+Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions:
+
+- `checks` (Node 22): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
+- `image`: builds the production image without publishing it, and checks that it refuses to start without `SRI_ENVIRONMENT` and `KAFKA_BROKERS`.
+
+`package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
 
 To run the same locally:
 
@@ -366,6 +398,43 @@ Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/st
 
 ---
 
+## Docker
+
+`Dockerfile` builds the production image (`--target production`):
+
+- `node:22-bookworm-slim`, the same Node and glibc as CI, so the prebuilt librdkafka binary of `@confluentinc/kafka-javascript` matches the runtime.
+- Stages `build` (`npm ci` and `npm run build`), `deps` (production dependencies only) and `production`.
+- Runs as `app` (uid 10001), with the code owned by root.
+- `NODE_ENV=production`, port `3173`, and a `HEALTHCHECK` on `/health` with Node's `fetch`.
+- Starts with `node -r ./dist/instrumentation.js dist/server.js`.
+
+`.dockerignore` keeps `.env`, `.git`, tests and docs out of the image.
+
+To run it against faclab-infra (Kafka and LocalStack on `faclab_network`) with the SRI test environment:
+
+```bash
+docker build --target production -t faclab-invoicing .
+
+docker run --rm --network faclab_network -p 3173:3173 \
+  -e SRI_ENVIRONMENT=test \
+  -e KAFKA_BROKERS=kafka:9092 \
+  -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://aws-local:4566 \
+  -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test \
+  -e DYNAMODB_INVOICES_TABLE=invoices \
+  -e DYNAMODB_CERTIFICATES_TABLE=certificates \
+  -e DYNAMODB_COMPANY_CONFIG_TABLE=company_config \
+  -e S3_CERTIFICATES_BUCKET=faclab-invoicing-certificates \
+  -e CORS_ORIGINS=http://localhost:5173 \
+  -e JWT_SECRET='<faclab-core JWT_SECRET>' \
+  -e CERTIFICATE_PASSWORD_KEY='<32 bytes in base64>' \
+  -e OTEL_SDK_DISABLED=true \
+  faclab-invoicing
+```
+
+To run it next to a local faclab-core, use the local defaults instead, including the dev keys and the same `JWT_SECRET`. Pass only `-e NODE_ENV=local`, `KAFKA_BROKERS`, `AWS_ENDPOINT_URL` and the AWS keys.
+
+---
+
 ## Project Structure
 
 ```
@@ -373,9 +442,10 @@ src/
 ├── server.ts                    # Entry point
 ├── container.ts                 # Composition root (manual DI)
 ├── config/
-│   ├── index.ts                 # AppConfig interface
-│   ├── local.ts                 # Development config
-│   └── production.ts            # Production config
+│   ├── index.ts                 # AppConfig and its zod validation (parseConfig)
+│   ├── local.ts                 # Local defaults
+│   ├── production.ts            # Production defaults and rules
+│   └── sri.ts                   # SRI endpoints per SRI_ENVIRONMENT
 ├── modules/
 │   ├── invoice/
 │   │   ├── domain/
