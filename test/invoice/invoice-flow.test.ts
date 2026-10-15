@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { IssuerReadinessService, ReadyIssuer } from '#/modules/company-config/app/issuer-readiness';
+import { ReadyIssuer } from '#/modules/company-config/app/issuer-readiness';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
-import { CompanyConfigRepository } from '#/modules/company-config/domain/repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
@@ -13,32 +12,14 @@ import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { SriAuthorizationPort } from '#/modules/invoice/domain/ports';
 import { AuthorizationVoucher, AuthorizationVoucherStatus } from '#/modules/invoice/domain/voucher';
 
-import { InMemoryInvoiceRepository, makeCertificate, makeConfig, makeSale } from '../helpers';
-
-function readinessStub(issuer: ReadyIssuer | IssuerNotReadyError) {
-  return {
-    check: vi.fn(async () => ({
-      ready: !(issuer instanceof Error),
-      environment: null,
-      certificate: null,
-      issues: [],
-    })),
-    requireReady: vi.fn(async () => {
-      if (issuer instanceof Error) throw issuer;
-      return issuer;
-    }),
-    invalidate: vi.fn(),
-  } as unknown as IssuerReadinessService;
-}
-
-function configRepoStub(): CompanyConfigRepository {
-  let sequence = 0;
-  return {
-    save: vi.fn(),
-    find: vi.fn(),
-    nextInvoiceSequence: vi.fn(async () => ++sequence),
-  };
-}
+import {
+  configRepoStub,
+  InMemoryInvoiceRepository,
+  makeCertificate,
+  makeConfig,
+  makeSale,
+  readinessStub,
+} from '../helpers';
 
 function producerStub() {
   const sent: InvoiceDomainEvent[] = [];

@@ -47,6 +47,7 @@ import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
+import { toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
 import {
@@ -142,7 +143,7 @@ export async function createContainer(config: AppConfig) {
   const sriAuthorizationAdapter = new SriAuthorizationAdapter(authorizationClient);
 
   // Producers
-  const invoiceProducer = new KafkaProducer(producer, KAFKA_TOPICS.INVOICES);
+  const invoiceProducer = new KafkaProducer(producer, KAFKA_TOPICS.INVOICES, toInvoiceMessage);
 
   // Commands
   const prepareInvoiceCommand = new PrepareInvoiceCommand(

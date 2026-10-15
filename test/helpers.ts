@@ -1,9 +1,14 @@
+import { vi } from 'vitest';
+
 import { Certificate } from '#/modules/certificate/domain/certificate';
+import { IssuerReadinessService, ReadyIssuer } from '#/modules/company-config/app/issuer-readiness';
 import {
   CompanyConfig,
   EmissionType,
   Environment,
 } from '#/modules/company-config/domain/company-config';
+import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
+import { CompanyConfigRepository } from '#/modules/company-config/domain/repository';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { ConcurrentUpdateError, InvoiceRepository } from '#/modules/invoice/domain/repository';
 import { SaleData } from '#/modules/invoice/domain/sale';
@@ -125,4 +130,29 @@ export function makeCertificate(
     new Date('2025-01-01T00:00:00Z'),
     overrides.passwordCiphertext === undefined ? 'v1:secret' : overrides.passwordCiphertext,
   );
+}
+
+export function readinessStub(issuer: ReadyIssuer | IssuerNotReadyError) {
+  return {
+    check: vi.fn(async () => ({
+      ready: !(issuer instanceof Error),
+      environment: null,
+      certificate: null,
+      issues: [],
+    })),
+    requireReady: vi.fn(async () => {
+      if (issuer instanceof Error) throw issuer;
+      return issuer;
+    }),
+    invalidate: vi.fn(),
+  } as unknown as IssuerReadinessService;
+}
+
+export function configRepoStub(): CompanyConfigRepository {
+  let sequence = 0;
+  return {
+    save: vi.fn(),
+    find: vi.fn(),
+    nextInvoiceSequence: vi.fn(async () => ++sequence),
+  };
 }

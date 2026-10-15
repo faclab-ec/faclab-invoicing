@@ -1,0 +1,45 @@
+{
+  "event_id": "3b0d6f0e-8c1a-4f53-9a57-1e0b9b5a7c02",
+  "event_type": "SaleConfirmed",
+  "schema_version": 1,
+  "aggregate_id": 1202,
+  "occurred_at": "2026-10-15T15:10:00Z",
+  "payload": {
+    "sale_id": 1202,
+    "source": "pos",
+    "subtotal": "17.50",
+    "total_discount": "0",
+    "total": "20.13",
+    "customer": {
+      "id": 56,
+      "name": "María Quishpe",
+      "tax_id": "1710034065",
+      "tax_type": "NATIONAL_ID",
+      "email": null,
+      "phone": null,
+      "address": null
+    },
+    "items": [
+      {
+        "product_id": 104,
+        "sku": "CEM-GU-50",
+        "product_name": "Cemento gris 50 kg",
+        "quantity": 2,
+        "unit_price": "8.750000",
+        "discount": "0",
+        "tax_code": "VAT_15",
+        "tax_amount": "2.625000",
+        "subtotal": "17.500000",
+        "invoice_discount": "0.00",
+        "invoice_base": "17.50",
+        "invoice_tax": "2.63"
+      }
+    ],
+    "payments": [
+      {
+        "method": "CASH",
+        "amount": "20.13"
+      }
+    ]
+  }
+}
