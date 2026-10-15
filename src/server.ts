@@ -1,15 +1,23 @@
 import { initLogger, logger } from '#/shared/logger';
 
-import loadConfig from './config';
+import loadConfig, { ConfigError } from './config';
 import { createContainer } from './container';
 
 const main = async () => {
-  const config = await loadConfig();
+  const config = loadConfig();
   initLogger({
     level: config.logger.level,
     serviceName: config.serviceName,
     environment: config.environment,
   });
+
+  const { sriEnvironment, sriVoucherWsdl } = config.externalServices;
+  logger.info({ sriEnvironment, sriHost: new URL(sriVoucherWsdl).host }, 'SRI environment');
+  if (config.environment === 'production' && sriEnvironment === 'test') {
+    logger.warn(
+      'SRI_ENVIRONMENT=test: invoices go to the SRI test environment, without tax validity',
+    );
+  }
 
   const { consumer, producer, httpServer, recoveryScheduler } = await createContainer(config);
   await consumer.start();
@@ -35,6 +43,11 @@ const main = async () => {
 };
 
 main().catch((error) => {
+  if (error instanceof ConfigError) {
+    // The logger is still silent: what failed is the configuration it needs
+    console.error(error.message);
+    process.exit(1);
+  }
   logger.error(
     { error: error instanceof Error ? error.message : String(error) },
     'Application error',

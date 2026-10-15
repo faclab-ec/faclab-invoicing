@@ -1,4 +1,6 @@
 .*
 !.github/
+!.dockerignore
+!.env.example
 /node_modules
 /dist

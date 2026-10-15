@@ -1,0 +1,22 @@
+# Secrets and local state: never in an image
+.env
+.env.*
+
+# VCS, editors and assistants
+.git
+.github
+.claude
+.idea
+.vscode
+.DS_Store
+
+# Build output and dependencies are produced inside the image
+node_modules
+dist
+coverage
+
+# Not needed at runtime
+test
+docs
+*.md
+Dockerfile
