@@ -43,3 +43,24 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Builds the production image without publishing it (that comes with S8.2)
+  image:
+    name: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build --target production -t faclab-invoicing:ci .
+
+      - name: Refuse to start without settings
+        run: |
+          if docker run --rm -e OTEL_SDK_DISABLED=true faclab-invoicing:ci > startup.log 2>&1; then
+            echo "The image started without SRI_ENVIRONMENT and KAFKA_BROKERS"
+            exit 1
+          fi
+          cat startup.log
+          grep -q 'SRI_ENVIRONMENT is required' startup.log
+          grep -q 'KAFKA_BROKERS is required' startup.log
