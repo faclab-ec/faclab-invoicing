@@ -22,17 +22,19 @@ export class KafkaProducer<T> implements MessageProducer<T> {
   }
 
   async sendMessage(message: T): Promise<void> {
-    const span = tracer.startSpan(`${this.topic} send`, {
+    const span = tracer.startSpan(`send ${this.topic}`, {
       kind: SpanKind.PRODUCER,
       attributes: {
         'messaging.system': 'kafka',
         'messaging.operation.type': 'send',
+        'messaging.operation.name': 'send',
         'messaging.destination.name': this.topic,
       },
     });
 
+    // The consumer continues from this span, not from whatever was active before it
     const headers: Record<string, string> = {};
-    propagation.inject(context.active(), headers);
+    propagation.inject(trace.setSpan(context.active(), span), headers);
 
     try {
       await this.producer.send({

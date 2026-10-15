@@ -37,6 +37,11 @@ COPY package.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
+# Tag or commit SHA, reported as service.version in logs and traces:
+# docker build --target production --build-arg SERVICE_VERSION=$(git rev-parse --short HEAD) .
+ARG SERVICE_VERSION=dev
+ENV SERVICE_VERSION=${SERVICE_VERSION}
+
 USER app
 
 EXPOSE 3173

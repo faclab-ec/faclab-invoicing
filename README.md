@@ -11,6 +11,7 @@ Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Re
 - [API Response Format](#api-response-format)
 - [Kafka Topics](#kafka-topics)
 - [Configuration](#configuration)
+- [Observability](#observability)
 - [Local Development](#local-development)
 - [Docker](#docker)
 - [Project Structure](#project-structure)
@@ -258,7 +259,8 @@ Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invo
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
 | `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the recovery runs |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts` |
+| `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
 | `OTEL_SDK_DISABLED` | — | Optional | `true` turns OpenTelemetry off |
 
 ### Authentication
@@ -294,6 +296,19 @@ It is not the issuer's `CompanyConfig.environment`, which goes into the access c
 | `2` | Production |
 
 Both must agree: an issuer with `environment: 2` needs `SRI_ENVIRONMENT=production`. Nothing checks this yet; in S2.8 the environment becomes a setting of each issuer.
+
+---
+
+## Observability
+
+`src/instrumentation.ts` starts the OpenTelemetry SDK before anything else (`node -r`) and exports traces, metrics and logs over OTLP gRPC. The standard shared with faclab-core is in faclab-core's `docs/architecture/OBSERVABILITY.md`.
+
+- **Resource**: `service.name` (`OTEL_SERVICE_NAME`, default `faclab-invoicing`), `service.namespace=faclab`, `service.version` (`SERVICE_VERSION`) and `deployment.environment.name` (`NODE_ENV`).
+- **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `send invoices` → faclab-core's `process invoices`.
+- **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML and signatures are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
+- **Shutdown**: on SIGTERM or SIGINT the service closes Kafka and HTTP, then flushes the telemetry still buffered (up to 5 s) and logs `Telemetry flushed` before exiting.
+
+To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
 
 ---
 
@@ -407,6 +422,7 @@ Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/st
 - Runs as `app` (uid 10001), with the code owned by root.
 - `NODE_ENV=production`, port `3173`, and a `HEALTHCHECK` on `/health` with Node's `fetch`.
 - Starts with `node -r ./dist/instrumentation.js dist/server.js`.
+- `SERVICE_VERSION` comes from the build: `--build-arg SERVICE_VERSION=$(git rev-parse --short HEAD)` (CI passes the commit SHA); without it the image reports `dev`.
 
 `.dockerignore` keeps `.env`, `.git`, tests and docs out of the image.
 

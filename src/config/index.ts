@@ -76,6 +76,7 @@ const ENV_VARS = [
   'LOG_LEVEL',
   'SRI_TIMEOUT_MS',
   'INVOICE_RETRY_INTERVAL_MS',
+  'SERVICE_VERSION',
 ] as const;
 type EnvVar = (typeof ENV_VARS)[number];
 export type EnvDefaults = Partial<Record<EnvVar, string>>;
@@ -86,6 +87,8 @@ const DEFAULTS: EnvDefaults = {
   JWT_ISSUER: 'faclab-core',
   SRI_TIMEOUT_MS: '30000',
   INVOICE_RETRY_INTERVAL_MS: '60000',
+  // Set at build time (tag or commit SHA); instrumentation.ts reads it too
+  SERVICE_VERSION: 'dev',
 };
 
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -157,6 +160,7 @@ function schemaFor(environment: AppEnvironment) {
     LOG_LEVEL: z.enum(LOG_LEVELS),
     SRI_TIMEOUT_MS: positiveInt,
     INVOICE_RETRY_INTERVAL_MS: positiveInt,
+    SERVICE_VERSION: z.string(),
   });
 }
 
@@ -204,7 +208,7 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
   const sri = SRI_ENDPOINTS[values.SRI_ENVIRONMENT];
   return {
     serviceName: 'faclab-invoicing',
-    serviceVersion: '1.0.0',
+    serviceVersion: values.SERVICE_VERSION,
     logger: {
       level: values.LOG_LEVEL,
     },

@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build image
-        run: docker build --target production -t faclab-invoicing:ci .
+        run: docker build --target production --build-arg SERVICE_VERSION=${{ github.sha }} -t faclab-invoicing:ci .
 
       - name: Refuse to start without settings
         run: |
