@@ -12,11 +12,14 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4317';
 
+// Same resource attributes as faclab-core (docs/architecture/OBSERVABILITY.md §3)
 const sdk = new NodeSDK({
   resource: resourceFromAttributes({
     [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'faclab-invoicing',
-    [ATTR_SERVICE_VERSION]: '1.0.0',
-    'deployment.environment': process.env.NODE_ENV || 'local',
+    'service.namespace': 'faclab',
+    // Set at build time (tag or commit SHA)
+    [ATTR_SERVICE_VERSION]: process.env.SERVICE_VERSION || 'dev',
+    'deployment.environment.name': process.env.NODE_ENV || 'local',
   }),
 
   traceExporter: new OTLPTraceExporter({ url: endpoint }),
@@ -36,3 +39,22 @@ const sdk = new NodeSDK({
 });
 
 sdk.start();
+
+// Docker waits 10 s after SIGTERM before killing the process
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+
+/**
+ * Exports the spans, metrics and logs still buffered. Call it before `process.exit`, or the last
+ * ones are lost. Gives up after a few seconds if the collector doesn't answer.
+ */
+export async function shutdownTelemetry(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, SHUTDOWN_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([sdk.shutdown(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -48,11 +48,12 @@ export class DlqProducer {
     errorType: 'NON_RETRYABLE' | 'MAX_RETRIES_EXHAUSTED',
     retriesAttempted: number,
   ): Promise<void> {
-    const span = tracer.startSpan(`${this.dlqTopic} send`, {
+    const span = tracer.startSpan(`send ${this.dlqTopic}`, {
       kind: SpanKind.PRODUCER,
       attributes: {
         'messaging.system': 'kafka',
         'messaging.operation.type': 'send',
+        'messaging.operation.name': 'send',
         'messaging.destination.name': this.dlqTopic,
         'messaging.kafka.dlq.original_topic': msgContext.topic,
         'messaging.kafka.dlq.error_type': errorType,
@@ -76,7 +77,7 @@ export class DlqProducer {
 
       const key = `${msgContext.topic}:${msgContext.partition}:${msgContext.offset}`;
       const headers: Record<string, string> = {};
-      propagation.inject(otelContext.active(), headers);
+      propagation.inject(trace.setSpan(otelContext.active(), span), headers);
 
       await this.producer.send({
         topic: this.dlqTopic,

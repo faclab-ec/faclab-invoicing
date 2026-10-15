@@ -65,13 +65,15 @@ export abstract class BaseKafkaConsumer {
         }
         const parentContext = propagation.extract(context.active(), headers);
 
+        // Child of the producer's span: the message continues the trace that sent it
         const span = tracer.startSpan(
-          `${topic} process`,
+          `process ${topic}`,
           {
             kind: SpanKind.CONSUMER,
             attributes: {
               'messaging.system': 'kafka',
               'messaging.operation.type': 'process',
+              'messaging.operation.name': 'process',
               'messaging.destination.name': topic,
               'messaging.kafka.destination.partition': partition,
               'messaging.kafka.message.offset': message.offset,
