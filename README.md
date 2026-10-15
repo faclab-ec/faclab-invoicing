@@ -271,7 +271,7 @@ Set via `CompanyConfig.environment`:
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22 (the version CI uses)
 - Docker (for LocalStack)
 - A running Kafka broker
 
@@ -319,6 +319,16 @@ npm run format        # Prettier format
 npm run format:check  # Prettier check
 npm run typecheck     # tsc over src and test
 npm test              # vitest (test/)
+```
+
+### Continuous Integration
+
+Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions (job `checks`, Node 22): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`. `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
+
+To run the same locally:
+
+```bash
+npm ci && npm run lint && npm run format:check && npm run typecheck && npm test && npm run build
 ```
 
 ### First-Run Setup
