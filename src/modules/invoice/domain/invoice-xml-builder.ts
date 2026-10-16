@@ -19,7 +19,8 @@ export interface InvoiceXmlInput {
     taxIdCode: string;
     name: string;
     taxId: string;
-    email: string;
+    // Contact data is optional: it only goes to infoAdicional
+    email?: string | null;
     phone?: string | null;
     address?: string | null;
   };
@@ -29,7 +30,7 @@ export interface InvoiceXmlInput {
   // discount already prorated into each line
   items: Array<{
     productId: string;
-    sku: string;
+    sku: string | null;
     description: string;
     quantity: number;
     unitPrice: number;
@@ -133,7 +134,7 @@ function getInvoiceData(input: InvoiceXmlInput) {
       detalles: {
         detalle: [] as {
           codigoPrincipal: string;
-          codigoAuxiliar: string;
+          codigoAuxiliar?: string;
           descripcion: string;
           cantidad: number;
           precioUnitario: number;
@@ -166,7 +167,8 @@ function getInvoiceData(input: InvoiceXmlInput) {
   input.items.forEach((item) => {
     data.factura.detalles.detalle.push({
       codigoPrincipal: item.productId,
-      codigoAuxiliar: item.sku,
+      // Optional in the SRI schema, but never empty
+      ...(item.sku ? { codigoAuxiliar: item.sku } : {}),
       descripcion: item.description,
       cantidad: item.quantity,
       precioUnitario: item.unitPrice,

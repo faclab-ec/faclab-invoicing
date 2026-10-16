@@ -38,6 +38,27 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # contracts/ is a copy of faclab-core's, pinned in contracts/source.json: it must match
+      # faclab-core at that commit (update it with npm run contracts:sync)
+      - name: Read the pinned faclab-core commit
+        id: contracts
+        run: echo "commit=$(jq -r .commit contracts/source.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: faclab-ec/faclab-api
+          ref: ${{ steps.contracts.outputs.commit }}
+          path: .faclab-core
+          sparse-checkout: contracts
+          persist-credentials: false
+
+      - name: Contract copy matches faclab-core
+        run: diff -r --exclude=source.json .faclab-core/contracts contracts
+
+      # `npm test` runs them again; this step names the failure
+      - name: Contract tests
+        run: npm run test:contract
+
       - name: Test
         run: npm test
 

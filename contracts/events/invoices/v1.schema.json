@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faclab.ec/contracts/events/invoices/v1.schema.json",
+  "title": "invoices v1",
+  "description": "Transición de estado de una factura que faclab-invoicing publica en el topic invoices. Productor: faclab-invoicing (Invoice.addStatusHistory y toInvoiceMessage). Consumidores: faclab-invoicing (su máquina de estados) y faclab-core (src/invoicing/infra/invoice_messages.py, que solo actúa con InvoiceAuthorized).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "type", "invoiceId", "saleId", "status", "occurredAt"],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Versión de este esquema. Un mensaje sin este campo es anterior a v1 y se trata como v1."
+    },
+    "type": {
+      "enum": [
+        "InvoiceReceived",
+        "InvoiceCreated",
+        "InvoiceSigned",
+        "InvoiceSent",
+        "InvoiceAuthorized",
+        "InvoiceRejected"
+      ],
+      "description": "Evento de la transición; corresponde uno a uno con status (InvoiceReceived = pending)."
+    },
+    "invoiceId": {
+      "type": "string",
+      "description": "UUID v5 derivado del event_id de sales.confirmed.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "saleId": {
+      "type": "string",
+      "description": "Id de la venta en faclab-core, como texto.",
+      "pattern": "^[0-9]+$"
+    },
+    "status": {
+      "enum": ["pending", "created", "signed", "sent", "authorized", "rejected"]
+    },
+    "occurredAt": {
+      "type": "string",
+      "description": "ISO 8601 en UTC con milisegundos (Date.toISOString()).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    }
+  }
+}

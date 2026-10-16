@@ -11,6 +11,8 @@ export class KafkaProducer<T> implements MessageProducer<T> {
   constructor(
     private producer: KafkaJS.Producer,
     private topic: string,
+    // Shapes the message as the topic's contract defines it
+    private toMessage: (message: T) => unknown = (message) => message,
   ) {}
 
   async connect(): Promise<void> {
@@ -39,7 +41,7 @@ export class KafkaProducer<T> implements MessageProducer<T> {
     try {
       await this.producer.send({
         topic: this.topic,
-        messages: [{ value: JSON.stringify(message), headers }],
+        messages: [{ value: JSON.stringify(this.toMessage(message)), headers }],
       });
       logger.debug({ topic: this.topic }, 'Message sent');
     } catch (error) {

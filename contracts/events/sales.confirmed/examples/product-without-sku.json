@@ -1,0 +1,59 @@
+{
+  "event_id": "3b0d6f0e-8c1a-4f53-9a57-1e0b9b5a7c04",
+  "event_type": "SaleConfirmed",
+  "schema_version": 1,
+  "aggregate_id": 1204,
+  "occurred_at": "2026-10-15T15:30:00Z",
+  "payload": {
+    "sale_id": 1204,
+    "source": "admin",
+    "subtotal": "10.40",
+    "total_discount": "0",
+    "total": "11.06",
+    "customer": {
+      "id": 57,
+      "name": "Ferretería El Tornillo",
+      "tax_id": "0991234567001",
+      "tax_type": "RUC",
+      "email": "ventas@eltornillo.ec",
+      "phone": null,
+      "address": null
+    },
+    "items": [
+      {
+        "product_id": 105,
+        "sku": null,
+        "product_name": "Corte de tubo PVC a medida",
+        "quantity": 1,
+        "unit_price": "4.400000",
+        "discount": "0",
+        "tax_code": "VAT_15",
+        "tax_amount": "0.660000",
+        "subtotal": "4.400000",
+        "invoice_discount": "0.00",
+        "invoice_base": "4.40",
+        "invoice_tax": "0.66"
+      },
+      {
+        "product_id": 106,
+        "sku": null,
+        "product_name": null,
+        "quantity": 2,
+        "unit_price": "3.000000",
+        "discount": "0",
+        "tax_code": "EXEMPT",
+        "tax_amount": "0.000000",
+        "subtotal": "6.000000",
+        "invoice_discount": "0.00",
+        "invoice_base": "6.00",
+        "invoice_tax": "0.00"
+      }
+    ],
+    "payments": [
+      {
+        "method": "DEBIT_CARD",
+        "amount": "11.06"
+      }
+    ]
+  }
+}

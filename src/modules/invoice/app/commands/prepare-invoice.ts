@@ -56,7 +56,6 @@ export class PrepareInvoiceCommand implements InvoiceCommand {
           taxIdCode: '07',
           name: 'CONSUMIDOR FINAL',
           taxId: '9999999999999',
-          email: '',
         };
 
     const xml = buildInvoiceXml({
@@ -85,7 +84,8 @@ export class PrepareInvoiceCommand implements InvoiceCommand {
         return {
           productId: String(item.product_id),
           sku: item.sku,
-          description: item.product_name,
+          // No name means the product no longer exists in faclab-core; the SRI requires one
+          description: item.product_name || `Producto ${item.product_id}`,
           quantity: item.quantity,
           unitPrice: parseFloat(item.unit_price),
           discount: parseFloat(item.invoice_discount),

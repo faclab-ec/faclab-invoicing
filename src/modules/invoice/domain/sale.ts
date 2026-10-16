@@ -1,8 +1,9 @@
 import { IvaCode } from './sri-catalogs';
 
 /**
- * The confirmed sale as faclab-core sends it in `sales.confirmed`. The invoice
- * keeps it until its XML is built, so it can wait for the issuer to be ready.
+ * The confirmed sale as faclab-core sends it in `sales.confirmed` (contract v1 in
+ * contracts/events/sales.confirmed/). The invoice keeps it until its XML is built, so it
+ * can wait for the issuer to be ready.
  */
 export interface SaleData {
   sale_id: number;
@@ -15,14 +16,14 @@ export interface SaleData {
     name: string;
     tax_id: string;
     tax_type: 'RUC' | 'NATIONAL_ID' | 'PASSPORT' | 'FOREIGN_ID';
-    email: string;
-    phone: string;
-    address: string;
+    email: string | null;
+    phone: string | null;
+    address: string | null;
   } | null;
   items: {
     product_id: number;
-    sku: string;
-    product_name: string;
+    sku: string | null;
+    product_name: string | null;
     quantity: number;
     unit_price: string;
     discount: string;

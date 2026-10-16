@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faclab.ec/contracts/events/sales.confirmed/v1.schema.json",
+  "title": "sales.confirmed v1",
+  "description": "Venta confirmada (admin o POS) que faclab-core publica para que faclab-invoicing emita la factura. Productor: src/invoicing/infra/event_handlers.py. Un reenvío manual (SaleInvoicingRequested) es el mismo mensaje con otro event_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "aggregate_id",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "Identificador del mensaje. Uno nuevo en cada reenvío; el consumidor deduplica por él."
+    },
+    "event_type": { "const": "SaleConfirmed" },
+    "schema_version": {
+      "const": 1,
+      "description": "Versión de este esquema. Un mensaje sin este campo es anterior a v1 y se trata como v1."
+    },
+    "aggregate_id": {
+      "type": "integer",
+      "description": "Id de la venta (igual a payload.sale_id)."
+    },
+    "occurred_at": { "$ref": "#/$defs/utcTimestamp" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sale_id",
+        "source",
+        "subtotal",
+        "total_discount",
+        "total",
+        "customer",
+        "items",
+        "payments"
+      ],
+      "properties": {
+        "sale_id": { "type": "integer" },
+        "source": {
+          "enum": ["admin", "pos"],
+          "description": "Origen de la venta."
+        },
+        "subtotal": {
+          "$ref": "#/$defs/decimal",
+          "description": "Suma de los subtotales de los ítems, antes del descuento global."
+        },
+        "total_discount": {
+          "$ref": "#/$defs/decimal",
+          "description": "Descuento global de la venta (monto)."
+        },
+        "total": {
+          "$ref": "#/$defs/decimal",
+          "description": "Total cobrado. Suma de invoice_base más invoice_tax de los ítems."
+        },
+        "customer": {
+          "oneOf": [{ "$ref": "#/$defs/customer" }, { "type": "null" }],
+          "description": "null cuando la venta es a consumidor final (o el cliente ya no existe)."
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/item" }
+        },
+        "payments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/payment" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "description": "ISO 8601 en UTC con sufijo Z; los microsegundos son opcionales.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "decimal": {
+      "type": "string",
+      "description": "Monto o porcentaje como texto decimal (str de un Decimal de Python), con la escala que tenga el valor: \"0\", \"10.00\", \"3.330000\". Nunca un número JSON.",
+      "pattern": "^-?\\d+(\\.\\d+)?$"
+    },
+    "nullableText": {
+      "type": ["string", "null"]
+    },
+    "customer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "tax_id", "tax_type", "email", "phone", "address"],
+      "properties": {
+        "id": { "type": "integer" },
+        "name": { "type": "string" },
+        "tax_id": { "type": "string" },
+        "tax_type": { "enum": ["RUC", "NATIONAL_ID", "PASSPORT", "FOREIGN_ID"] },
+        "email": { "$ref": "#/$defs/nullableText" },
+        "phone": { "$ref": "#/$defs/nullableText" },
+        "address": { "$ref": "#/$defs/nullableText" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id",
+        "sku",
+        "product_name",
+        "quantity",
+        "unit_price",
+        "discount",
+        "tax_code",
+        "tax_amount",
+        "subtotal",
+        "invoice_discount",
+        "invoice_base",
+        "invoice_tax"
+      ],
+      "properties": {
+        "product_id": { "type": "integer" },
+        "sku": {
+          "$ref": "#/$defs/nullableText",
+          "description": "null si el producto no tiene SKU o ya no existe."
+        },
+        "product_name": {
+          "$ref": "#/$defs/nullableText",
+          "description": "null si el producto ya no existe."
+        },
+        "quantity": { "type": "integer" },
+        "unit_price": { "$ref": "#/$defs/decimal" },
+        "discount": {
+          "$ref": "#/$defs/decimal",
+          "description": "Descuento de la línea en porcentaje (0-100)."
+        },
+        "tax_code": {
+          "enum": [
+            "VAT_0",
+            "VAT_5",
+            "VAT_8_TOURISM",
+            "VAT_12",
+            "VAT_13",
+            "VAT_14",
+            "VAT_15",
+            "EXEMPT",
+            "NOT_TAXED"
+          ]
+        },
+        "tax_amount": {
+          "$ref": "#/$defs/decimal",
+          "description": "IVA de la línea a precisión completa, antes del descuento global."
+        },
+        "subtotal": {
+          "$ref": "#/$defs/decimal",
+          "description": "quantity * unit_price menos el descuento de la línea, a precisión completa."
+        },
+        "invoice_discount": {
+          "$ref": "#/$defs/decimal",
+          "description": "Descuento de la línea en la factura: el propio más su parte del descuento global, en centavos."
+        },
+        "invoice_base": {
+          "$ref": "#/$defs/decimal",
+          "description": "precioTotalSinImpuesto y baseImponible de la línea, en centavos."
+        },
+        "invoice_tax": {
+          "$ref": "#/$defs/decimal",
+          "description": "Valor del IVA de la línea en la factura, en centavos."
+        }
+      }
+    },
+    "payment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "amount"],
+      "properties": {
+        "method": { "enum": ["CASH", "CREDIT_CARD", "DEBIT_CARD", "TRANSFER", "OTHER"] },
+        "amount": {
+          "$ref": "#/$defs/decimal",
+          "description": "Monto entregado; en efectivo puede superar el total."
+        }
+      }
+    }
+  }
+}

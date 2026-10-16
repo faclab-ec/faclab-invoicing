@@ -18,5 +18,7 @@ coverage
 # Not needed at runtime
 test
 docs
+contracts
+scripts
 *.md
 Dockerfile

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "type": "InvoiceAuthorized",
+  "invoiceId": "9c5cc2d1-cb98-5f3b-bcc0-51abf102c37a",
+  "saleId": "1202",
+  "status": "authorized",
+  "occurredAt": "2026-10-15T15:10:09.731Z"
+}

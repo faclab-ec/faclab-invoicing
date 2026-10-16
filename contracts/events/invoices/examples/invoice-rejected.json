@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "type": "InvoiceRejected",
+  "invoiceId": "b56a64f1-de8f-5c84-af32-f7f233d03a0e",
+  "saleId": "1204",
+  "status": "rejected",
+  "occurredAt": "2026-10-15T15:30:07.402Z"
+}

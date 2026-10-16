@@ -214,12 +214,23 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 
 | Topic | Direction | Schema |
 |-------|-----------|--------|
-| `sales.confirmed` | Inbound | `SaleConfirmedMessage` (see `messaging/schemas.ts`) |
-| `invoices` | Inbound + Outbound | `InvoiceMessage` (domain events: `InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) |
+| `sales.confirmed` | Inbound | Contract `contracts/events/sales.confirmed/v1.schema.json`; validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
+| `invoices` | Inbound + Outbound | Contract `contracts/events/invoices/v1.schema.json`; domain events (`InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) sent through `toInvoiceMessage` and read with `InvoiceMessageSchema` |
 
 The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`.
 
 Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invoice_tax`: the line's `descuento`, `precioTotalSinImpuesto`/`baseImponible` and IVA `valor`, already rounded to cents and with the sale-level discount prorated by faclab-core. The XML uses them as they are (the SRI invoice has no sale-level discount), so the bases plus VAT add up to the sale total. Money is summed in cents and written with two decimals.
+
+### Event contracts
+
+The messages follow versioned JSON Schemas owned by faclab-core (`faclab-core/contracts/`, see its README for the field-by-field contract and the compatibility policy). `contracts/` here is a copy pinned to a faclab-core commit in `contracts/source.json`:
+
+- `npm run contracts:sync -- <commit|branch|tag>` refreshes it from GitHub (`CORE_REPO=../faclab-core` uses a local clone instead, for a branch not pushed yet). Never edit the copy by hand: CI checks it out from faclab-core at the pinned commit and fails on any difference.
+- `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example with zod and builds its invoice XML, and validates every message this service publishes on `invoices` against its schema (ajv).
+- Both messages carry `schema_version: 1`. A message without it predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
+- A customer may come without `email`, `phone` or `address` (`null`): the SRI doesn't require them and the XML leaves them out (`infoAdicional` only when there is at least one). A final consumer (`customer: null`) is invoiced as `07` / `9999999999999` / `CONSUMIDOR FINAL`. An item without `sku` has no `codigoAuxiliar`; one without `product_name` (the product no longer exists in faclab-core) is described as `Producto <product_id>`.
+
+When a contract changes, deploy the consumer before the producer.
 
 ---
 
