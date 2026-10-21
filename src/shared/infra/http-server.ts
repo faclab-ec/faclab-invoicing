@@ -32,6 +32,8 @@ export async function createHttpServer(config: HttpServerConfig): Promise<Fastif
   });
 
   await app.register(responsePlugin);
+  // Filled in by `authorize` (http/auth.ts)
+  app.decorateRequest('auth', null);
 
   await app.register(fastifyMultipart, {
     limits: { fileSize: 10 * 1024 * 1024 },

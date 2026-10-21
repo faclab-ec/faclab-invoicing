@@ -1,0 +1,57 @@
+{
+  "event_id": "3b0d6f0e-8c1a-4f53-9a57-1e0b9b5a7c03",
+  "event_type": "SaleConfirmed",
+  "schema_version": 2,
+  "tenant_id": "6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f",
+  "aggregate_id": 1203,
+  "occurred_at": "2026-10-15T15:20:30.5Z",
+  "payload": {
+    "sale_id": 1203,
+    "sale_number": "V-001-000124",
+    "source": "pos",
+    "issuer_ruc": "1799999990001",
+    "establishment_code": "001",
+    "establishment_address": "Av. Amazonas N34-120 y Av. Atahualpa, Quito",
+    "emission_point_code": "002",
+    "subtotal": "7.25",
+    "total_discount": "0",
+    "total": "7.44",
+    "customer": null,
+    "items": [
+      {
+        "product_id": 102,
+        "sku": "CLAV-2-1KG",
+        "product_name": "Clavos de 2 pulgadas (1 kg)",
+        "quantity": 1,
+        "unit_price": "1.250000",
+        "discount": "0",
+        "tax_code": "VAT_15",
+        "tax_amount": "0.187500",
+        "subtotal": "1.250000",
+        "invoice_discount": "0.00",
+        "invoice_base": "1.25",
+        "invoice_tax": "0.19"
+      },
+      {
+        "product_id": 103,
+        "sku": "ABON-ORG-5KG",
+        "product_name": "Abono orgánico 5 kg",
+        "quantity": 1,
+        "unit_price": "6.000000",
+        "discount": "0",
+        "tax_code": "VAT_0",
+        "tax_amount": "0.000000",
+        "subtotal": "6.000000",
+        "invoice_discount": "0.00",
+        "invoice_base": "6.00",
+        "invoice_tax": "0.00"
+      }
+    ],
+    "payments": [
+      {
+        "method": "CASH",
+        "amount": "10.00"
+      }
+    ]
+  }
+}

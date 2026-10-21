@@ -18,18 +18,8 @@ const companyConfigResponseProperties = {
   },
   mainAddress: {
     type: 'string',
-    description: 'Main establishment address registered with the SRI.',
-  },
-  branchAddress: { type: 'string', description: 'Branch address printed on invoices.' },
-  branchCode: {
-    type: 'string',
-    description: 'Branch code used in invoice numbering (001–999).',
-    example: '001',
-  },
-  salePointCode: {
-    type: 'string',
-    description: 'Point-of-sale code used in invoice numbering (001–999).',
-    example: '001',
+    description:
+      'Main establishment address registered with the SRI (dirMatriz). The establishment, its address and the emission point of each invoice come with the sale.',
   },
   specialTaxpayerResolution: {
     type: ['string', 'null'],
@@ -39,6 +29,11 @@ const companyConfigResponseProperties = {
     type: ['string', 'null'],
     description: 'SRI resolution number if the company is a withholding agent. Null otherwise.',
   },
+  rimpeRegime: {
+    type: ['string', 'null'],
+    enum: ['EMPRENDEDOR', 'NEGOCIO_POPULAR', null],
+    description: 'RIMPE regime of the company, if it is in one. Null otherwise.',
+  },
   accountingRequired: {
     type: 'boolean',
     description:
@@ -47,7 +42,8 @@ const companyConfigResponseProperties = {
   environment: {
     type: 'number',
     enum: [1, 2],
-    description: 'SRI environment. `1` = Testing (pruebas), `2` = Production (producción).',
+    description:
+      "SRI environment of the company's invoices and the web services they go to. `1` = Testing (pruebas), `2` = Production (producción).",
     example: 1,
   },
   emissionType: {
@@ -55,12 +51,6 @@ const companyConfigResponseProperties = {
     enum: [1],
     description: 'Emission type. `1` = Normal (currently the only supported value).',
     example: 1,
-  },
-  invoiceSequence: {
-    type: 'number',
-    description:
-      'Sequential number the next invoice will get (`1` for a new issuer). Each invoice takes one; only an explicit `invoiceSequence` in PUT /api/company-config changes it.',
-    example: 42,
   },
   signingCertId: {
     type: ['string', 'null'],
@@ -82,22 +72,12 @@ const companyConfigObjectSchema = {
 
 export const saveCompanyConfigSchema = {
   tags: ['Company Config'],
-  summary: 'Create or update the company fiscal configuration',
+  summary: "Create or update the company's fiscal configuration",
   description:
-    'Upserts the singleton company configuration used when generating invoices. This must be configured before the service can process any `sales.confirmed` Kafka events. The `invoiceSequence` field is optional — if omitted, the sequence stays as it is.',
+    "Upserts the fiscal profile of the caller's company (the token's `tid`). Its sales wait as pending invoices until it is saved with a usable certificate. `branchCode`, `salePointCode`, `branchAddress` and `invoiceSequence` are ignored if sent: each sale brings its establishment and emission point, and their sequences are set with PUT /api/sequences/{establishment}/{emissionPoint}. Saving the profile never changes a sequence.",
   body: {
     type: 'object',
-    required: [
-      'taxId',
-      'name',
-      'tradeName',
-      'mainAddress',
-      'branchAddress',
-      'branchCode',
-      'salePointCode',
-      'environment',
-      'emissionType',
-    ],
+    required: ['taxId', 'name', 'tradeName', 'mainAddress', 'environment', 'emissionType'],
     properties: {
       taxId: {
         type: 'string',
@@ -114,18 +94,7 @@ export const saveCompanyConfigSchema = {
         maxLength: 64,
         description: 'Trade name (max 64 chars).',
       },
-      mainAddress: { type: 'string', description: 'Main establishment address.' },
-      branchAddress: { type: 'string', description: 'Branch address printed on invoices.' },
-      branchCode: {
-        type: 'string',
-        pattern: '^\\d{3}$',
-        description: 'Branch code: exactly 3 digits (e.g. `001`).',
-      },
-      salePointCode: {
-        type: 'string',
-        pattern: '^\\d{3}$',
-        description: 'Point-of-sale code: exactly 3 digits (e.g. `001`).',
-      },
+      mainAddress: { type: 'string', description: 'Main establishment address (dirMatriz).' },
       specialTaxpayerResolution: {
         type: 'string',
         maxLength: 32,
@@ -135,6 +104,11 @@ export const saveCompanyConfigSchema = {
         type: 'string',
         maxLength: 32,
         description: 'SRI withholding agent resolution number (optional).',
+      },
+      rimpeRegime: {
+        type: ['string', 'null'],
+        enum: ['EMPRENDEDOR', 'NEGOCIO_POPULAR', null],
+        description: 'RIMPE regime of the company (optional).',
       },
       accountingRequired: {
         type: 'boolean',
@@ -150,17 +124,11 @@ export const saveCompanyConfigSchema = {
         enum: [1],
         description: '`1` = Normal. Only supported value.',
       },
-      invoiceSequence: {
-        type: 'integer',
-        minimum: 1,
-        description:
-          'Sequential number the next invoice will get, for example to continue the numbering of a previous system. Optional — the sequence stays as it is if omitted.',
-      },
       signingCertId: {
         type: ['string', 'null'],
         format: 'uuid',
         description:
-          'UUID of the signing certificate. Use the `id` returned by POST /api/certificates. It must exist.',
+          "UUID of the signing certificate. Use the `id` returned by POST /api/certificates. It must be one of the company's certificates and name its RUC.",
       },
     },
   },
@@ -170,16 +138,86 @@ export const saveCompanyConfigSchema = {
       description: 'Configuration saved successfully.',
     },
     400: { ...errorResponseSchema, description: 'Validation error or missing required fields.' },
-    422: { ...errorResponseSchema, description: 'The signing certificate does not exist.' },
+    422: {
+      ...errorResponseSchema,
+      description:
+        "The signing certificate is not one of the company's (`VALIDATION_ERROR`) or names another RUC (`CERTIFICATE_RUC_MISMATCH`).",
+    },
   },
 } as const;
 
 export const getCompanyConfigSchema = {
   tags: ['Company Config'],
-  summary: 'Get the company fiscal configuration',
-  description: 'Returns the current singleton company configuration.',
+  summary: "Get the company's fiscal configuration",
+  description: "Returns the fiscal profile of the caller's company.",
   response: {
     200: successSchema(companyConfigObjectSchema),
     404: { ...errorResponseSchema, description: 'No company configuration has been saved yet.' },
+  },
+} as const;
+
+const sequenceObjectSchema = {
+  type: 'object',
+  properties: {
+    establishment: { type: 'string', description: 'Establishment code (estab).', example: '001' },
+    emissionPoint: { type: 'string', description: 'Emission point code (ptoEmi).', example: '002' },
+    docType: { type: 'string', description: 'SRI document code: `01` = factura.', example: '01' },
+    lastSequence: {
+      type: ['string', 'null'],
+      description: 'Last number issued, 9 digits. Null before the first one.',
+      example: '000000041',
+    },
+    nextSequence: {
+      type: 'number',
+      description: 'Number the next invoice of this establishment and emission point gets.',
+      example: 42,
+    },
+  },
+} as const;
+
+const sriCode = { type: 'string', pattern: '^(00[1-9]|0[1-9]\\d|[1-9]\\d{2})$' } as const;
+
+export const listSequencesSchema = {
+  tags: ['Company Config'],
+  summary: "List the company's invoice sequences",
+  description:
+    'One counter per establishment and emission point that issued an invoice or had its sequence set. An emission point without a counter starts at 1.',
+  response: {
+    200: successSchema({ type: 'array', items: sequenceObjectSchema }),
+  },
+} as const;
+
+export const setNextSequenceSchema = {
+  tags: ['Company Config'],
+  summary: 'Set where the invoice numbering of an emission point continues',
+  description:
+    'The next invoice of the establishment and emission point gets `nextSequence`, for example to continue the numbering of a previous system. It never goes back: a number already issued answers 409 `SEQUENCE_CANNOT_GO_BACK`.',
+  params: {
+    type: 'object',
+    required: ['establishment', 'emissionPoint'],
+    properties: {
+      establishment: { ...sriCode, description: 'Establishment code, 001-999.' },
+      emissionPoint: { ...sriCode, description: 'Emission point code, 001-999.' },
+    },
+  },
+  body: {
+    type: 'object',
+    required: ['nextSequence'],
+    properties: {
+      nextSequence: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 999999999,
+        description: 'Number the next invoice gets.',
+      },
+    },
+  },
+  response: {
+    200: { ...successSchema(sequenceObjectSchema), description: 'Sequence set.' },
+    400: { ...errorResponseSchema, description: 'Malformed code or number.' },
+    409: {
+      ...errorResponseSchema,
+      description: '`SEQUENCE_CANNOT_GO_BACK`: a later number was already issued.',
+    },
   },
 } as const;

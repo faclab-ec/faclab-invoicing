@@ -22,6 +22,13 @@ const certificateResponseProperties = {
       'Distinguished Name (DN) of the Certificate Authority that issued this certificate.',
     example: 'CN=BCE ENTIDAD CERTIFICADORA, O=BCE, C=EC',
   },
+  taxIds: {
+    type: 'array',
+    items: { type: 'string' },
+    description:
+      "RUCs and cédulas the certificate names. One of them is the issuer's RUC (or its cédula, for a natural person).",
+    example: ['1792141001001'],
+  },
   validFrom: {
     type: 'string',
     format: 'date-time',
@@ -53,7 +60,7 @@ export const uploadCertificateSchema = {
   tags: ['Certificates'],
   summary: 'Upload a .p12 digital signature certificate',
   description:
-    'Accepts a PKCS#12 (.p12) file and its password. The service parses the certificate metadata and stores it with the file and its password, both encrypted. The returned `id` should be saved as the `signingCertId` field in the company configuration (PUT /api/company-config) so the service uses this certificate to sign invoices.',
+    "Accepts a PKCS#12 (.p12) file and its password for the caller's company. The company fiscal profile must be saved first: the certificate has to name the issuer's RUC (or, for a natural person, its cédula). The service stores the metadata with the file and its password, both encrypted. The returned `id` should be saved as the `signingCertId` field in the company configuration (PUT /api/company-config) so the service uses this certificate to sign invoices.",
   multipartBody: {
     type: 'object',
     required: ['file', 'password'],
@@ -79,17 +86,22 @@ export const uploadCertificateSchema = {
       ...errorResponseSchema,
       description: 'Missing file, wrong file extension, or invalid request.',
     },
+    409: {
+      ...errorResponseSchema,
+      description: '`ISSUER_NOT_CONFIGURED`: the company fiscal profile has not been saved yet.',
+    },
     422: {
       ...errorResponseSchema,
-      description: 'File could not be parsed — wrong password or corrupted .p12.',
+      description:
+        'File could not be parsed (wrong password or corrupted .p12), it expired, it names no RUC or cédula (`CERTIFICATE_RUC_UNKNOWN`) or it belongs to another RUC (`CERTIFICATE_RUC_MISMATCH`).',
     },
   },
 } as const;
 
 export const listCertificatesSchema = {
   tags: ['Certificates'],
-  summary: 'List all certificates',
-  description: 'Returns all certificates stored in the system.',
+  summary: 'List the certificates',
+  description: "Returns the certificates of the caller's company.",
   response: {
     200: successSchema({ type: 'array', items: certificateObjectSchema }),
   },
@@ -106,7 +118,10 @@ export const getCertificateSchema = {
   },
   response: {
     200: successSchema(certificateObjectSchema),
-    404: { ...errorResponseSchema, description: 'No certificate found with the given ID.' },
+    404: {
+      ...errorResponseSchema,
+      description: "No certificate of the caller's company with the given ID.",
+    },
   },
 } as const;
 

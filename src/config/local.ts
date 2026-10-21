@@ -8,7 +8,6 @@ const DEV_PASSWORD_KEY = createHash('sha256').update('dev-only-change-me').diges
 // Used when the variable is unset: the faclab-infra services as seen from the host.
 // A container on faclab_network overrides KAFKA_BROKERS and DATABASE_URL (invoicing-db:5432).
 export const LOCAL_DEFAULTS: EnvDefaults = {
-  SRI_ENVIRONMENT: 'test',
   KAFKA_BROKERS: 'localhost:29092',
   // faclab-infra's invoicing-db; development-only password
   DATABASE_URL: 'postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing',

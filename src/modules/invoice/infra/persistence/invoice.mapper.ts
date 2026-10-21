@@ -6,7 +6,12 @@ import { SaleData } from '../../domain/sale';
 /** A row of `invoices`, with its `invoice_events` aggregated in order as `status_history` */
 export interface InvoiceRow {
   id: string;
+  tenant_id: string;
   sale_id: string;
+  issuer_ruc: string | null;
+  establishment: string;
+  emission_point: string;
+  establishment_address: string | null;
   status: string;
   sale: SaleData | null;
   access_code: string | null;
@@ -36,7 +41,12 @@ export interface InvoiceEventRow {
 export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history'> {
   return {
     id: invoice.id,
+    tenant_id: invoice.point.tenantId,
     sale_id: invoice.saleId,
+    issuer_ruc: invoice.point.issuerRuc,
+    establishment: invoice.point.establishment,
+    emission_point: invoice.point.emissionPoint,
+    establishment_address: invoice.point.establishmentAddress,
     status: invoice.status,
     sale: invoice.sale,
     access_code: invoice.accessCode?.value ?? null,
@@ -67,6 +77,13 @@ export function fromInvoiceRow(row: InvoiceRow): Invoice {
   return new Invoice({
     id: row.id,
     saleId: row.sale_id,
+    point: {
+      tenantId: row.tenant_id,
+      issuerRuc: row.issuer_ruc,
+      establishment: row.establishment,
+      emissionPoint: row.emission_point,
+      establishmentAddress: row.establishment_address,
+    },
     status: row.status as InvoiceStatus,
     sale: row.sale,
     accessCode: row.access_code ? AccessCode.create(row.access_code) : null,

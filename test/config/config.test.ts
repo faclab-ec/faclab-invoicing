@@ -9,7 +9,6 @@ const DATABASE_URL = `postgres://faclab_invoicing:${randomBytes(8).toString('hex
 
 const production = (overrides: Record<string, string | undefined> = {}) => ({
   NODE_ENV: 'production',
-  SRI_ENVIRONMENT: 'production',
   KAFKA_BROKERS: 'kafka-1:9092,kafka-2:9092',
   DATABASE_URL,
   CORS_ORIGINS: 'https://app.faclab.test',
@@ -29,14 +28,16 @@ const errorOf = (env: Record<string, string | undefined>) => {
 };
 
 describe('parseConfig in local', () => {
-  it('defaults to local with the faclab-infra services and the SRI test environment', () => {
+  it('defaults to local with the faclab-infra services, only reaching the SRI test environment', () => {
     const config = parseConfig({});
 
     expect(config.environment).toBe('local');
-    expect(config.externalServices.sriEnvironment).toBe('test');
-    expect(new URL(config.externalServices.sriVoucherWsdl).host).toBe('celcer.sri.gob.ec');
-    expect(new URL(config.externalServices.sriQueryWsdl).host).toBe('celcer.sri.gob.ec');
+    expect(config.externalServices.sriProductionAllowed).toBe(false);
+    expect(new URL(config.externalServices.sriEndpoints.test.receptionWsdl).host).toBe(
+      'celcer.sri.gob.ec',
+    );
     expect(config.kafka.brokers).toEqual(['localhost:29092']);
+    expect(config.kafka.salesV1TenantId).toBeNull();
     expect(config.database).toEqual({
       url: 'postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing',
     });
@@ -71,25 +72,36 @@ describe('parseConfig in local', () => {
     ]);
   });
 
-  it('refuses the SRI production environment', () => {
-    expect(errorOf({ SRI_ENVIRONMENT: 'production' })).toContain(
-      'SRI_ENVIRONMENT must be test outside production',
+  it('takes the default issuer of sales.confirmed v1', () => {
+    const tenantId = '2B3C4D5E-6F70-4A8B-9C0D-1E2F3A4B5C6D';
+
+    expect(parseConfig({ SALES_V1_TENANT_ID: tenantId }).kafka.salesV1TenantId).toBe(
+      tenantId.toLowerCase(),
     );
+    expect(errorOf({ SALES_V1_TENANT_ID: 'default' })).toContain('SALES_V1_TENANT_ID');
   });
 });
 
 describe('parseConfig in production', () => {
-  it('uses the SRI environment with tax validity when asked to', () => {
+  it('reaches both SRI environments: each issuer picks its own', () => {
     const config = parseConfig(production());
 
     expect(config.environment).toBe('production');
-    expect(config.externalServices.sriEnvironment).toBe('production');
-    expect(config.externalServices.sriVoucherWsdl).toBe(
-      'https://cel.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
-    );
-    expect(config.externalServices.sriQueryWsdl).toBe(
-      'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
-    );
+    expect(config.externalServices.sriProductionAllowed).toBe(true);
+    expect(config.externalServices.sriEndpoints).toEqual({
+      test: {
+        receptionWsdl:
+          'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
+        authorizationWsdl:
+          'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
+      },
+      production: {
+        receptionWsdl:
+          'https://cel.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
+        authorizationWsdl:
+          'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
+      },
+    });
     expect(config.kafka.brokers).toEqual(['kafka-1:9092', 'kafka-2:9092']);
     expect(config.database).toEqual({ url: DATABASE_URL });
     expect(config.http.corsOrigins).toEqual(['https://app.faclab.test']);
@@ -97,31 +109,24 @@ describe('parseConfig in production', () => {
     expect(config.logger.level).toBe('info');
   });
 
-  it('uses the SRI test environment when set explicitly', () => {
-    const config = parseConfig(production({ SRI_ENVIRONMENT: 'test' }));
-
-    expect(config.externalServices.sriEnvironment).toBe('test');
-    expect(config.externalServices.sriVoucherWsdl).toBe(
-      'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
-    );
-    expect(config.externalServices.sriQueryWsdl).toBe(
-      'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
-    );
-  });
-
-  it('refuses to start without SRI_ENVIRONMENT or KAFKA_BROKERS, naming both', () => {
-    const message = errorOf(production({ SRI_ENVIRONMENT: undefined, KAFKA_BROKERS: '' }));
+  it('refuses to start without KAFKA_BROKERS or DATABASE_URL, naming both', () => {
+    const message = errorOf(production({ DATABASE_URL: undefined, KAFKA_BROKERS: '' }));
 
     expect(message).toContain('NODE_ENV=production');
-    expect(message).toContain('SRI_ENVIRONMENT is required');
+    expect(message).toContain('DATABASE_URL is required');
     expect(message).toContain('KAFKA_BROKERS is required');
+  });
+
+  it('refuses a default issuer for sales.confirmed v1', () => {
+    expect(
+      errorOf(production({ SALES_V1_TENANT_ID: '2b3c4d5e-6f70-4a8b-9c0d-1e2f3a4b5c6d' })),
+    ).toContain("SALES_V1_TENANT_ID can't be set in production");
   });
 
   it('has no default for anything that depends on where it runs', () => {
     const message = errorOf({ NODE_ENV: 'production' });
 
     for (const name of [
-      'SRI_ENVIRONMENT',
       'KAFKA_BROKERS',
       'DATABASE_URL',
       'CORS_ORIGINS',
@@ -130,13 +135,6 @@ describe('parseConfig in production', () => {
     ]) {
       expect(message).toContain(`${name} is required`);
     }
-  });
-
-  it('rejects an unknown SRI environment without echoing it', () => {
-    const message = errorOf(production({ SRI_ENVIRONMENT: 'prod' }));
-
-    expect(message).toContain('SRI_ENVIRONMENT must be one of: test, production');
-    expect(message).not.toContain('received');
   });
 
   it('rejects a short JWT_SECRET and a bad CERTIFICATE_PASSWORD_KEY without echoing them', () => {

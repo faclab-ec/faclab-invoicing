@@ -9,6 +9,8 @@ export enum InvoiceStatus {
 }
 
 interface BaseInvoiceEvent {
+  // The company of the invoice: travels as the `faclab-tenant-id` header, not in the body
+  tenantId: string;
   invoiceId: string;
   saleId: string;
   status: InvoiceStatus;

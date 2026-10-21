@@ -1,19 +1,23 @@
-import { CompanyConfig } from '#/modules/company-config/domain/company-config';
+import { Environment } from '#/modules/company-config/domain/company-config';
 
-export function generateAccessCode(
-  date: Date,
-  companyConfig: CompanyConfig,
-  saleId: number,
-  sequence: string,
-): string {
-  const dateStr = formatDate(date);
+export interface AccessCodeInput {
+  date: Date;
+  taxId: string;
+  environment: Environment;
+  establishment: string;
+  emissionPoint: string;
+  sequence: string;
+  saleId: number;
+}
+
+export function generateAccessCode(input: AccessCodeInput): string {
+  const dateStr = formatDate(input.date);
   const voucherType = '01';
-  const ruc = companyConfig.taxId;
-  const environment = String(companyConfig.environment);
-  const series =
-    companyConfig.branchCode.padStart(3, '0') + companyConfig.salePointCode.padStart(3, '0');
-  const seq = sequence.padStart(9, '0');
-  const numericCode = String(saleId).padStart(8, '0');
+  const ruc = input.taxId;
+  const environment = String(input.environment);
+  const series = input.establishment.padStart(3, '0') + input.emissionPoint.padStart(3, '0');
+  const seq = input.sequence.padStart(9, '0');
+  const numericCode = String(input.saleId).padStart(8, '0');
   const emissionType = '1';
 
   const base48 =

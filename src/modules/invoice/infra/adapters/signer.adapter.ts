@@ -7,8 +7,8 @@ import { P12Reader, SigningCredentials } from '../signing/p12-reader';
 import { XadesSigner } from '../signing/xades-signer';
 
 export class SignerAdapter implements InvoiceSignerPort {
-  private credentials: SigningCredentials | null = null;
-  private cachedCertificateId: string | null = null;
+  // Loaded credentials by certificate id: each company signs with its own
+  private readonly credentials = new Map<string, SigningCredentials>();
 
   constructor(
     private readonly readiness: IssuerReadinessService,
@@ -16,20 +16,22 @@ export class SignerAdapter implements InvoiceSignerPort {
     private readonly xadesSigner: XadesSigner,
   ) {}
 
-  async signInvoice(xml: string): Promise<string> {
-    const credentials = await this.getCredentials();
+  async signInvoice(xml: string, tenantId: string): Promise<string> {
+    const credentials = await this.getCredentials(tenantId);
     return this.xadesSigner.sign(xml, credentials);
   }
 
-  private async getCredentials(): Promise<SigningCredentials> {
-    // Signs with the certificate selected now, which may differ from the one
+  private async getCredentials(tenantId: string): Promise<SigningCredentials> {
+    // Signs with the certificate the company's issuer selects now, which may differ from the one
     // the invoice was prepared with
-    const { certificate } = await this.readiness.requireReady();
-    if (this.credentials && this.cachedCertificateId === certificate.id) return this.credentials;
+    const { certificate } = await this.readiness.requireReady(tenantId);
+    const cached = this.credentials.get(certificate.id);
+    if (cached) return cached;
 
+    let credentials: SigningCredentials;
     try {
       const key = await this.keyLoader.load(certificate);
-      this.credentials = new P12Reader(key.p12, key.password).getCredentials();
+      credentials = new P12Reader(key.p12, key.password).getCredentials();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new IssuerNotReadyError(
@@ -37,7 +39,7 @@ export class SignerAdapter implements InvoiceSignerPort {
         `The signing certificate can't be opened: ${reason}`,
       );
     }
-    this.cachedCertificateId = certificate.id;
-    return this.credentials;
+    this.credentials.set(certificate.id, credentials);
+    return credentials;
   }
 }

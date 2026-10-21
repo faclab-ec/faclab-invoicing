@@ -1,4 +1,5 @@
 import { CompanyConfig } from '../../domain/company-config';
+import { formatSequence, Sequence } from '../../domain/sequence';
 
 export function toResponse(config: CompanyConfig) {
   return {
@@ -6,16 +7,23 @@ export function toResponse(config: CompanyConfig) {
     name: config.name,
     tradeName: config.tradeName,
     mainAddress: config.mainAddress,
-    branchAddress: config.branchAddress,
-    branchCode: config.branchCode,
-    salePointCode: config.salePointCode,
     specialTaxpayerResolution: config.specialTaxpayerResolution,
     withholdingAgentResolution: config.withholdingAgentResolution,
+    rimpeRegime: config.rimpeRegime,
     accountingRequired: config.accountingRequired,
     environment: config.environment,
     emissionType: config.emissionType,
-    invoiceSequence: config.invoiceSequence,
     signingCertId: config.signingCertId,
     updatedAt: config.updatedAt.toISOString(),
+  };
+}
+
+export function toSequenceResponse(sequence: Sequence) {
+  return {
+    establishment: sequence.establishment,
+    emissionPoint: sequence.emissionPoint,
+    docType: sequence.docType,
+    lastSequence: sequence.lastValue === 0 ? null : formatSequence(sequence.lastValue),
+    nextSequence: sequence.lastValue + 1,
   };
 }

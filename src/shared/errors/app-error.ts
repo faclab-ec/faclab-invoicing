@@ -40,3 +40,15 @@ export class ConflictError extends AppError {
     super(message);
   }
 }
+
+/** Well-formed but not acceptable, with a code of its own (e.g. a certificate of another RUC) */
+export class UnprocessableError extends AppError {
+  readonly statusCode = 422;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}

@@ -2,6 +2,8 @@ export interface P12Metadata {
   serialNumber: string;
   subject: string;
   issuer: string;
+  // RUCs (13 digits) and cédulas (10 digits) the certificate names
+  taxIds: string[];
   validFrom: Date;
   validTo: Date;
 }

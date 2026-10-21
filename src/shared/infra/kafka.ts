@@ -7,6 +7,9 @@ import { logger } from '../logger';
 import { kafkaMessageCount, kafkaMessageDuration, kafkaRetryCount } from '../telemetry/metrics';
 import { DlqMessageContext, DlqProducer } from './dlq-producer';
 
+// Header with the company (faclab-core tenant) of a message, the same name faclab-core uses
+export const TENANT_HEADER = 'faclab-tenant-id';
+
 export interface RetryConfig {
   maxRetries: number;
   baseDelayMs: number;

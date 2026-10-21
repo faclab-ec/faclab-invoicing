@@ -6,6 +6,7 @@ export function toResponse(cert: Certificate) {
     serialNumber: cert.serialNumber,
     subject: cert.subject,
     issuer: cert.issuer,
+    taxIds: cert.taxIds,
     validFrom: cert.validFrom.toISOString(),
     validTo: cert.validTo.toISOString(),
     fileName: cert.fileName,

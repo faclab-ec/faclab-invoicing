@@ -1,4 +1,5 @@
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
+import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 import { logger } from '#/shared/logger';
 
 import { Invoice } from '../../domain/invoice';
@@ -13,11 +14,14 @@ export interface RecoveryRunOptions {
   // Manual "retry all": also invoices waiting for their next attempt or past
   // the automatic attempt limit
   all?: boolean;
+  // Only this company's invoices
+  tenantId?: string;
 }
 
 /**
- * Moves forward the invoices the Kafka flow left behind:
- * - waiting for the issuer (config, certificate), once it is ready;
+ * Moves forward the invoices the Kafka flow left behind, of every company:
+ * - waiting for their issuer (config, certificate), once it is ready: each company's issuer
+ *   on its own, so one that can't invoice doesn't hold back another;
  * - failed for a transient reason, when their next attempt is due;
  * - stuck without an issue (event lost, crash), after a while.
  *
@@ -50,11 +54,20 @@ export class InvoiceRecoveryService {
     }
   }
 
-  private async runOnce({ all = false }: RecoveryRunOptions): Promise<number> {
-    const { ready } = await this.readiness.check();
+  private async runOnce({ all = false, tenantId }: RecoveryRunOptions): Promise<number> {
     const now = this.now();
-    const due = (await this.invoiceRepository.findInFlight())
-      .filter((invoice) => this.isDue(invoice, ready, now, all))
+    const inFlight = (await this.invoiceRepository.findInFlight()).filter(
+      (invoice) => tenantId === undefined || invoice.tenantId === tenantId,
+    );
+    // Only the issuers of the companies with invoices in flight, once each
+    const reports = new Map<string, ReadinessReport>();
+    for (const invoice of inFlight) {
+      if (!reports.has(invoice.tenantId)) {
+        reports.set(invoice.tenantId, await this.readiness.check(invoice.tenantId));
+      }
+    }
+    const due = inFlight
+      .filter((invoice) => this.isDue(invoice, reports.get(invoice.tenantId)!, now, all))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
     let processed = 0;
@@ -67,15 +80,23 @@ export class InvoiceRecoveryService {
       }
     }
     if (due.length > 0) {
-      logger.info({ due: due.length, processed, issuerReady: ready }, 'Invoice recovery run');
+      const notReady = [...reports].filter(([, report]) => !report.ready).map(([id]) => id);
+      logger.info(
+        { due: due.length, processed, issuersNotReady: notReady },
+        'Invoice recovery run',
+      );
     }
     return processed;
   }
 
-  private isDue(invoice: Invoice, issuerReady: boolean, now: Date, all: boolean): boolean {
+  private isDue(invoice: Invoice, issuer: ReadinessReport, now: Date, all: boolean): boolean {
     const { issue } = invoice;
     if (issue) {
-      if (isBlockingIssue(issue.code)) return issuerReady;
+      // Waits until the profile has the RUC the sale was made with, not just any change
+      if (issue.code === 'ISSUER_RUC_MISMATCH') {
+        return issuer.ready && issuer.taxId === invoice.point.issuerRuc;
+      }
+      if (isBlockingIssue(issue.code)) return issuer.ready;
       if (all) return true;
       return invoice.nextAttemptAt !== null && invoice.nextAttemptAt <= now;
     }

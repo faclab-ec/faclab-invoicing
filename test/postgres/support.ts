@@ -11,8 +11,8 @@ export const describePostgres = describe.skipIf(!DATABASE_URL);
 
 /**
  * A schema of its own with the migrations applied, for the tests of one file: files run in
- * parallel without seeing each other's rows. Every test starts with empty tables and the
- * invoice sequence at 0. Call it inside `describePostgres`.
+ * parallel without seeing each other's rows. Every test starts with empty tables (no sequences
+ * either). Call it inside `describePostgres`.
  */
 export function usePostgres(): () => Pool {
   const schema = `test_${randomBytes(6).toString('hex')}`;
@@ -40,8 +40,7 @@ export function usePostgres(): () => Pool {
   });
 
   beforeEach(async () => {
-    await pool!.query('TRUNCATE invoice_events, invoices, issuers, certificates');
-    await pool!.query('UPDATE sequences SET last_value = 0');
+    await pool!.query('TRUNCATE invoice_events, invoices, issuers, certificates, sequences');
   });
 
   afterAll(async () => {

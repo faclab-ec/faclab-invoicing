@@ -1,7 +1,12 @@
 import { FastifyInstance } from 'fastify';
 
-import { BadRequestError, NotFoundError, ValidationError } from '#/shared/errors/app-error';
-import { Authorize } from '#/shared/infra/http/auth';
+import {
+  AppError,
+  BadRequestError,
+  NotFoundError,
+  ValidationError,
+} from '#/shared/errors/app-error';
+import { Authorize, tenantOf } from '#/shared/infra/http/auth';
 import { logger } from '#/shared/logger';
 
 import {
@@ -30,7 +35,8 @@ export function registerCertificateRoutes(
   commands: CertificateCommands,
   authorize: Authorize,
 ): void {
-  // Signing certificates are company settings: same permission as in faclab-web
+  // Signing certificates are company settings: same permission as in faclab-web. Each company
+  // only sees and uses its own
   const preHandler = authorize('user:manage');
 
   // POST /api/certificates — upload .p12
@@ -58,7 +64,7 @@ export function registerCertificateRoutes(
         passwordField && 'value' in passwordField ? (passwordField.value as string) : '';
 
       try {
-        const certificate = await commands.upload.execute({
+        const certificate = await commands.upload.execute(tenantOf(request), {
           fileBuffer,
           fileName: data.filename,
           password,
@@ -68,6 +74,8 @@ export function registerCertificateRoutes(
         reply.code(201);
         return reply.success(toResponse(certificate));
       } catch (error) {
+        // Profile missing, another RUC...: their own code
+        if (error instanceof AppError) throw error;
         logger.error({ error }, 'Failed to upload certificate');
         const message = error instanceof Error ? error.message : 'Unknown error';
         throw new ValidationError(message);
@@ -79,8 +87,8 @@ export function registerCertificateRoutes(
   app.get(
     '/api/certificates',
     { schema: listCertificatesSchema, preHandler },
-    async (_request, reply) => {
-      const certificates = await commands.list.execute();
+    async (request, reply) => {
+      const certificates = await commands.list.execute(tenantOf(request));
       return reply.success(certificates.map(toResponse));
     },
   );
@@ -90,7 +98,7 @@ export function registerCertificateRoutes(
     '/api/certificates/:id',
     { schema: getCertificateSchema, preHandler },
     async (request, reply) => {
-      const certificate = await commands.get.execute(request.params.id);
+      const certificate = await commands.get.execute(tenantOf(request), request.params.id);
       if (!certificate) {
         throw new NotFoundError('Certificate not found');
       }
@@ -103,7 +111,7 @@ export function registerCertificateRoutes(
     '/api/certificates/:id',
     { schema: deleteCertificateSchema, preHandler },
     async (request, reply) => {
-      await commands.delete.execute(request.params.id);
+      await commands.delete.execute(tenantOf(request), request.params.id);
       return reply.code(204).send();
     },
   );

@@ -14,9 +14,13 @@ export class AuthorizeInvoiceCommand implements InvoiceCommand {
   ) {}
 
   async execute(invoice: Invoice): Promise<void> {
-    const accessCode = invoice.requireAccessCode().value;
+    const { value: accessCode, environment } = invoice.requireAccessCode();
     logger.info({ invoiceId: invoice.id, accessCode }, 'Authorizing invoice');
-    const authorizationVoucher = await this.sriAuthorizationPort.authorizeXml(accessCode);
+    // Where it was sent: the environment of its access code
+    const authorizationVoucher = await this.sriAuthorizationPort.authorizeXml(
+      accessCode,
+      environment,
+    );
     if (authorizationVoucher.status === AuthorizationVoucherStatus.PROCESSING) {
       // Not an answer yet: stays `sent` and is asked again later
       throw new InvoiceIssueError(

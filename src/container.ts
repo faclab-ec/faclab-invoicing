@@ -16,9 +16,14 @@ import {
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
+import {
+  ListSequencesQuery,
+  SetNextSequenceCommand,
+} from '#/modules/company-config/app/sequence.commands';
 import { IssuerChangeListener } from '#/modules/company-config/domain/readiness';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
+import { PgSequenceRepository } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
@@ -41,9 +46,10 @@ import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-r
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
+import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
-import { toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
+import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
 import {
@@ -59,7 +65,6 @@ import { DlqProducer } from '#/shared/infra/dlq-producer';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
-import { SoapClient } from '#/shared/infra/soap-client';
 import { logger } from '#/shared/logger';
 
 export async function createContainer(config: AppConfig) {
@@ -87,19 +92,18 @@ export async function createContainer(config: AppConfig) {
 
   const pool = createPool(config.database.url);
 
-  const validationClient = new SoapClient(
-    config.externalServices.sriVoucherWsdl,
+  // Each invoice goes to the SRI environment of its issuer
+  const sriClients = new SriClients(
+    config.externalServices.sriEndpoints,
     config.externalServices.sriTimeoutMs,
-  );
-  const authorizationClient = new SoapClient(
-    config.externalServices.sriQueryWsdl,
-    config.externalServices.sriTimeoutMs,
+    config.externalServices.sriProductionAllowed,
   );
 
   // Repositories
   const invoiceRepository = new PgInvoiceRepository(pool);
   const certificateRepository = new PgCertificateRepository(pool);
   const companyConfigRepository = new PgCompanyConfigRepository(pool);
+  const sequenceRepository = new PgSequenceRepository(pool);
 
   // Issuer: certificates and readiness
   const p12Parser = new P12ParserAdapter();
@@ -110,23 +114,25 @@ export async function createContainer(config: AppConfig) {
     certificateRepository,
     certificateKeyLoader,
     p12Parser,
+    { productionAllowed: config.externalServices.sriProductionAllowed },
   );
 
   // Adapters
   const xadesSigner = new XadesSigner(config.timezone);
   const signerAdapter = new SignerAdapter(issuerReadiness, certificateKeyLoader, xadesSigner);
-  const sriValidationAdapter = new SriValidationAdapter(validationClient);
-  const sriAuthorizationAdapter = new SriAuthorizationAdapter(authorizationClient);
+  const sriValidationAdapter = new SriValidationAdapter(sriClients);
+  const sriAuthorizationAdapter = new SriAuthorizationAdapter(sriClients);
 
   // Producers
-  const invoiceProducer = new KafkaProducer(producer, KAFKA_TOPICS.INVOICES, toInvoiceMessage);
+  const invoiceProducer = new KafkaProducer(
+    producer,
+    KAFKA_TOPICS.INVOICES,
+    toInvoiceMessage,
+    invoiceTenant,
+  );
 
   // Commands
-  const prepareInvoiceCommand = new PrepareInvoiceCommand(
-    issuerReadiness,
-    companyConfigRepository,
-    invoiceRepository,
-  );
+  const prepareInvoiceCommand = new PrepareInvoiceCommand(issuerReadiness, invoiceRepository);
   const signInvoiceCommand = new SignInvoiceCommand(signerAdapter, invoiceRepository);
   const sendInvoiceCommand = new SendInvoiceCommand(sriValidationAdapter, invoiceRepository);
   const authorizeInvoiceCommand = new AuthorizeInvoiceCommand(
@@ -150,7 +156,11 @@ export async function createContainer(config: AppConfig) {
     commandMap,
     invoiceProducer,
   );
-  const saleConfirmedHandler = new SaleConfirmedHandler(receiveSaleCommand, invoiceProducer);
+  const saleConfirmedHandler = new SaleConfirmedHandler(
+    receiveSaleCommand,
+    invoiceProducer,
+    config.kafka.salesV1TenantId,
+  );
 
   // Recovery: invoices waiting for the issuer, failed or stuck
   const invoiceRecovery = new InvoiceRecoveryService(
@@ -162,12 +172,12 @@ export async function createContainer(config: AppConfig) {
     invoiceRecovery,
     config.invoiceRecovery.intervalMs,
   );
-  // A config or certificate change may unblock pending invoices: check right away
+  // A company's config or certificate change may unblock its pending invoices: check right away
   const issuerListener: IssuerChangeListener = {
-    issuerChanged: () => {
-      issuerReadiness.invalidate();
+    issuerChanged: (tenantId) => {
+      issuerReadiness.invalidate(tenantId);
       invoiceRecovery
-        .run()
+        .run({ tenantId })
         .catch((error) => logger.error({ err: error }, 'Resuming pending invoices failed'));
     },
   };
@@ -196,6 +206,7 @@ export async function createContainer(config: AppConfig) {
   const uploadCertificateCommand = new UploadCertificateCommand(
     p12Parser,
     certificateRepository,
+    companyConfigRepository,
     secretCipher,
     issuerListener,
   );
@@ -242,6 +253,8 @@ export async function createContainer(config: AppConfig) {
     {
       save: saveCompanyConfigCommand,
       get: getCompanyConfigQuery,
+      listSequences: new ListSequencesQuery(sequenceRepository),
+      setNextSequence: new SetNextSequenceCommand(sequenceRepository),
     },
     authorize,
   );

@@ -1,6 +1,7 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
 import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 
+import { TENANT_HEADER } from '#/shared/infra/kafka';
 import { logger } from '#/shared/logger';
 
 import { MessageProducer } from '../../domain/ports';
@@ -13,6 +14,9 @@ export class KafkaProducer<T> implements MessageProducer<T> {
     private topic: string,
     // Shapes the message as the topic's contract defines it
     private toMessage: (message: T) => unknown = (message) => message,
+    // The company of the message: its key, so a company's messages keep their order, and its
+    // `faclab-tenant-id` header, which faclab-core opens the tenant context with
+    private tenantOf?: (message: T) => string,
   ) {}
 
   async connect(): Promise<void> {
@@ -37,11 +41,13 @@ export class KafkaProducer<T> implements MessageProducer<T> {
     // The consumer continues from this span, not from whatever was active before it
     const headers: Record<string, string> = {};
     propagation.inject(trace.setSpan(context.active(), span), headers);
+    const tenantId = this.tenantOf?.(message);
+    if (tenantId) headers[TENANT_HEADER] = tenantId;
 
     try {
       await this.producer.send({
         topic: this.topic,
-        messages: [{ value: JSON.stringify(this.toMessage(message)), headers }],
+        messages: [{ key: tenantId, value: JSON.stringify(this.toMessage(message)), headers }],
       });
       logger.debug({ topic: this.topic }, 'Message sent');
     } catch (error) {

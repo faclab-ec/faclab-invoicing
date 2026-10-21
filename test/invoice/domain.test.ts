@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { Environment } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { generateAccessCode } from '#/modules/invoice/domain/access-code-generator';
@@ -11,13 +12,13 @@ import {
   nextAttemptAt,
 } from '#/modules/invoice/domain/issue';
 
-import { makeConfig, makeSale } from '../helpers';
+import { makeConfig, makePoint, makeSale } from '../helpers';
 
 const MINUTE = 60_000;
 const ACCESS_CODE = '0910202601179214100100120010010000000420000004213';
 
 function preparedInvoice(): Invoice {
-  const invoice = Invoice.receive('inv-1', makeSale());
+  const invoice = Invoice.receive('inv-1', makePoint(), makeSale());
   invoice.assignSequence('000000001');
   invoice.prepare({
     accessCode: AccessCode.create(ACCESS_CODE),
@@ -29,7 +30,7 @@ function preparedInvoice(): Invoice {
 
 describe('Invoice', () => {
   it('starts pending with the sale and announces it', () => {
-    const invoice = Invoice.receive('inv-1', makeSale());
+    const invoice = Invoice.receive('inv-1', makePoint(), makeSale());
 
     expect(invoice.status).toBe(InvoiceStatus.PENDING);
     expect(invoice.saleId).toBe('42');
@@ -39,7 +40,7 @@ describe('Invoice', () => {
   });
 
   it('needs a sequence before building the XML, and keeps it', () => {
-    const invoice = Invoice.receive('inv-1', makeSale());
+    const invoice = Invoice.receive('inv-1', makePoint(), makeSale());
     expect(() =>
       invoice.prepare({
         accessCode: AccessCode.create(ACCESS_CODE),
@@ -118,13 +119,32 @@ describe('issues', () => {
 describe('generateAccessCode', () => {
   it('uses the Ecuador date, whatever the server time zone', () => {
     // 2026-10-10 03:00 UTC is still the 9th in Ecuador
-    const code = generateAccessCode(
-      new Date('2026-10-10T03:00:00Z'),
-      makeConfig(),
-      42,
-      '000000001',
-    );
+    const code = generateAccessCode({
+      date: new Date('2026-10-10T03:00:00Z'),
+      taxId: makeConfig().taxId,
+      environment: Environment.PRODUCTION,
+      establishment: '001',
+      emissionPoint: '001',
+      sequence: '000000001',
+      saleId: 42,
+    });
     expect(code.slice(0, 8)).toBe('09102026');
     expect(code).toHaveLength(49);
+  });
+
+  it("carries the issuer's RUC, environment, establishment, emission point and sequence", () => {
+    const code = generateAccessCode({
+      date: new Date('2026-10-09T15:00:00Z'),
+      taxId: '0990012345001',
+      environment: Environment.TESTING,
+      establishment: '002',
+      emissionPoint: '003',
+      sequence: '000000041',
+      saleId: 42,
+    });
+
+    expect(code.slice(10, 23)).toBe('0990012345001');
+    expect(code.slice(24, 39)).toBe('002003000000041');
+    expect(AccessCode.create(code).environment).toBe(Environment.TESTING);
   });
 });

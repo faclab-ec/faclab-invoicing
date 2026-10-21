@@ -14,7 +14,11 @@ export class SendInvoiceCommand implements InvoiceCommand {
 
   async execute(invoice: Invoice): Promise<void> {
     logger.info({ invoiceId: invoice.id }, 'Sending invoice to SRI');
-    const validationVoucher = await this.sriValidationPort.validateXml(invoice.requireXml());
+    // To the environment its access code was issued for
+    const validationVoucher = await this.sriValidationPort.validateXml(
+      invoice.requireXml(),
+      invoice.requireAccessCode().environment,
+    );
     // A retry after a timeout may find the SRI already has it: go on to authorization
     if (
       validationVoucher.status === ValidationVoucherStatus.ACCEPTED ||

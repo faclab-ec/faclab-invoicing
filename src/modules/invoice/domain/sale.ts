@@ -1,9 +1,23 @@
 import { IvaCode } from './sri-catalogs';
 
 /**
- * The confirmed sale as faclab-core sends it in `sales.confirmed` (contract v1 in
- * contracts/events/sales.confirmed/). The invoice keeps it until its XML is built, so it
- * can wait for the issuer to be ready.
+ * Who issues the invoice of a sale and from where, as `sales.confirmed` v2 says: the company
+ * (faclab-core tenant), its RUC and the establishment and emission point of the sale.
+ */
+export interface IssuingPoint {
+  tenantId: string;
+  // The RUC of the company in faclab-core; null in a v1 message, which doesn't say
+  issuerRuc: string | null;
+  establishment: string;
+  emissionPoint: string;
+  // dirEstablecimiento; null when the branch has no address
+  establishmentAddress: string | null;
+}
+
+/**
+ * The confirmed sale as faclab-core sends it in `sales.confirmed` (the payload of the contracts in
+ * contracts/events/sales.confirmed/, without the issuing point). The invoice keeps it until its XML
+ * is built, so it can wait for the issuer to be ready.
  */
 export interface SaleData {
   sale_id: number;

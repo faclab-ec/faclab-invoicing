@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 
 import { NotFoundError } from '#/shared/errors/app-error';
-import { Authorize } from '#/shared/infra/http/auth';
+import { Authorize, tenantOf } from '#/shared/infra/http/auth';
 
 import { RetryInvoiceCommand, RetryInvoicesCommand } from '../../app/commands/retry-invoice';
 import {
@@ -35,7 +35,7 @@ export function registerInvoiceRoutes(
   handlers: InvoiceHandlers,
   authorize: Authorize,
 ): void {
-  // Invoices are read like sales in faclab-core
+  // Invoices are read like sales in faclab-core, always those of the token's company
   const canRead = authorize('sale:read');
   // Retrying only finishes what a sale already started: whoever can sell can do it
   const canRetry = authorize('sale:write');
@@ -44,8 +44,8 @@ export function registerInvoiceRoutes(
   app.get(
     '/api/invoicing/status',
     { schema: invoicingStatusSchema, preHandler: canRead },
-    async (_request, reply) => {
-      const status = await handlers.status.execute();
+    async (request, reply) => {
+      const status = await handlers.status.execute(tenantOf(request));
       return reply.success(toStatusResponse(status));
     },
   );
@@ -57,7 +57,7 @@ export function registerInvoiceRoutes(
     async (request, reply) => {
       // The schema fills in the default limit and offset
       const { limit, offset } = request.query;
-      const page = await handlers.list.execute(request.query);
+      const page = await handlers.list.execute(tenantOf(request), request.query);
       return reply.success(page.items.map(toSummaryResponse), {
         pagination: { total: page.total, limit, offset },
       });
@@ -68,8 +68,8 @@ export function registerInvoiceRoutes(
   app.post(
     '/api/invoices/retry',
     { schema: retryInvoicesSchema, preHandler: canRetry },
-    async (_request, reply) => {
-      const queued = await handlers.retryAll.execute();
+    async (request, reply) => {
+      const queued = await handlers.retryAll.execute(tenantOf(request));
       reply.code(202);
       return reply.success({ queued });
     },
@@ -80,7 +80,10 @@ export function registerInvoiceRoutes(
     '/api/invoices/by-sale/:saleId',
     { schema: findBySaleIdSchema, preHandler: canRead },
     async (request, reply) => {
-      const invoices = await handlers.findBySaleId.execute(request.params.saleId);
+      const invoices = await handlers.findBySaleId.execute(
+        tenantOf(request),
+        request.params.saleId,
+      );
       return reply.success(invoices.map(toSummaryResponse));
     },
   );
@@ -90,7 +93,7 @@ export function registerInvoiceRoutes(
     '/api/invoices/:id',
     { schema: getInvoiceSchema, preHandler: canRead },
     async (request, reply) => {
-      const invoice = await handlers.get.execute(request.params.id);
+      const invoice = await handlers.get.execute(tenantOf(request), request.params.id);
       if (!invoice) {
         throw new NotFoundError('Invoice not found');
       }
@@ -103,7 +106,7 @@ export function registerInvoiceRoutes(
     '/api/invoices/:id/retry',
     { schema: retryInvoiceSchema, preHandler: canRetry },
     async (request, reply) => {
-      const invoice = await handlers.retry.execute(request.params.id);
+      const invoice = await handlers.retry.execute(tenantOf(request), request.params.id);
       return reply.success(toSummaryResponse(invoice));
     },
   );

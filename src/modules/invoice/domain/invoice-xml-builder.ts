@@ -7,7 +7,8 @@ export interface InvoiceXmlInput {
   companyTradeName: string;
   companyCode: string;
   companyMainAddress: string;
-  companyBranchAddress: string;
+  // dirEstablecimiento is optional in the SRI schema: left out when the branch has no address
+  companyBranchAddress: string | null;
   companyBranchCode: string;
   companySalePointCode: string;
   companyAccountingRequired: boolean;
@@ -114,7 +115,8 @@ function getInvoiceData(input: InvoiceXmlInput) {
       },
       infoFactura: {
         fechaEmision: formatDate(input.date),
-        dirEstablecimiento: input.companyBranchAddress,
+        // Optional: an empty element would break the SRI schema
+        ...(input.companyBranchAddress ? { dirEstablecimiento: input.companyBranchAddress } : {}),
         obligadoContabilidad: input.companyAccountingRequired ? 'SI' : 'NO',
         tipoIdentificacionComprador: input.customer.taxIdCode,
         razonSocialComprador: input.customer.name,
