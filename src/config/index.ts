@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { LOCAL_DEFAULTS } from './local';
 import { MIN_JWT_SECRET_LENGTH, PRODUCTION_DEFAULTS } from './production';
-import { SRI_ENDPOINTS, SRI_ENVIRONMENTS, SriEnvironment } from './sri';
+import { SRI_ENDPOINTS, SriEndpoints, SriEnvironment } from './sri';
 
 export interface AppConfig {
   serviceName: string;
@@ -16,9 +16,10 @@ export interface AppConfig {
     corsOrigins: string[];
   };
   externalServices: {
-    sriEnvironment: SriEnvironment;
-    sriVoucherWsdl: string;
-    sriQueryWsdl: string;
+    // The web services of each SRI environment; an issuer's environment picks one
+    sriEndpoints: Record<SriEnvironment, SriEndpoints>;
+    // Only production may reach the environment with tax validity
+    sriProductionAllowed: boolean;
     sriTimeoutMs: number;
   };
   signing: {
@@ -31,6 +32,8 @@ export interface AppConfig {
   kafka: {
     brokers: string[];
     groupId: string;
+    // Company that invoices sales.confirmed v1, which names none (development only)
+    salesV1TenantId: string | null;
   };
   database: {
     // PostgreSQL connection string of the faclab_invoicing database
@@ -50,7 +53,6 @@ export type AppEnvironment = (typeof APP_ENVIRONMENTS)[number];
 
 // Every variable read here; OTEL_* are read by instrumentation.ts, which runs first
 const ENV_VARS = [
-  'SRI_ENVIRONMENT',
   'KAFKA_BROKERS',
   'DATABASE_URL',
   'CORS_ORIGINS',
@@ -62,6 +64,7 @@ const ENV_VARS = [
   'SRI_TIMEOUT_MS',
   'INVOICE_RETRY_INTERVAL_MS',
   'SERVICE_VERSION',
+  'SALES_V1_TENANT_ID',
 ] as const;
 type EnvVar = (typeof ENV_VARS)[number];
 export type EnvDefaults = Partial<Record<EnvVar, string>>;
@@ -113,10 +116,6 @@ const isPostgresUrl = (value: string) => {
 function schemaFor(environment: AppEnvironment) {
   const production = environment === 'production';
   return z.object({
-    // Only production may reach the SRI environment with tax validity
-    SRI_ENVIRONMENT: z
-      .enum(SRI_ENVIRONMENTS)
-      .refine((value) => production || value === 'test', 'must be test outside production'),
     KAFKA_BROKERS: z
       .string()
       .transform(commaList)
@@ -150,6 +149,12 @@ function schemaFor(environment: AppEnvironment) {
     SRI_TIMEOUT_MS: positiveInt,
     INVOICE_RETRY_INTERVAL_MS: positiveInt,
     SERVICE_VERSION: z.string(),
+    // sales.confirmed v1 names no company: only a development setup invoices it, with this one
+    SALES_V1_TENANT_ID: z
+      .string()
+      .uuid()
+      .optional()
+      .refine((value) => !production || value === undefined, "can't be set in production"),
   });
 }
 
@@ -194,7 +199,6 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
   }
 
   const values = result.data;
-  const sri = SRI_ENDPOINTS[values.SRI_ENVIRONMENT];
   return {
     serviceName: 'faclab-invoicing',
     serviceVersion: values.SERVICE_VERSION,
@@ -207,9 +211,8 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       corsOrigins: values.CORS_ORIGINS,
     },
     externalServices: {
-      sriEnvironment: values.SRI_ENVIRONMENT,
-      sriVoucherWsdl: sri.receptionWsdl,
-      sriQueryWsdl: sri.authorizationWsdl,
+      sriEndpoints: SRI_ENDPOINTS,
+      sriProductionAllowed: environment === 'production',
       sriTimeoutMs: values.SRI_TIMEOUT_MS,
     },
     signing: {
@@ -221,6 +224,7 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
     kafka: {
       brokers: values.KAFKA_BROKERS,
       groupId: 'faclab-invoicing',
+      salesV1TenantId: values.SALES_V1_TENANT_ID?.toLowerCase() ?? null,
     },
     database: {
       url: values.DATABASE_URL,

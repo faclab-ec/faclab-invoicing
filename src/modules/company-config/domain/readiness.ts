@@ -4,10 +4,16 @@ import { Environment } from './company-config';
 export const READINESS_ERROR_CODES = [
   'CONFIG_MISSING',
   'CONFIG_INVALID',
+  // An issuer in the production environment where only the test one is reachable (local)
+  'ENVIRONMENT_NOT_ALLOWED',
   'CERTIFICATE_NOT_SELECTED',
   'CERTIFICATE_NOT_FOUND',
   'CERTIFICATE_EXPIRED',
   'CERTIFICATE_UNREADABLE',
+  // The selected certificate is not of the issuer's RUC
+  'CERTIFICATE_RUC_MISMATCH',
+  // The sale names a RUC other than the issuer's: one invoice waits until the profile is fixed
+  'ISSUER_RUC_MISMATCH',
 ] as const;
 
 export type ReadinessErrorCode = (typeof READINESS_ERROR_CODES)[number];
@@ -27,6 +33,8 @@ export interface ReadinessCertificate {
 
 export interface ReadinessReport {
   ready: boolean;
+  // The issuer's RUC, once its profile is saved
+  taxId: string | null;
   environment: Environment | null;
   certificate: ReadinessCertificate | null;
   issues: ReadinessIssue[];
@@ -48,7 +56,7 @@ export class IssuerNotReadyError extends Error {
   }
 }
 
-/** Told when the config or the certificates change, so readiness is checked again */
+/** Told when a company's config or certificates change, so its readiness is checked again */
 export interface IssuerChangeListener {
-  issuerChanged(): void;
+  issuerChanged(tenantId: string): void;
 }

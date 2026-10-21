@@ -5,7 +5,8 @@ import { AppError } from '#/shared/errors/app-error';
 
 // Access tokens are issued by faclab-core (HS256, shared JWT_SECRET). The
 // error codes match faclab-core's, so faclab-web reacts the same way
-// (refresh on TOKEN_EXPIRED, sign out on INVALID_TOKEN, etc.).
+// (refresh on TOKEN_EXPIRED, sign out on INVALID_TOKEN, etc.). Their `tid` is
+// the company the request acts for: every route reads and writes only its data.
 
 export interface AuthConfig {
   jwtSecret: string;
@@ -15,9 +16,16 @@ export interface AuthConfig {
 export interface AccessClaims {
   userId: string;
   username: string;
+  // The company (faclab-core tenant) the token was issued for
+  tenantId: string;
   permissions: string[];
   mustChangePassword: boolean;
 }
+
+/** Who calls and for which company; set by `authorize` on every protected route */
+export type RequestAuth = Omit<AccessClaims, 'mustChangePassword'>;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class AuthError extends AppError {
   constructor(
@@ -68,6 +76,10 @@ export function verifyAccessToken(
   }
   if (payload.iss !== jwtIssuer) throw invalidToken('wrong issuer');
   if (payload.typ !== 'access') throw invalidToken('not an access token');
+  // Same answer as faclab-core for a token from before companies existed
+  if (typeof payload.tid !== 'string' || !UUID.test(payload.tid)) {
+    throw new AuthError(401, 'TENANT_REQUIRED', 'the access token has no company (tid)');
+  }
 
   const permissions = Array.isArray(payload.perms)
     ? payload.perms.filter((p): p is string => typeof p === 'string')
@@ -75,6 +87,7 @@ export function verifyAccessToken(
   return {
     userId: String(payload.sub),
     username: typeof payload.username === 'string' ? payload.username : '',
+    tenantId: payload.tid.toLowerCase(),
     permissions,
     mustChangePassword: payload.mcp === true,
   };
@@ -105,5 +118,17 @@ export function createAuthorize(config: AuthConfig): Authorize {
     if (!claims.permissions.includes(permission)) {
       throw new AuthError(403, 'PERMISSION_DENIED', `missing permissions: ['${permission}']`);
     }
+    request.auth = {
+      userId: claims.userId,
+      username: claims.username,
+      tenantId: claims.tenantId,
+      permissions: claims.permissions,
+    };
   };
+}
+
+/** The company of the request; only on routes behind `authorize` */
+export function tenantOf(request: FastifyRequest): string {
+  if (!request.auth) throw new AuthError(403, 'PERMISSION_DENIED', 'authentication required');
+  return request.auth.tenantId;
 }

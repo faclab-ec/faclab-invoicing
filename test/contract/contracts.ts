@@ -12,9 +12,9 @@ export function loadSchema(topic: string, version = 1): object {
   return load(join(EVENTS, topic, `v${version}.schema.json`)) as object;
 }
 
-/** Example messages of a topic, by file name without extension */
-export function loadExamples(topic: string): Record<string, Record<string, unknown>> {
-  const dir = join(EVENTS, topic, 'examples');
+/** Example messages of a topic version, by file name without extension */
+export function loadExamples(topic: string, version = 1): Record<string, Record<string, unknown>> {
+  const dir = join(EVENTS, topic, 'examples', `v${version}`);
   return Object.fromEntries(
     readdirSync(dir)
       .filter((file) => file.endsWith('.json'))

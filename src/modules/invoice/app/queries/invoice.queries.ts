@@ -6,11 +6,13 @@ import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
 import { InvoicePage, InvoiceRepository } from '../../domain/repository';
 
+// Every query reads the invoices of one company: the one of the token
+
 export class GetInvoiceQuery {
   constructor(private readonly invoiceRepository: InvoiceRepository) {}
 
-  async execute(id: string): Promise<Invoice | null> {
-    return this.invoiceRepository.getInvoiceById(id);
+  async execute(tenantId: string, id: string): Promise<Invoice | null> {
+    return this.invoiceRepository.findForTenant(tenantId, id);
   }
 }
 
@@ -31,8 +33,9 @@ export class ListInvoicesQuery {
     private readonly timezone: string,
   ) {}
 
-  async execute(options: ListInvoicesOptions): Promise<InvoicePage> {
+  async execute(tenantId: string, options: ListInvoicesOptions): Promise<InvoicePage> {
     return this.invoiceRepository.findPage(
+      tenantId,
       {
         attention: options.attention,
         status: options.status,
@@ -55,8 +58,8 @@ export class ListInvoicesQuery {
 export class FindInvoicesBySaleIdQuery {
   constructor(private readonly invoiceRepository: InvoiceRepository) {}
 
-  async execute(saleId: string): Promise<Invoice[]> {
-    return this.invoiceRepository.findBySaleId(saleId);
+  async execute(tenantId: string, saleId: string): Promise<Invoice[]> {
+    return this.invoiceRepository.findBySaleId(tenantId, saleId);
   }
 }
 
@@ -73,15 +76,16 @@ export class GetInvoicingStatusQuery {
     private readonly invoiceRepository: InvoiceRepository,
   ) {}
 
-  async execute(): Promise<InvoicingStatus> {
+  /** The company's issuer and its invoices: another company's state never shows here */
+  async execute(tenantId: string): Promise<InvoicingStatus> {
     const [report, inFlight] = await Promise.all([
-      this.readiness.check(),
-      this.invoiceRepository.findInFlight(),
+      this.readiness.check(tenantId),
+      this.invoiceRepository.countInFlight(tenantId),
     ]);
     return {
       ...report,
-      pendingInvoices: inFlight.length,
-      invoicesWithIssues: inFlight.filter((invoice) => invoice.issue !== null).length,
+      pendingInvoices: inFlight.total,
+      invoicesWithIssues: inFlight.withIssues,
     };
   }
 }

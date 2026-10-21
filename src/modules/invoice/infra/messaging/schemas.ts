@@ -6,7 +6,7 @@ import { IVA_CODE_KEYS } from '../../domain/sri-catalogs';
 // --- Kafka Message Schemas ---
 // The contracts are the JSON Schemas in contracts/events/, copied from faclab-core (see
 // contracts/README.md): test/contract checks these schemas against their examples. A message
-// without schema_version predates v1 and is read as v1; another version goes to the DLQ.
+// without schema_version predates v1 and is read as v1; a version not listed here goes to the DLQ.
 
 export const InvoiceMessageSchema = z.object({
   schema_version: z.literal(1).optional(),
@@ -63,13 +63,42 @@ const SaleConfirmedPayloadSchema = z.object({
   payments: z.array(SaleConfirmedPaymentSchema),
 });
 
-export const SaleConfirmedMessageSchema = z.object({
+const SaleConfirmedEnvelope = {
   event_id: z.string().uuid(),
   event_type: z.literal('SaleConfirmed'),
-  schema_version: z.literal(1).optional(),
   aggregate_id: z.number(),
   occurred_at: z.string().transform((s) => new Date(s.endsWith('Z') ? s : s + 'Z')),
+};
+
+// Establishment and emission point codes: three digits, 001 to 999
+const SriCodeSchema = z.string().regex(/^(00[1-9]|0[1-9]\d|[1-9]\d{2})$/);
+
+// v1: no company nor emission point. Only development invoices it, with a default issuer
+export const SaleConfirmedV1MessageSchema = z.object({
+  ...SaleConfirmedEnvelope,
+  schema_version: z.literal(1).optional(),
   payload: SaleConfirmedPayloadSchema,
 });
 
+// v2: the company that issues, its RUC and the sale's establishment and emission point
+export const SaleConfirmedV2MessageSchema = z.object({
+  ...SaleConfirmedEnvelope,
+  schema_version: z.literal(2),
+  tenant_id: z.string().uuid(),
+  payload: SaleConfirmedPayloadSchema.extend({
+    sale_number: z.string().nullable(),
+    issuer_ruc: z.string().regex(/^\d{13}$/),
+    establishment_code: SriCodeSchema,
+    establishment_address: z.string().nullable(),
+    emission_point_code: SriCodeSchema,
+  }),
+});
+
+export const SaleConfirmedMessageSchema = z.union([
+  SaleConfirmedV2MessageSchema,
+  SaleConfirmedV1MessageSchema,
+]);
+
+export type SaleConfirmedV1Message = z.infer<typeof SaleConfirmedV1MessageSchema>;
+export type SaleConfirmedV2Message = z.infer<typeof SaleConfirmedV2MessageSchema>;
 export type SaleConfirmedMessage = z.infer<typeof SaleConfirmedMessageSchema>;

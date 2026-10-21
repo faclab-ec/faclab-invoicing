@@ -7,7 +7,7 @@ import { InvoiceRepository } from '../../domain/repository';
 import { InvoiceEventHandler } from '../handlers/invoice-event.handler';
 import { InvoiceRecoveryService } from '../services/invoice-recovery';
 
-/** Runs the next step of one invoice now, ignoring its retry schedule */
+/** Runs the next step of one of the company's invoices now, ignoring its retry schedule */
 export class RetryInvoiceCommand {
   constructor(
     private readonly invoiceRepository: InvoiceRepository,
@@ -15,8 +15,8 @@ export class RetryInvoiceCommand {
     private readonly eventHandler: InvoiceEventHandler,
   ) {}
 
-  async execute(id: string): Promise<Invoice> {
-    const invoice = await this.invoiceRepository.getInvoiceById(id);
+  async execute(tenantId: string, id: string): Promise<Invoice> {
+    const invoice = await this.invoiceRepository.findForTenant(tenantId, id);
     if (!invoice) throw new NotFoundError(`Invoice ${id} not found`);
     if (invoice.isFinal) {
       throw new ConflictError(
@@ -26,12 +26,12 @@ export class RetryInvoiceCommand {
     }
 
     // Check the issuer again instead of trusting the cached answer
-    this.readiness.invalidate();
+    this.readiness.invalidate(tenantId);
     return (await this.eventHandler.process(id)) ?? invoice;
   }
 }
 
-/** Retries every invoice that needs attention, in the background */
+/** Retries every invoice of the company that needs attention, in the background */
 export class RetryInvoicesCommand {
   constructor(
     private readonly invoiceRepository: InvoiceRepository,
@@ -40,14 +40,13 @@ export class RetryInvoicesCommand {
   ) {}
 
   /** How many invoices were queued */
-  async execute(): Promise<number> {
-    const invoices = await this.invoiceRepository.findInFlight();
-    const queued = invoices.filter((invoice) => invoice.needsAttention).length;
+  async execute(tenantId: string): Promise<number> {
+    const { needingAttention } = await this.invoiceRepository.countInFlight(tenantId);
 
-    this.readiness.invalidate();
+    this.readiness.invalidate(tenantId);
     this.recovery
-      .run({ all: true })
+      .run({ all: true, tenantId })
       .catch((error) => logger.error({ err: error }, 'Retrying invoices failed'));
-    return queued;
+    return needingAttention;
   }
 }

@@ -8,7 +8,7 @@ import { IssuerReadinessService } from '#/modules/company-config/app/issuer-read
 import { CompanyConfig, Environment } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 
-import { makeCertificate, makeConfig } from '../helpers';
+import { makeCertificate, makeConfig, RUC_B, TENANT_A, TENANT_B } from '../helpers';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -16,15 +16,17 @@ function service(options: {
   config: CompanyConfig | null;
   certificate?: Certificate | null;
   unreadable?: boolean;
+  productionAllowed?: boolean;
 }) {
+  // Company A's config and certificate; company B has neither
   const configRepo = {
     save: vi.fn(),
-    find: vi.fn(async () => options.config),
-    nextInvoiceSequence: vi.fn(),
-    setNextInvoiceSequence: vi.fn(),
+    find: vi.fn(async (tenantId: string) => (tenantId === TENANT_A ? options.config : null)),
   };
   const certRepo = {
-    findById: vi.fn(async () => options.certificate ?? null),
+    findById: vi.fn(async (tenantId: string) =>
+      tenantId === TENANT_A ? (options.certificate ?? null) : null,
+    ),
   } as unknown as CertificateRepository;
   const keyLoader = {
     load: vi.fn(async () => {
@@ -34,24 +36,26 @@ function service(options: {
   } as unknown as CertificateKeyLoader;
   const parser: P12ParserPort = { parse: vi.fn() };
   return {
-    readiness: new IssuerReadinessService(configRepo, certRepo, keyLoader, parser),
+    readiness: new IssuerReadinessService(configRepo, certRepo, keyLoader, parser, {
+      productionAllowed: options.productionAllowed,
+    }),
     configRepo,
   };
 }
 
 const codes = async (readiness: IssuerReadinessService) =>
-  (await readiness.check()).issues.map((issue) => issue.code);
+  (await readiness.check(TENANT_A)).issues.map((issue) => issue.code);
 
 describe('IssuerReadinessService', () => {
   it('is ready with a valid config and a usable certificate', async () => {
     const { readiness } = service({ config: makeConfig(), certificate: makeCertificate() });
 
-    const report = await readiness.check();
+    const report = await readiness.check(TENANT_A);
 
     expect(report.ready).toBe(true);
     expect(report.issues).toEqual([]);
     expect(report.certificate?.id).toBe('cert-1');
-    await expect(readiness.requireReady()).resolves.toMatchObject({
+    await expect(readiness.requireReady(TENANT_A)).resolves.toMatchObject({
       certificate: { id: 'cert-1' },
     });
   });
@@ -60,20 +64,49 @@ describe('IssuerReadinessService', () => {
     const { readiness } = service({ config: null });
 
     expect(await codes(readiness)).toEqual(['CONFIG_MISSING']);
-    await expect(readiness.requireReady()).rejects.toBeInstanceOf(IssuerNotReadyError);
+    await expect(readiness.requireReady(TENANT_A)).rejects.toBeInstanceOf(IssuerNotReadyError);
   });
 
   it('flags config fields the SRI would reject', async () => {
     const { readiness } = service({
-      config: makeConfig({ branchCode: '1', salePointCode: '0001' }),
-      certificate: makeCertificate(),
+      config: makeConfig({ taxId: '179214100' }),
+      certificate: makeCertificate({ taxIds: ['179214100'] }),
     });
 
-    const report = await readiness.check();
+    const report = await readiness.check(TENANT_A);
 
     expect(report.ready).toBe(false);
     expect(report.issues[0]).toMatchObject({ code: 'CONFIG_INVALID', severity: 'error' });
-    expect(report.issues[0].message).toContain('branchCode, salePointCode');
+    expect(report.issues[0].message).toContain('taxId');
+  });
+
+  it('refuses the production environment where only the test one is reachable', async () => {
+    const { readiness } = service({
+      config: makeConfig(),
+      certificate: makeCertificate(),
+      productionAllowed: false,
+    });
+
+    expect(await codes(readiness)).toEqual(['ENVIRONMENT_NOT_ALLOWED']);
+  });
+
+  it('flags a selected certificate of another RUC', async () => {
+    const { readiness } = service({
+      config: makeConfig(),
+      certificate: makeCertificate({ taxIds: [RUC_B] }),
+    });
+
+    expect(await codes(readiness)).toEqual(['CERTIFICATE_RUC_MISMATCH']);
+  });
+
+  it("answers for each company: one that can't invoice doesn't block another", async () => {
+    const { readiness } = service({ config: makeConfig(), certificate: makeCertificate() });
+
+    expect((await readiness.check(TENANT_A)).ready).toBe(true);
+    expect((await readiness.check(TENANT_B)).issues.map((issue) => issue.code)).toEqual([
+      'CONFIG_MISSING',
+    ]);
+    await expect(readiness.requireReady(TENANT_B)).rejects.toBeInstanceOf(IssuerNotReadyError);
   });
 
   it('checks the selected certificate', async () => {
@@ -101,7 +134,7 @@ describe('IssuerReadinessService', () => {
       certificate: makeCertificate({ validTo: new Date(Date.now() + 10 * DAY) }),
     });
 
-    const report = await readiness.check();
+    const report = await readiness.check(TENANT_A);
 
     expect(report.ready).toBe(true);
     expect(report.issues.map((i) => [i.code, i.severity])).toEqual([
@@ -110,15 +143,24 @@ describe('IssuerReadinessService', () => {
     ]);
   });
 
-  it('caches the answer until invalidated', async () => {
+  it("caches each company's answer until it is invalidated", async () => {
     const { readiness, configRepo } = service({ config: null });
 
-    await readiness.check();
-    await readiness.check();
-    expect(configRepo.find).toHaveBeenCalledTimes(1);
-
-    readiness.invalidate();
-    await readiness.check();
+    await readiness.check(TENANT_A);
+    await readiness.check(TENANT_A);
+    await readiness.check(TENANT_B);
     expect(configRepo.find).toHaveBeenCalledTimes(2);
+
+    // Only B's answer is forgotten
+    readiness.invalidate(TENANT_B);
+    await readiness.check(TENANT_A);
+    await readiness.check(TENANT_B);
+    expect(configRepo.find).toHaveBeenCalledTimes(3);
+
+    // Every company's
+    readiness.invalidate();
+    await readiness.check(TENANT_A);
+    await readiness.check(TENANT_B);
+    expect(configRepo.find).toHaveBeenCalledTimes(5);
   });
 });

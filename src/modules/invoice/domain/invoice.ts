@@ -1,7 +1,7 @@
 import { AccessCode } from './access-code';
 import { InvoiceDomainEvent, InvoiceStatus, STATUS_EVENT_TYPE } from './events';
 import { InvoiceIssue, nextAttemptAt } from './issue';
-import { SaleData } from './sale';
+import { IssuingPoint, SaleData } from './sale';
 
 export { InvoiceStatus } from './events';
 
@@ -16,6 +16,7 @@ export class InvoiceStatusHistory {
 export interface InvoiceProps {
   id: string;
   saleId: string;
+  point: IssuingPoint;
   status: InvoiceStatus;
   sale: SaleData | null;
   accessCode: AccessCode | null;
@@ -38,6 +39,8 @@ export class Invoice {
 
   readonly id: string;
   readonly saleId: string;
+  // Company, establishment and emission point that issue it, as the sale says
+  readonly point: IssuingPoint;
   // Kept so the XML can be built whenever the issuer is ready
   readonly sale: SaleData | null;
   readonly statusHistory: InvoiceStatusHistory[];
@@ -58,6 +61,7 @@ export class Invoice {
   constructor(props: InvoiceProps) {
     this.id = props.id;
     this.saleId = props.saleId;
+    this.point = props.point;
     this.sale = props.sale;
     this.statusHistory = props.statusHistory;
     this.createdAt = props.createdAt;
@@ -71,6 +75,10 @@ export class Invoice {
     this._attempts = props.attempts;
     this._nextAttemptAt = props.nextAttemptAt;
     this._updatedAt = props.updatedAt;
+  }
+
+  get tenantId(): string {
+    return this.point.tenantId;
   }
 
   get status(): InvoiceStatus {
@@ -124,10 +132,11 @@ export class Invoice {
     return !this.isFinal && (this._issue !== null || this._status === InvoiceStatus.PENDING);
   }
 
-  static receive(id: string, sale: SaleData, now: Date = new Date()): Invoice {
+  static receive(id: string, point: IssuingPoint, sale: SaleData, now: Date = new Date()): Invoice {
     const invoice = new Invoice({
       id,
       saleId: String(sale.sale_id),
+      point,
       status: InvoiceStatus.PENDING,
       sale,
       accessCode: null,
@@ -232,6 +241,7 @@ export class Invoice {
     this.statusHistory.push(new InvoiceStatusHistory(status, date, description));
     this._domainEvents.push({
       type: STATUS_EVENT_TYPE[status],
+      tenantId: this.tenantId,
       invoiceId: this.id,
       saleId: this.saleId,
       status,

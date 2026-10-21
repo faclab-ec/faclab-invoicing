@@ -1,4 +1,4 @@
-import { SoapClient } from '#/shared/infra/soap-client';
+import { Environment } from '#/modules/company-config/domain/company-config';
 
 import { InvoiceIssueError } from '../../domain/issue';
 import { SriAuthorizationPort } from '../../domain/ports';
@@ -7,14 +7,16 @@ import {
   AuthorizationVoucherResponseDTO,
   mapAuthorizationVoucherToDomain,
 } from '../mappers/sri-authorization.mapper';
+import { SriClients } from './sri-clients';
 
 export class SriAuthorizationAdapter implements SriAuthorizationPort {
-  constructor(private authorizationClient: SoapClient) {}
+  constructor(private clients: SriClients) {}
 
-  async authorizeXml(code: string): Promise<AuthorizationVoucher> {
+  async authorizeXml(code: string, environment: Environment): Promise<AuthorizationVoucher> {
+    const client = this.clients.authorization(environment);
     let response: { RespuestaAutorizacionComprobante: AuthorizationVoucherResponseDTO };
     try {
-      response = (await this.authorizationClient.callMethod('autorizacionComprobante', {
+      response = (await client.callMethod('autorizacionComprobante', {
         claveAccesoComprobante: code,
       })) as typeof response;
     } catch (error) {

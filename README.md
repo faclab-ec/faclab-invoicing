@@ -2,6 +2,8 @@
 
 Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL.
 
+It is **multi-company**: each company (a faclab-core tenant, one RUC) has its own fiscal profile, certificates, SRI environment and sequences per establishment and emission point. A sale says which company issues it and from where (`sales.confirmed` v2), and the HTTP API only shows the company of the caller's token (`tid`).
+
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
@@ -68,14 +70,19 @@ Each transition is an isolated Command. `InvoiceEventHandler` reads from the `in
 
 ### Nothing is lost: pending invoices, issues and recovery
 
-- **The sale is stored first.** `ReceiveSale` saves a `pending` invoice with the sale data before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the issuer is ready. The emission date is the day the XML is built.
-- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
+- **The sale is stored first.** `ReceiveSale` saves a `pending` invoice of its company, with the sale data and where it was made (establishment, its address and emission point), before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the company's issuer is ready. The emission date is the day the XML is built.
+- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` (company and sale) keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
 - **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed messages and storage outages.
-  - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`) wait until the issuer is ready.
+  - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `ENVIRONMENT_NOT_ALLOWED`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`, `CERTIFICATE_RUC_MISMATCH`) wait until the company's issuer is ready.
+  - `ISSUER_RUC_MISMATCH`: the sale names a RUC other than the company's profile. The invoice waits until the profile has that RUC.
   - `SRI_UNAVAILABLE` (SOAP error or timeout), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
   - A reception `DEVUELTA` whose only messages are 43 (access code already registered) or 70 (access code being processed) means the SRI already has the voucher: the invoice moves on to authorization.
-- **Recovery** (`InvoiceRecoveryService`) runs at start, every `INVOICE_RETRY_INTERVAL_MS`, right after the config or a certificate changes, and from `POST /api/invoices/retry`. It takes invoices waiting for the issuer (once it is ready), transient issues that are due, and invoices without an issue that haven't moved for 5 minutes (lost event). It assumes a single instance of the service.
-- **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`): config saved and valid (13-digit RUC, 3-digit branch and point of sale), a certificate selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute and refreshed on config or certificate changes.
+- **Recovery** (`InvoiceRecoveryService`) runs at start, every `INVOICE_RETRY_INTERVAL_MS`, right after a company's config or a certificate changes (only that company's invoices), and from `POST /api/invoices/retry` (the caller's company). It takes invoices waiting for their issuer (once it is ready), transient issues that are due, and invoices without an issue that haven't moved for 5 minutes (lost event). Each company's issuer is checked on its own: one that can't invoice doesn't hold back another. It assumes a single instance of the service.
+- **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`), per company: config saved and valid (13-digit RUC), an SRI environment this deployment reaches (only `NODE_ENV=production` reaches production), a certificate of its RUC selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute per company and refreshed on that company's config or certificate changes.
+
+### Numbering
+
+The SRI number (`secuencial`, 9 digits) is per company, establishment, emission point and document type (`sequences`). `PrepareInvoice` takes it in the same transaction that stores it on the invoice (`INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`): concurrent invoices of an emission point get consecutive numbers, none twice, and a failed save gives it back. The first invoice of an emission point is `000000001`, unless `PUT /api/sequences/{establishment}/{emissionPoint}` set where it continues (for example after a previous system); that value never goes back (`SEQUENCE_CANNOT_GO_BACK`, 409), and saving the fiscal profile never moves a counter. `uq_invoices_tenant_number` refuses the same number twice in an emission point; a rejected invoice keeps its number.
 
 ---
 
@@ -99,32 +106,37 @@ Manages PKCS#12 digital signing certificates.
 |-------|----------|
 | `domain/` | `Certificate` entity, `P12ParserPort`, `SecretCipherPort` |
 | `app/` | `UploadCertificateCommand`, `GetCertificateCommand`, `ListCertificatesCommand`, `DeleteCertificateCommand`, `CertificateKeyLoader` |
-
 | `infra/` | `PgCertificateRepository`, `P12ParserAdapter`, HTTP routes |
 
-Each certificate keeps its `.p12` file and its password in the database, both encrypted (AES-256-GCM, key in `CERTIFICATE_PASSWORD_KEY`); signing uses the selected certificate. Expired certificates are rejected on upload, and the selected one can't be deleted (`CERTIFICATE_IN_USE`, 409).
+Each certificate belongs to a company and keeps its `.p12` file and its password in the database, both encrypted (AES-256-GCM, key in `CERTIFICATE_PASSWORD_KEY`); signing uses the certificate the company's profile selects. On upload:
+
+- The company's fiscal profile must exist (`ISSUER_NOT_CONFIGURED`, 409): the certificate is checked against its RUC.
+- The RUCs and cédulas the certificate names are read from its subject (`serialNumber`, `UID`, `organizationIdentifier`) and from the CA's private extensions (`1.3.6.1.4.1.*`, where the BCE, Security Data and others write them): `taxIds`. One must be the issuer's RUC, or its cédula when the RUC is the cédula plus `001` (a natural person). Otherwise `CERTIFICATE_RUC_MISMATCH` (422); without any, `CERTIFICATE_RUC_UNKNOWN` (422).
+- Expired certificates are rejected; the expiry date (`validTo`) is kept and readiness warns 30 days before.
+
+Selecting a certificate in the profile checks the same: it must be one of the company's certificates and name its RUC. The selected one can't be deleted (`CERTIFICATE_IN_USE`, 409).
 
 ### `company-config`
 
-Singleton fiscal configuration for the company (RUC, addresses, SRI environment, etc.).
+The fiscal profile of each company (RUC, names, main address, SRI environment, special taxpayer and withholding agent resolutions, RIMPE regime, accounting) and its invoice sequences. The establishment, its address and the emission point are not in the profile: each sale brings them.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `CompanyConfig` entity, readiness types |
-| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `IssuerReadinessService` |
-| `infra/` | `PgCompanyConfigRepository` (with the invoice sequence), HTTP routes |
+| `domain/` | `CompanyConfig` entity, sequences, readiness types |
+| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `ListSequencesQuery`, `SetNextSequenceCommand`, `IssuerReadinessService` |
+| `infra/` | `PgCompanyConfigRepository`, `PgSequenceRepository`, HTTP routes |
 
 ---
 
 ## HTTP API
 
-Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the service is running.
+Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the service is running. Every route works on the company of the token (`tid`): another company's invoice, certificate or profile answers as one that doesn't exist.
 
 ### Invoices
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/invoicing/status` | Whether the issuer can invoice, with issues and counts |
+| `GET` | `/api/invoicing/status` | Whether the company's issuer can invoice, with issues and counts |
 | `GET` | `/api/invoices` | One page of invoices, latest first, with `meta.pagination` (`limit` 1-1000, default 100; `offset`; `status`; `fromDate`/`toDate`, days in Ecuador; `attention=true`: only pending or failed ones) |
 | `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
 | `GET` | `/api/invoices/:id` | Get invoice by ID |
@@ -136,7 +148,7 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/certificates` | Upload a `.p12` certificate (`multipart/form-data`) |
-| `GET` | `/api/certificates` | List all certificates |
+| `GET` | `/api/certificates` | List the company's certificates |
 | `GET` | `/api/certificates/:id` | Get certificate by ID |
 | `DELETE` | `/api/certificates/:id` | Delete certificate |
 
@@ -144,8 +156,10 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/api/company-config` | Create or update fiscal config |
-| `GET` | `/api/company-config` | Get current fiscal config |
+| `PUT` | `/api/company-config` | Create or update the company's fiscal profile (`branchCode`, `salePointCode`, `branchAddress` and `invoiceSequence` are ignored) |
+| `GET` | `/api/company-config` | Get the company's fiscal profile |
+| `GET` | `/api/sequences` | The company's invoice counters, by establishment and emission point |
+| `PUT` | `/api/sequences/:establishment/:emissionPoint` | Where the numbering of an emission point continues (`{ "nextSequence": 42 }`), never backwards |
 
 ### Health
 
@@ -197,7 +211,11 @@ All endpoints return a consistent JSON envelope.
 | `NOT_FOUND` | 404 | Resource does not exist |
 | `BAD_REQUEST` | 400 | Invalid input (missing file, wrong extension, etc.) |
 | `VALIDATION_ERROR` | 422 | Request body fails schema validation, unreadable or expired certificate, unknown `signingCertId` |
+| `CERTIFICATE_RUC_MISMATCH` | 422 | The certificate names another RUC (upload or selection) |
+| `CERTIFICATE_RUC_UNKNOWN` | 422 | The certificate names no RUC nor cédula |
+| `ISSUER_NOT_CONFIGURED` | 409 | Uploading a certificate before saving the fiscal profile |
 | `CERTIFICATE_IN_USE` | 409 | Deleting the certificate selected in the company config |
+| `SEQUENCE_CANNOT_GO_BACK` | 409 | Setting a sequence below a number already issued |
 | `INVOICE_NOT_RETRYABLE` | 409 | Retrying an invoice that is already authorized or rejected |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
@@ -216,10 +234,12 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 
 | Topic | Direction | Schema |
 |-------|-----------|--------|
-| `sales.confirmed` | Inbound | Contract `contracts/events/sales.confirmed/v1.schema.json`; validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
+| `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v2.schema.json` (and v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
 | `invoices` | Inbound + Outbound | Contract `contracts/events/invoices/v1.schema.json`; domain events (`InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) sent through `toInvoiceMessage` and read with `InvoiceMessageSchema` |
 
-The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`.
+The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
+
+**Which company, from where.** `sales.confirmed` v2 brings `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it goes to the DLQ.
 
 Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invoice_tax`: the line's `descuento`, `precioTotalSinImpuesto`/`baseImponible` and IVA `valor`, already rounded to cents and with the sale-level discount prorated by faclab-core. The XML uses them as they are (the SRI invoice has no sale-level discount), so the bases plus VAT add up to the sale total. Money is summed in cents and written with two decimals.
 
@@ -228,8 +248,8 @@ Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invo
 The messages follow versioned JSON Schemas owned by faclab-core (`faclab-core/contracts/`, see its README for the field-by-field contract and the compatibility policy). `contracts/` here is a copy pinned to a faclab-core commit in `contracts/source.json`:
 
 - `npm run contracts:sync -- <commit|branch|tag>` refreshes it from GitHub (`CORE_REPO=../faclab-core` uses a local clone instead, for a branch not pushed yet). Never edit the copy by hand: CI checks it out from faclab-core at the pinned commit and fails on any difference.
-- `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example with zod and builds its invoice XML, and validates every message this service publishes on `invoices` against its schema (ajv).
-- Both messages carry `schema_version: 1`. A message without it predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
+- `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example (v1 and v2) with zod and builds its invoice XML, checks that v2's XML and access code use the message's establishment, address and emission point, and validates every message this service publishes on `invoices` against its schema (ajv).
+- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A message without `schema_version` predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
 - A customer may come without `email`, `phone` or `address` (`null`): the SRI doesn't require them and the XML leaves them out (`infoAdicional` only when there is at least one). A final consumer (`customer: null`) is invoiced as `07` / `9999999999999` / `CONSUMIDOR FINAL`. An item without `sku` has no `codigoAuxiliar`; one without `product_name` (the product no longer exists in faclab-core) is described as `Producto <product_id>`.
 
 When a contract changes, deploy the consumer before the producer.
@@ -242,11 +262,13 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 
 | Table | Contents |
 |-------|----------|
-| `invoices` | One row per invoice: status, sale received, sequence, access code, XML, current issue, `version`. Indexes by sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per sale |
+| `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, status, sequence, access code, XML, current issue, `version`. Indexes by company and sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
 | `invoice_events` | Status history of each invoice, in order (append-only) |
-| `issuers` | The fiscal profile (one row, `id = 'default'`, until S2.8) |
-| `sequences` | Last invoice number issued (`doc_type = '01'`). `UPDATE ... RETURNING` hands out each number once, also to concurrent callers; the first invoice of a new issuer is `000000001`. Saving the config only moves it when the request brings `invoiceSequence` (the number the next invoice will get) |
-| `certificates` | Certificate metadata, the `.p12` and its password, both encrypted |
+| `issuers` | The fiscal profile of each company (key `tenant_id`) |
+| `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
+| `certificates` | Certificates of each company: metadata, the RUCs and cédulas they name (`tax_ids`), the `.p12` and its password, both encrypted. An issuer can only select one of its company (composite foreign key `fk_issuers_signing_cert_tenant`) |
+
+**Isolation between companies** is a filter the application never skips: every repository method the API uses takes the company and puts it in the `WHERE`; the pipeline (Kafka, recovery) moves invoices by id and uses each invoice's company. The database has a single role for now: separate owner and application roles, and row-level security like faclab-core's, are pending.
 
 **Migrations** are plain SQL files in `migrations/`, applied with [node-pg-migrate](https://salsita.github.io/node-pg-migrate/) (table `pgmigrations`, advisory lock, up and down). They run as a separate step before starting a new version, like faclab-core's `make upgrade`:
 
@@ -269,7 +291,6 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 
   ```text
   Invalid configuration for NODE_ENV=production:
-  - SRI_ENVIRONMENT is required
   - KAFKA_BROKERS is required
   - DATABASE_URL is required
   ```
@@ -280,7 +301,6 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 
 | Variable | Local default | Production | Description |
 |----------|---------------|------------|-------------|
-| `SRI_ENVIRONMENT` | `test` (`production` is refused) | **Required** | SRI web services: `test` or `production`. See [SRI environment](#sri-environment) |
 | `KAFKA_BROKERS` | `localhost:29092` | **Required** | Comma-separated brokers. A container on `faclab_network` uses `kafka:9092` |
 | `DATABASE_URL` | `postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing` | **Required** | PostgreSQL connection string (`postgres://` or `postgresql://`). A container on `faclab_network` uses `invoicing-db:5432` |
 | `CORS_ORIGINS` | `http://localhost:5173` | **Required**, without `*` | Comma-separated origins allowed to call the API (faclab-web) |
@@ -291,43 +311,36 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
 | `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the recovery runs |
+| `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message goes to the DLQ |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
 | `OTEL_SDK_DISABLED` | — | Optional | `true` turns OpenTelemetry off |
 
 ### Authentication
 
-Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ...`); `/health` and `/docs` are public. Tokens are verified with the shared `JWT_SECRET` (HS256), `JWT_ISSUER` and `typ=access`, and the route's permission must be in the token's `perms` claim:
+Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ...`); `/health` and `/docs` are public. Tokens are verified with the shared `JWT_SECRET` (HS256), `JWT_ISSUER` and `typ=access`; the token's `tid` is the company the request works on (a token without it gets 401 `TENANT_REQUIRED`, like in faclab-core), and the route's permission must be in its `perms` claim:
 
 | Routes | Permission |
 |--------|------------|
-| `/api/company-config`, `/api/certificates` | `user:manage` |
+| `/api/company-config`, `/api/certificates`, `/api/sequences` | `user:manage` |
 | `GET /api/invoices`, `GET /api/invoicing/status` | `sale:read` |
 | `POST /api/invoices/retry`, `POST /api/invoices/:id/retry` | `sale:write` |
 
-Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
+Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` / `TENANT_REQUIRED` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
 
 ### SRI environment
 
-`SRI_ENVIRONMENT` picks the SRI web services (reception and authorization WSDLs) the process calls. The URLs live in a single table, `src/config/sri.ts`:
+Each issuer has its environment (`environment` in the fiscal profile): it goes into the access code and the XML `ambiente`, and picks the SRI web services its invoices are sent to. The URLs live in a single table, `src/config/sri.ts`:
 
-| Value | Host | Invoices |
-|-------|------|----------|
-| `test` | `celcer.sri.gob.ec` | Testing, without tax validity |
-| `production` | `cel.sri.gob.ec` | Real, with tax validity |
+| `environment` | Host | Invoices |
+|---------------|------|----------|
+| `1` (testing) | `celcer.sri.gob.ec` | Testing, without tax validity |
+| `2` (production) | `cel.sri.gob.ec` | Real, with tax validity |
 
-- Production has no default, so it can't reach the test environment by accident. A staging deployment sets `NODE_ENV=production` with `SRI_ENVIRONMENT=test`, and the service logs a warning on startup.
-- Local refuses `production`.
-- Every startup logs `sriEnvironment` and the SRI host.
-
-It is not the issuer's `CompanyConfig.environment`, which goes into the access code and the XML `ambiente`:
-
-| Value | Meaning |
-|-------|---------|
-| `1` | Testing |
-| `2` | Production |
-
-Both must agree: an issuer with `environment: 2` needs `SRI_ENVIRONMENT=production`. Nothing checks this yet; in S2.8 the environment becomes a setting of each issuer.
+- `NODE_ENV=production` reaches both; each company picks its own, so one company can test while another invoices for real.
+- Local only reaches the test web services: an issuer set to production gets `ENVIRONMENT_NOT_ALLOWED` and its invoices wait.
+- Sending and authorizing use the environment of the invoice's access code, so an invoice already prepared finishes where it started even if the profile changes.
+- Every startup logs the environments it reaches.
 
 ---
 
@@ -417,7 +430,7 @@ TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/fa
 Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions:
 
 - `checks` (Node 22, with a `postgres:17` service and `TEST_DATABASE_URL`, so `test/postgres` runs): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
-- `image`: builds the production image without publishing it, and checks that it refuses to start without `SRI_ENVIRONMENT`, `KAFKA_BROKERS` and `DATABASE_URL`.
+- `image`: builds the production image without publishing it, and checks that it refuses to start without `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_SECRET`.
 
 `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
 
@@ -429,36 +442,37 @@ npm ci && npm run lint && npm run format:check && npm run typecheck && npm test 
 
 ### First-Run Setup
 
-Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/status`); saving the config resumes them. Bootstrap the service via the REST API:
+Each company sets up its issuer with a token of its own (`tid`) and the `user:manage` permission. Until this is done, its sales wait as `pending` invoices (see `GET /api/invoicing/status`); finishing it resumes them. The establishments and emission points come from faclab-core (branches and POS terminals).
 
-1. **Upload a signing certificate**
-
-   ```bash
-   curl -X POST http://localhost:3173/api/certificates \
-     -F "file=@/path/to/certificate.p12" \
-     -F "password=your-p12-password"
-   # Copy the returned `id` → use as signingCertId in the next step
-   ```
-
-2. **Save company fiscal config** (include the certificate `id` from step 1)
+1. **Save the fiscal profile** (the RUC is the company's, as in faclab-core)
 
    ```bash
    curl -X PUT http://localhost:3173/api/company-config \
-     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
      -d '{
        "taxId": "1234567890001",
        "name": "ACME S.A.",
        "tradeName": "ACME",
        "mainAddress": "Av. Principal 123",
-       "branchAddress": "Av. Principal 123",
-       "branchCode": "001",
-       "salePointCode": "001",
        "accountingRequired": false,
        "environment": 1,
-       "emissionType": 1,
-       "signingCertId": "<uuid-from-step-1>"
+       "emissionType": 1
      }'
    ```
+
+2. **Upload its signing certificate**: it must name that RUC (or the cédula of a natural person)
+
+   ```bash
+   curl -X POST http://localhost:3173/api/certificates \
+     -H "Authorization: Bearer $TOKEN" \
+     -F "file=@/path/to/certificate.p12" \
+     -F "password=your-p12-password"
+   # Copy the returned `id`
+   ```
+
+3. **Select it**: the same profile with `"signingCertId": "<id from step 2>"`.
+
+4. **Optionally, continue a previous numbering**: `PUT /api/sequences/001/001` with `{ "nextSequence": 1234 }` before the first invoice of that emission point.
 
 ---
 
@@ -475,7 +489,7 @@ Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/st
 
 `.dockerignore` keeps `.env`, `.git`, tests and docs out of the image.
 
-To run it against faclab-infra (Kafka and `invoicing-db` on `faclab_network`) with the SRI test environment:
+To run it against faclab-infra (Kafka and `invoicing-db` on `faclab_network`), reaching both SRI environments (each issuer picks its own):
 
 ```bash
 docker build --target production -t faclab-invoicing .
@@ -484,7 +498,6 @@ DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@invoicing-db:5432/facl
 docker run --rm --network faclab_network -e DATABASE_URL=$DATABASE_URL faclab-invoicing npm run migrate up
 
 docker run --rm --network faclab_network -p 3173:3173 \
-  -e SRI_ENVIRONMENT=test \
   -e KAFKA_BROKERS=kafka:9092 \
   -e DATABASE_URL=$DATABASE_URL \
   -e CORS_ORIGINS=http://localhost:5173 \
@@ -509,7 +522,7 @@ src/
 │   ├── index.ts                 # AppConfig and its zod validation (parseConfig)
 │   ├── local.ts                 # Local defaults
 │   ├── production.ts            # Production defaults and rules
-│   └── sri.ts                   # SRI endpoints per SRI_ENVIRONMENT
+│   └── sri.ts                   # SRI endpoints of each environment
 ├── modules/
 │   ├── invoice/
 │   │   ├── domain/
@@ -526,7 +539,7 @@ src/
 │   │   │   ├── handlers/        # invoice-event, sale-confirmed
 │   │   │   └── queries/         # get, list
 │   │   └── infra/
-│   │       ├── adapters/        # signer, sri-validation, sri-authorization
+│   │       ├── adapters/        # signer, sri-clients, sri-validation, sri-authorization
 │   │       ├── http/            # routes, schemas, mappers
 │   │       ├── messaging/       # kafka consumer, producer, schemas, topics
 │   │       ├── persistence/     # PostgreSQL repo, row mapper

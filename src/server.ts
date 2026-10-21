@@ -24,11 +24,16 @@ const main = async () => {
     environment: config.environment,
   });
 
-  const { sriEnvironment, sriVoucherWsdl } = config.externalServices;
-  logger.info({ sriEnvironment, sriHost: new URL(sriVoucherWsdl).host }, 'SRI environment');
-  if (config.environment === 'production' && sriEnvironment === 'test') {
+  // Each issuer picks its SRI environment; only production may reach the one with tax validity
+  const { sriProductionAllowed } = config.externalServices;
+  logger.info(
+    { sriEnvironments: sriProductionAllowed ? ['test', 'production'] : ['test'] },
+    'SRI environments',
+  );
+  if (config.kafka.salesV1TenantId) {
     logger.warn(
-      'SRI_ENVIRONMENT=test: invoices go to the SRI test environment, without tax validity',
+      { tenantId: config.kafka.salesV1TenantId },
+      'sales.confirmed v1 is invoiced by the company in SALES_V1_TENANT_ID',
     );
   }
 

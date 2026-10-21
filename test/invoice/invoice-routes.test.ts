@@ -12,12 +12,9 @@ import {
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
-import { Authorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 
-import { InMemoryInvoiceRepository, makeSale } from '../helpers';
-
-const allowAll: Authorize = () => async () => undefined;
+import { authorizeAs, InMemoryInvoiceRepository, makePoint, makeSale } from '../helpers';
 
 async function server(repo: InMemoryInvoiceRepository) {
   const app = await createHttpServer({
@@ -37,7 +34,7 @@ async function server(repo: InMemoryInvoiceRepository) {
       retry: vi.fn() as unknown as RetryInvoiceCommand,
       retryAll: vi.fn() as unknown as RetryInvoicesCommand,
     },
-    allowAll,
+    authorizeAs(),
   );
   return app;
 }
@@ -50,7 +47,9 @@ describe('GET /api/invoices', () => {
     const repo = new InMemoryInvoiceRepository();
     for (let n = 1; n <= count; n++) {
       const at = new Date(Date.UTC(2026, 9, n, 15));
-      await repo.createInvoice(Invoice.receive(`inv-${n}`, makeSale({ sale_id: n }), at));
+      await repo.createInvoice(
+        Invoice.receive(`inv-${n}`, makePoint(), makeSale({ sale_id: n }), at),
+      );
     }
     app = await server(repo);
     return app;

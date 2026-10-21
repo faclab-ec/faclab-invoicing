@@ -1,5 +1,5 @@
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
-import { CompanyConfigRepository } from '#/modules/company-config/domain/repository';
+import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 import { logger } from '#/shared/logger';
 
 import { AccessCode } from '../../domain/access-code';
@@ -13,26 +13,31 @@ import { InvoiceCommand } from './command';
 const VOUCHER_TYPE_CODE = '01';
 
 /**
- * Builds the XML of a `pending` invoice. Waits (IssuerNotReadyError) until the
- * issuer has a valid config and a usable certificate.
+ * Builds the XML of a `pending` invoice with its company's issuer, from the establishment and
+ * emission point of its sale. Waits (IssuerNotReadyError) until that issuer has a valid config and
+ * a usable certificate, and while the sale names another RUC.
  */
 export class PrepareInvoiceCommand implements InvoiceCommand {
   constructor(
     private readiness: IssuerReadinessService,
-    private companyConfigRepository: CompanyConfigRepository,
     private invoiceRepository: InvoiceRepository,
   ) {}
 
   async execute(invoice: Invoice): Promise<void> {
-    const { config, certificate } = await this.readiness.requireReady();
+    const { point } = invoice;
+    const { config, certificate } = await this.readiness.requireReady(point.tenantId);
     const sale = invoice.sale;
     if (!sale) throw new Error(`Invoice ${invoice.id} has no sale data`);
+    if (point.issuerRuc !== null && point.issuerRuc !== config.taxId) {
+      throw new IssuerNotReadyError(
+        'ISSUER_RUC_MISMATCH',
+        `The sale was made by the RUC ${point.issuerRuc}, but the company's fiscal profile has ${config.taxId}`,
+      );
+    }
 
     // Saved before building the XML so a failed attempt doesn't burn another number
     if (invoice.sequence === null) {
-      const sequenceNum = await this.companyConfigRepository.nextInvoiceSequence();
-      invoice.assignSequence(String(sequenceNum).padStart(9, '0'));
-      await this.invoiceRepository.updateInvoice(invoice);
+      await this.invoiceRepository.assignSequence(invoice);
     }
     const sequence = invoice.sequence!;
 
@@ -40,7 +45,15 @@ export class PrepareInvoiceCommand implements InvoiceCommand {
     // issuer is dated after its sale (the SRI rejects late emission dates)
     const issuedAt = new Date();
     const accessCode = AccessCode.create(
-      generateAccessCode(issuedAt, config, sale.sale_id, sequence),
+      generateAccessCode({
+        date: issuedAt,
+        taxId: config.taxId,
+        environment: config.environment,
+        establishment: point.establishment,
+        emissionPoint: point.emissionPoint,
+        sequence,
+        saleId: sale.sale_id,
+      }),
     );
 
     const customer = sale.customer
@@ -65,9 +78,9 @@ export class PrepareInvoiceCommand implements InvoiceCommand {
       companyTradeName: config.tradeName,
       companyCode: config.taxId,
       companyMainAddress: config.mainAddress,
-      companyBranchAddress: config.branchAddress,
-      companyBranchCode: config.branchCode,
-      companySalePointCode: config.salePointCode,
+      companyBranchAddress: point.establishmentAddress,
+      companyBranchCode: point.establishment,
+      companySalePointCode: point.emissionPoint,
       companyAccountingRequired: config.accountingRequired,
       accessCode: accessCode.value,
       sequence,

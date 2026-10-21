@@ -4,7 +4,7 @@ import { logger } from '#/shared/logger';
 
 import { Invoice } from '../../domain/invoice';
 import { InvoiceRepository } from '../../domain/repository';
-import { SaleConfirmedMessage } from '../../infra/messaging/schemas';
+import { IssuingPoint, SaleData } from '../../domain/sale';
 
 // Fixed namespace: the same `sales.confirmed` event always maps to the same invoice id
 const INVOICE_ID_NAMESPACE = '1184441d-77e9-413e-9b60-314f27a557e0';
@@ -13,8 +13,15 @@ export function invoiceIdForEvent(eventId: string): string {
   return uuidv5(eventId, INVOICE_ID_NAMESPACE);
 }
 
+/** A `sales.confirmed` message of any version, with who issues and from where */
+export interface ReceivedSale {
+  eventId: string;
+  point: IssuingPoint;
+  sale: SaleData;
+}
+
 /**
- * Stores the sale as a `pending` invoice, whether or not the issuer can invoice
+ * Stores the sale as a `pending` invoice of its company, whether or not its issuer can invoice
  * yet: nothing is lost while the config or the certificate are missing.
  *
  * Kafka may deliver the same message twice (same event id, same invoice id). A
@@ -24,16 +31,17 @@ export function invoiceIdForEvent(eventId: string): string {
 export class ReceiveSaleCommand {
   constructor(private invoiceRepository: InvoiceRepository) {}
 
-  async execute(message: SaleConfirmedMessage): Promise<Invoice | null> {
-    const id = invoiceIdForEvent(message.event_id);
-    const saleId = String(message.payload.sale_id);
+  async execute({ eventId, point, sale }: ReceivedSale): Promise<Invoice | null> {
+    const id = invoiceIdForEvent(eventId);
+    const saleId = String(sale.sale_id);
+    const { tenantId } = point;
 
     if (await this.invoiceRepository.getInvoiceById(id)) {
       logger.info({ invoiceId: id, saleId }, 'Sale already received, ignoring');
       return null;
     }
 
-    const invoices = await this.invoiceRepository.findBySaleId(saleId);
+    const invoices = await this.invoiceRepository.findBySaleId(tenantId, saleId);
     const active = invoices.find((invoice) => invoice.isActive);
     if (active) {
       logger.warn(
@@ -43,7 +51,7 @@ export class ReceiveSaleCommand {
       return null;
     }
 
-    const invoice = Invoice.receive(id, message.payload);
+    const invoice = Invoice.receive(id, point, sale);
     // A concurrent delivery or resend may have stored its invoice since the checks above
     if (!(await this.invoiceRepository.createInvoice(invoice))) {
       logger.info(
@@ -53,7 +61,16 @@ export class ReceiveSaleCommand {
       return null;
     }
 
-    logger.info({ invoiceId: id, saleId }, 'Sale received for invoicing');
+    logger.info(
+      {
+        invoiceId: id,
+        saleId,
+        tenantId,
+        establishment: point.establishment,
+        emissionPoint: point.emissionPoint,
+      },
+      'Sale received for invoicing',
+    );
     return invoice;
   }
 }

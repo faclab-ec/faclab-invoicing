@@ -1,9 +1,9 @@
 import { Certificate } from './certificate';
 
+/** A company's certificates: another company's id is not found */
 export interface CertificateRepository {
   save(certificate: Certificate): Promise<Certificate>;
-  findById(id: string): Promise<Certificate | null>;
-  findAll(): Promise<Certificate[]>;
-  findBySerialNumber(serialNumber: string): Promise<Certificate | null>;
-  delete(id: string): Promise<void>;
+  findById(tenantId: string, id: string): Promise<Certificate | null>;
+  findAll(tenantId: string): Promise<Certificate[]>;
+  delete(tenantId: string, id: string): Promise<void>;
 }

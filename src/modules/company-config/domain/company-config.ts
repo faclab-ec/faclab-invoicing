@@ -7,60 +7,59 @@ export enum EmissionType {
   NORMAL = 1,
 }
 
-export class CompanyConfig {
-  static readonly SINGLETON_ID = 'default';
+// Régimen RIMPE of the taxpayer, when it has one
+export enum RimpeRegime {
+  ENTREPRENEUR = 'EMPRENDEDOR',
+  POPULAR_BUSINESS = 'NEGOCIO_POPULAR',
+}
 
+/**
+ * The fiscal profile of a company (a faclab-core tenant, one RUC). The establishment, its address
+ * and the emission point are not here: each sale brings the ones it was made at.
+ */
+export class CompanyConfig {
   constructor(
-    public readonly id: string,
+    public readonly tenantId: string,
     public readonly taxId: string,
     public readonly name: string,
     public readonly tradeName: string,
     public readonly mainAddress: string,
-    public readonly branchAddress: string,
-    public readonly branchCode: string,
-    public readonly salePointCode: string,
     public readonly specialTaxpayerResolution: string | null,
     public readonly withholdingAgentResolution: string | null,
+    public readonly rimpeRegime: RimpeRegime | null,
     public readonly accountingRequired: boolean,
     public readonly environment: Environment,
     public readonly emissionType: EmissionType,
-    // Number the next invoice will get; only an explicit value in the config moves it
-    public readonly invoiceSequence: number,
     public readonly signingCertId: string | null,
     public readonly updatedAt: Date,
   ) {}
 
   static create(props: {
+    tenantId: string;
     taxId: string;
     name: string;
     tradeName: string;
     mainAddress: string;
-    branchAddress: string;
-    branchCode: string;
-    salePointCode: string;
     specialTaxpayerResolution?: string | null;
     withholdingAgentResolution?: string | null;
+    rimpeRegime?: RimpeRegime | null;
     accountingRequired?: boolean;
     environment: Environment;
     emissionType: EmissionType;
-    invoiceSequence?: number;
     signingCertId?: string | null;
   }): CompanyConfig {
     return new CompanyConfig(
-      CompanyConfig.SINGLETON_ID,
+      props.tenantId,
       props.taxId,
       props.name,
       props.tradeName,
       props.mainAddress,
-      props.branchAddress,
-      props.branchCode,
-      props.salePointCode,
       props.specialTaxpayerResolution ?? null,
       props.withholdingAgentResolution ?? null,
+      props.rimpeRegime ?? null,
       props.accountingRequired ?? false,
       props.environment,
       props.emissionType,
-      props.invoiceSequence ?? 1,
       props.signingCertId ?? null,
       new Date(),
     );

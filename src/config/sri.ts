@@ -7,7 +7,7 @@ export interface SriEndpoints {
 }
 
 // The SRI offline web services: `celcer` is the test environment, `cel` the one with tax validity.
-// SRI_ENVIRONMENT picks one pair for the whole process; S2.8 moves the environment to each issuer.
+// Each issuer's environment picks the pair its invoices go to; only NODE_ENV=production reaches `cel`.
 export const SRI_ENDPOINTS: Record<SriEnvironment, SriEndpoints> = {
   test: {
     receptionWsdl:

@@ -1,12 +1,12 @@
 import { randomUUID } from 'crypto';
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { ConcurrentUpdateError } from '#/modules/invoice/domain/repository';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 
-import { makeSale } from '../helpers';
+import { makePoint, makeSale, RUC_B, TENANT_A, TENANT_B } from '../helpers';
 import { describePostgres, usePostgres } from './support';
 
 const at = (iso: string) => new Date(iso);
@@ -15,8 +15,8 @@ describePostgres('PgInvoiceRepository', () => {
   const pool = usePostgres();
   const repo = () => new PgInvoiceRepository(pool());
 
-  const receive = (saleId: number, receivedAt = new Date()) =>
-    Invoice.receive(randomUUID(), makeSale({ sale_id: saleId }), receivedAt);
+  const receive = (saleId: number, receivedAt = new Date(), point = makePoint()) =>
+    Invoice.receive(randomUUID(), point, makeSale({ sale_id: saleId }), receivedAt);
 
   // Moves a pending invoice to `created`, as PrepareInvoiceCommand does
   const prepare = (invoice: Invoice, sequence: string) => {
@@ -37,6 +37,7 @@ describePostgres('PgInvoiceRepository', () => {
     const stored = (await repo().getInvoiceById(invoice.id))!;
     expect(stored.status).toBe(InvoiceStatus.PENDING);
     expect(stored.saleId).toBe('1');
+    expect(stored.point).toEqual(makePoint());
     expect(stored.sale).toEqual(makeSale({ sale_id: 1 }));
     expect(stored.createdAt).toEqual(at('2026-10-20T15:00:00.123Z'));
     expect(stored.version).toBe(1);
@@ -104,7 +105,7 @@ describePostgres('PgInvoiceRepository', () => {
   it('refuses a second invoice with the same id', async () => {
     const invoice = receive(4);
     await repo().createInvoice(invoice);
-    const again = Invoice.receive(invoice.id, makeSale({ sale_id: 4 }));
+    const again = Invoice.receive(invoice.id, makePoint(), makeSale({ sale_id: 4 }));
 
     expect(await repo().createInvoice(again)).toBe(false);
     expect(again.version).toBe(0);
@@ -118,7 +119,7 @@ describePostgres('PgInvoiceRepository', () => {
     ]);
 
     expect(results.filter(Boolean)).toHaveLength(1);
-    expect(await repo().findBySaleId('5')).toHaveLength(1);
+    expect(await repo().findBySaleId(TENANT_A, '5')).toHaveLength(1);
   });
 
   it('accepts a new invoice for the sale once the active one is rejected', async () => {
@@ -130,7 +131,7 @@ describePostgres('PgInvoiceRepository', () => {
     const second = receive(6);
     expect(await repo().createInvoice(second)).toBe(true);
 
-    const invoices = await repo().findBySaleId('6');
+    const invoices = await repo().findBySaleId(TENANT_A, '6');
     expect(invoices.map((invoice) => [invoice.id, invoice.status])).toEqual([
       [first.id, InvoiceStatus.REJECTED],
       [second.id, InvoiceStatus.PENDING],
@@ -157,9 +158,9 @@ describePostgres('PgInvoiceRepository', () => {
     for (const invoice of invoices) await repo().createInvoice(invoice);
     const ids = (items: Invoice[]) => items.map((invoice) => invoice.id);
 
-    const first = await repo().findPage({}, { limit: 2, offset: 0 });
-    const last = await repo().findPage({}, { limit: 2, offset: 4 });
-    const beyond = await repo().findPage({}, { limit: 2, offset: 10 });
+    const first = await repo().findPage(TENANT_A, {}, { limit: 2, offset: 0 });
+    const last = await repo().findPage(TENANT_A, {}, { limit: 2, offset: 4 });
+    const beyond = await repo().findPage(TENANT_A, {}, { limit: 2, offset: 10 });
 
     expect(first.total).toBe(5);
     expect(ids(first.items)).toEqual([invoices[4].id, invoices[3].id]);
@@ -182,8 +183,8 @@ describePostgres('PgInvoiceRepository', () => {
     prepare(stuck, '000000002');
     stuck.recordIssue({ code: 'UNEXPECTED_ERROR', message: 'boom', at: new Date() });
     await repo().updateInvoice(stuck);
-    const ids = async (filter: Parameters<PgInvoiceRepository['findPage']>[0]) => {
-      const page = await repo().findPage(filter, { limit: 10, offset: 0 });
+    const ids = async (filter: Parameters<PgInvoiceRepository['findPage']>[1]) => {
+      const page = await repo().findPage(TENANT_A, filter, { limit: 10, offset: 0 });
       expect(page.total).toBe(page.items.length);
       return page.items.map((invoice) => invoice.id);
     };
@@ -198,5 +199,91 @@ describePostgres('PgInvoiceRepository', () => {
     // Pending or with an issue, unfinished; latest change first
     expect(await ids({ attention: true })).toEqual([stuck.id, waiting.id]);
     expect(await ids({ attention: true, status: InvoiceStatus.PENDING })).toEqual([waiting.id]);
+  });
+
+  describe('per company', () => {
+    const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
+
+    it("doesn't let one company read, list or count another's invoices", async () => {
+      const ofA = receive(301);
+      const ofB = receive(301, new Date(), pointB);
+      // The same sale id in two companies: two invoices, both active
+      expect(await repo().createInvoice(ofA)).toBe(true);
+      expect(await repo().createInvoice(ofB)).toBe(true);
+
+      expect(await repo().findForTenant(TENANT_A, ofB.id)).toBeNull();
+      expect((await repo().findForTenant(TENANT_B, ofB.id))?.id).toBe(ofB.id);
+      expect((await repo().findBySaleId(TENANT_A, '301')).map((i) => i.id)).toEqual([ofA.id]);
+      const page = await repo().findPage(TENANT_B, {}, { limit: 10, offset: 0 });
+      expect(page.items.map((i) => i.id)).toEqual([ofB.id]);
+      expect(page.total).toBe(1);
+      expect(await repo().countInFlight(TENANT_A)).toEqual({
+        total: 1,
+        withIssues: 0,
+        needingAttention: 1,
+      });
+      // The pipeline moves every company's invoices
+      expect((await repo().findInFlight()).map((i) => i.id).sort()).toEqual(
+        [ofA.id, ofB.id].sort(),
+      );
+    });
+  });
+
+  describe('sequences', () => {
+    const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
+
+    async function stored(count: number, point = makePoint(), firstSale = 1000) {
+      const invoices = [];
+      for (let n = 0; n < count; n++) {
+        const invoice = receive(firstSale + n, new Date(), point);
+        await repo().createInvoice(invoice);
+        invoices.push(invoice);
+      }
+      return invoices;
+    }
+
+    it('gives two sales of the same emission point consecutive numbers, none twice, also at once', async () => {
+      const invoices = await stored(20);
+
+      await Promise.all(invoices.map((invoice) => repo().assignSequence(invoice)));
+
+      const numbers = invoices.map((invoice) => invoice.sequence).sort();
+      expect(numbers).toEqual(Array.from({ length: 20 }, (_, i) => String(i + 1).padStart(9, '0')));
+      const { rows } = await pool().query('SELECT last_value FROM sequences');
+      expect(rows).toEqual([{ last_value: '20' }]);
+    });
+
+    it('numbers each company, establishment and emission point on its own, at the same time', async () => {
+      const ofA = await stored(5, makePoint(), 1100);
+      const ofA2 = await stored(5, makePoint({ establishment: '002' }), 1200);
+      const ofB = await stored(5, pointB, 1100);
+
+      await Promise.all([...ofA, ...ofA2, ...ofB].map((invoice) => repo().assignSequence(invoice)));
+
+      const expected = ['000000001', '000000002', '000000003', '000000004', '000000005'];
+      for (const invoices of [ofA, ofA2, ofB]) {
+        expect(invoices.map((invoice) => invoice.sequence).sort()).toEqual(expected);
+      }
+    });
+
+    it('gives the number back when the invoice changed since it was read', async () => {
+      const [invoice] = await stored(1);
+      const stale = (await repo().getInvoiceById(invoice.id))!;
+      await repo().assignSequence(invoice);
+
+      await expect(repo().assignSequence(stale)).rejects.toBeInstanceOf(ConcurrentUpdateError);
+
+      const { rows } = await pool().query('SELECT last_value FROM sequences');
+      expect(rows).toEqual([{ last_value: '1' }]);
+    });
+
+    it('refuses to store the same number twice in an emission point', async () => {
+      const [first, second] = await stored(2);
+      prepare(first, '000000007');
+      await repo().updateInvoice(first);
+      prepare(second, '000000007');
+
+      await expect(repo().updateInvoice(second)).rejects.toThrow(/uq_invoices_tenant_number/);
+    });
   });
 });
