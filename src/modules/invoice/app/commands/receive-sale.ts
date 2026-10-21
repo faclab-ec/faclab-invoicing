@@ -44,8 +44,12 @@ export class ReceiveSaleCommand {
     }
 
     const invoice = Invoice.receive(id, message.payload);
+    // A concurrent delivery or resend may have stored its invoice since the checks above
     if (!(await this.invoiceRepository.createInvoice(invoice))) {
-      logger.info({ invoiceId: id, saleId }, 'Sale already received, ignoring');
+      logger.info(
+        { invoiceId: id, saleId },
+        'Sale already received or with an active invoice, ignoring',
+      );
       return null;
     }
 

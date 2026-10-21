@@ -1,8 +1,8 @@
 import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-grpc';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-grpc';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
-import { AwsInstrumentation } from '@opentelemetry/instrumentation-aws-sdk';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
+import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
 import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
@@ -33,7 +33,9 @@ const sdk = new NodeSDK({
 
   instrumentations: [
     new HttpInstrumentation(),
-    new AwsInstrumentation({ suppressInternalInstrumentation: true }),
+    // Only queries inside a request or a Kafka message: the recovery job's polling would
+    // otherwise start a trace every minute
+    new PgInstrumentation({ requireParentSpan: true }),
     new PinoInstrumentation(),
   ],
 });

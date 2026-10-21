@@ -9,7 +9,6 @@ export function toResponse(cert: Certificate) {
     validFrom: cert.validFrom.toISOString(),
     validTo: cert.validTo.toISOString(),
     fileName: cert.fileName,
-    s3Url: cert.s3Url,
     uploadedAt: cert.uploadedAt.toISOString(),
   };
 }

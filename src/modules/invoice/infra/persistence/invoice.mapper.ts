@@ -3,85 +3,96 @@ import { Invoice, InvoiceStatus, InvoiceStatusHistory } from '../../domain/invoi
 import { InvoiceIssueCode } from '../../domain/issue';
 import { SaleData } from '../../domain/sale';
 
-// Invoices written before the `pending` status existed lack the newer fields
-export interface InvoiceRecord {
+/** A row of `invoices`, with its `invoice_events` aggregated in order as `status_history` */
+export interface InvoiceRow {
   id: string;
-  saleId: string;
+  sale_id: string;
   status: string;
-  accessCode?: string | null;
-  sequence?: string | null;
-  signatureId?: string | null;
-  xml?: string | null;
-  sale?: SaleData | null;
-  statusHistory: {
-    name: string;
-    statusDate: string;
-    description?: string;
-  }[];
-  issue?: { code: string; message: string; at: string } | null;
-  attempts?: number;
-  nextAttemptAt?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-  version?: number;
+  sale: SaleData | null;
+  access_code: string | null;
+  sequence: string | null;
+  signature_id: string | null;
+  xml: string | null;
+  issue_code: string | null;
+  issue_message: string | null;
+  issue_at: Date | null;
+  attempts: number;
+  next_attempt_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+  version: number;
+  // Built with json_agg: the dates come as ISO strings
+  status_history: { status: string; occurred_at: string; description: string }[];
 }
 
-export function toInvoiceRecord(invoice: Invoice): InvoiceRecord {
+/** A row of `invoice_events`: `position` is the entry's index in the history */
+export interface InvoiceEventRow {
+  position: number;
+  status: string;
+  occurred_at: Date;
+  description: string;
+}
+
+export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history'> {
   return {
     id: invoice.id,
-    saleId: invoice.saleId,
+    sale_id: invoice.saleId,
     status: invoice.status,
-    accessCode: invoice.accessCode?.value ?? null,
-    sequence: invoice.sequence,
-    signatureId: invoice.signatureId,
-    xml: invoice.xml,
     sale: invoice.sale,
-    statusHistory: invoice.statusHistory.map((h) => ({
-      name: h.name,
-      statusDate: h.statusDate.toISOString(),
-      description: h.description ?? '',
-    })),
-    issue: invoice.issue && {
-      code: invoice.issue.code,
-      message: invoice.issue.message,
-      at: invoice.issue.at.toISOString(),
-    },
+    access_code: invoice.accessCode?.value ?? null,
+    sequence: invoice.sequence,
+    signature_id: invoice.signatureId,
+    xml: invoice.xml,
+    issue_code: invoice.issue?.code ?? null,
+    issue_message: invoice.issue?.message ?? null,
+    issue_at: invoice.issue?.at ?? null,
     attempts: invoice.attempts,
-    nextAttemptAt: invoice.nextAttemptAt?.toISOString() ?? null,
-    createdAt: invoice.createdAt.toISOString(),
-    updatedAt: invoice.updatedAt.toISOString(),
+    next_attempt_at: invoice.nextAttemptAt,
+    created_at: invoice.createdAt,
+    updated_at: invoice.updatedAt,
     version: invoice.version,
   };
 }
 
-export function fromInvoiceRecord(record: InvoiceRecord): Invoice {
-  const statusHistory = record.statusHistory.map(
-    (h) => new InvoiceStatusHistory(h.name as InvoiceStatus, new Date(h.statusDate), h.description),
-  );
-  const firstChange = statusHistory[0]?.statusDate ?? new Date(0);
-  const lastChange = statusHistory[statusHistory.length - 1]?.statusDate ?? firstChange;
+export function toInvoiceEventRows(invoice: Invoice): InvoiceEventRow[] {
+  return invoice.statusHistory.map((entry, position) => ({
+    position,
+    status: entry.name,
+    occurred_at: entry.statusDate,
+    description: entry.description ?? '',
+  }));
+}
 
+export function fromInvoiceRow(row: InvoiceRow): Invoice {
   return new Invoice({
-    id: record.id,
-    saleId: record.saleId,
-    status: record.status as InvoiceStatus,
-    sale: record.sale ?? null,
-    accessCode: record.accessCode ? AccessCode.create(record.accessCode) : null,
-    sequence: record.sequence ?? null,
-    signatureId: record.signatureId ?? null,
-    xml: record.xml ?? null,
-    statusHistory,
-    issue: record.issue
-      ? {
-          code: record.issue.code as InvoiceIssueCode,
-          message: record.issue.message,
-          at: new Date(record.issue.at),
-        }
-      : null,
-    attempts: record.attempts ?? 0,
-    nextAttemptAt: record.nextAttemptAt ? new Date(record.nextAttemptAt) : null,
-    createdAt: record.createdAt ? new Date(record.createdAt) : firstChange,
-    updatedAt: record.updatedAt ? new Date(record.updatedAt) : lastChange,
-    version: record.version ?? 0,
+    id: row.id,
+    saleId: row.sale_id,
+    status: row.status as InvoiceStatus,
+    sale: row.sale,
+    accessCode: row.access_code ? AccessCode.create(row.access_code) : null,
+    sequence: row.sequence,
+    signatureId: row.signature_id,
+    xml: row.xml,
+    statusHistory: row.status_history.map(
+      (entry) =>
+        new InvoiceStatusHistory(
+          entry.status as InvoiceStatus,
+          new Date(entry.occurred_at),
+          entry.description,
+        ),
+    ),
+    issue:
+      row.issue_code && row.issue_at
+        ? {
+            code: row.issue_code as InvoiceIssueCode,
+            message: row.issue_message ?? '',
+            at: row.issue_at,
+          }
+        : null,
+    attempts: row.attempts,
+    nextAttemptAt: row.next_attempt_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    version: row.version,
   });
 }

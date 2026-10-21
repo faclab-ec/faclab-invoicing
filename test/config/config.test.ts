@@ -5,16 +5,13 @@ import { ConfigError, parseConfig } from '#/config';
 
 const JWT_SECRET = randomBytes(32).toString('hex');
 const CERTIFICATE_PASSWORD_KEY = randomBytes(32).toString('base64');
+const DATABASE_URL = `postgres://faclab_invoicing:${randomBytes(8).toString('hex')}@db:5432/faclab_invoicing`;
 
 const production = (overrides: Record<string, string | undefined> = {}) => ({
   NODE_ENV: 'production',
   SRI_ENVIRONMENT: 'production',
   KAFKA_BROKERS: 'kafka-1:9092,kafka-2:9092',
-  AWS_REGION: 'us-east-2',
-  DYNAMODB_INVOICES_TABLE: 'prod_invoices',
-  DYNAMODB_CERTIFICATES_TABLE: 'prod_certificates',
-  DYNAMODB_COMPANY_CONFIG_TABLE: 'prod_company_config',
-  S3_CERTIFICATES_BUCKET: 'prod-certificates',
+  DATABASE_URL,
   CORS_ORIGINS: 'https://app.faclab.test',
   JWT_SECRET,
   CERTIFICATE_PASSWORD_KEY,
@@ -40,17 +37,8 @@ describe('parseConfig in local', () => {
     expect(new URL(config.externalServices.sriVoucherWsdl).host).toBe('celcer.sri.gob.ec');
     expect(new URL(config.externalServices.sriQueryWsdl).host).toBe('celcer.sri.gob.ec');
     expect(config.kafka.brokers).toEqual(['localhost:29092']);
-    expect(config.aws).toEqual({
-      region: 'us-east-1',
-      endpoint: 'http://localhost:4566',
-      dynamoDb: {
-        tables: {
-          invoices: 'invoices',
-          certificates: 'certificates',
-          companyConfig: 'company_config',
-        },
-      },
-      s3: { bucket: 'faclab-invoicing-certificates' },
+    expect(config.database).toEqual({
+      url: 'postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing',
     });
     expect(config.http).toEqual({
       port: 3173,
@@ -63,16 +51,15 @@ describe('parseConfig in local', () => {
   it('takes overrides, such as a container on faclab_network', () => {
     const config = parseConfig({
       KAFKA_BROKERS: ' kafka:9092 , ,other:9092,',
-      AWS_ENDPOINT_URL: 'http://aws-local:4566',
-      DYNAMODB_INVOICES_TABLE: 'my_invoices',
+      DATABASE_URL:
+        'postgres://faclab_invoicing:faclab_invoicing@invoicing-db:5432/faclab_invoicing',
       HTTP_PORT: '4000',
       CORS_ORIGINS: 'http://localhost:5173,http://localhost:8080',
       LOG_LEVEL: 'info',
     });
 
     expect(config.kafka.brokers).toEqual(['kafka:9092', 'other:9092']);
-    expect(config.aws.endpoint).toBe('http://aws-local:4566');
-    expect(config.aws.dynamoDb.tables.invoices).toBe('my_invoices');
+    expect(new URL(config.database.url).host).toBe('invoicing-db:5432');
     expect(config.http.port).toBe(4000);
     expect(config.http.corsOrigins).toEqual(['http://localhost:5173', 'http://localhost:8080']);
     expect(config.logger.level).toBe('info');
@@ -104,18 +91,7 @@ describe('parseConfig in production', () => {
       'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
     );
     expect(config.kafka.brokers).toEqual(['kafka-1:9092', 'kafka-2:9092']);
-    expect(config.aws).toEqual({
-      region: 'us-east-2',
-      endpoint: undefined,
-      dynamoDb: {
-        tables: {
-          invoices: 'prod_invoices',
-          certificates: 'prod_certificates',
-          companyConfig: 'prod_company_config',
-        },
-      },
-      s3: { bucket: 'prod-certificates' },
-    });
+    expect(config.database).toEqual({ url: DATABASE_URL });
     expect(config.http.corsOrigins).toEqual(['https://app.faclab.test']);
     expect(config.auth).toEqual({ jwtSecret: JWT_SECRET, jwtIssuer: 'faclab-core' });
     expect(config.logger.level).toBe('info');
@@ -147,11 +123,7 @@ describe('parseConfig in production', () => {
     for (const name of [
       'SRI_ENVIRONMENT',
       'KAFKA_BROKERS',
-      'AWS_REGION',
-      'DYNAMODB_INVOICES_TABLE',
-      'DYNAMODB_CERTIFICATES_TABLE',
-      'DYNAMODB_COMPANY_CONFIG_TABLE',
-      'S3_CERTIFICATES_BUCKET',
+      'DATABASE_URL',
       'CORS_ORIGINS',
       'JWT_SECRET',
       'CERTIFICATE_PASSWORD_KEY',
@@ -186,14 +158,21 @@ describe('parseConfig in production', () => {
     );
   });
 
-  it('rejects invalid numbers and URLs', () => {
-    const message = errorOf(
-      production({ HTTP_PORT: 'abc', SRI_TIMEOUT_MS: '0', AWS_ENDPOINT_URL: 'not a url' }),
-    );
+  it('rejects invalid numbers', () => {
+    const message = errorOf(production({ HTTP_PORT: 'abc', SRI_TIMEOUT_MS: '0' }));
 
     expect(message).toContain('HTTP_PORT');
     expect(message).toContain('SRI_TIMEOUT_MS');
-    expect(message).toContain('AWS_ENDPOINT_URL must be a URL');
+  });
+
+  it('rejects a DATABASE_URL that is not PostgreSQL without echoing it', () => {
+    const url = 'mysql://faclab:s3cr3t-password@db:3306/faclab';
+    const message = errorOf(production({ DATABASE_URL: url }));
+
+    expect(message).toContain(
+      'DATABASE_URL must be a postgres:// or postgresql:// connection string',
+    );
+    expect(message).not.toContain('s3cr3t-password');
   });
 });
 

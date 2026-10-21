@@ -12,7 +12,9 @@
     "format:check": "prettier --check src test",
     "test": "vitest run",
     "test:contract": "vitest run test/contract",
+    "test:postgres": "vitest run test/postgres",
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p test",
+    "migrate": "node --env-file-if-exists=.env node_modules/node-pg-migrate/bin/node-pg-migrate.js -m migrations",
     "contracts:sync": "scripts/sync-contracts.sh"
   },
   "keywords": [],
@@ -23,10 +25,6 @@
     "node": ">=22.9.0"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1014.0",
-    "@aws-sdk/client-s3": "^3.1014.0",
-    "@aws-sdk/lib-dynamodb": "^3.1014.0",
-    "@aws-sdk/util-dynamodb": "^3.996.2",
     "@confluentinc/kafka-javascript": "^1.8.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/multipart": "^9.4.0",
@@ -36,8 +34,8 @@
     "@opentelemetry/exporter-logs-otlp-grpc": "^0.214.0",
     "@opentelemetry/exporter-metrics-otlp-grpc": "^0.214.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.214.0",
-    "@opentelemetry/instrumentation-aws-sdk": "^0.69.0",
     "@opentelemetry/instrumentation-http": "^0.214.0",
+    "@opentelemetry/instrumentation-pg": "^0.66.0",
     "@opentelemetry/instrumentation-pino": "^0.60.0",
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-node": "^0.214.0",
@@ -48,6 +46,8 @@
     "fastify": "^5.8.2",
     "luxon": "^3.7.2",
     "node-forge": "^1.3.3",
+    "node-pg-migrate": "^9.0.0",
+    "pg": "^8.23.1",
     "pino": "^9.14.0",
     "pino-pretty": "^13.1.3",
     "strong-soap": "^4.1.14",
@@ -57,11 +57,11 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@aws-sdk/types": "^3.973.6",
     "@eslint/js": "^9.39.4",
     "@types/luxon": "^3.7.1",
     "@types/node": "^22.19.15",
     "@types/node-forge": "^1.3.14",
+    "@types/pg": "^8.23.1",
     "@typescript-eslint/eslint-plugin": "^8.57.1",
     "@typescript-eslint/parser": "^8.57.1",
     "ajv": "^8.18.0",

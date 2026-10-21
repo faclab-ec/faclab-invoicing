@@ -20,13 +20,21 @@ export class AesGcmSecretCipher {
   }
 
   encrypt(plaintext: string): string {
-    const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv(ALGORITHM, this.key, iv);
-    const data = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-    return PREFIX + Buffer.concat([iv, cipher.getAuthTag(), data]).toString('base64');
+    return this.encryptBytes(Buffer.from(plaintext, 'utf8'));
   }
 
   decrypt(ciphertext: string): string {
+    return this.decryptBytes(ciphertext).toString('utf8');
+  }
+
+  encryptBytes(plain: Buffer): string {
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv(ALGORITHM, this.key, iv);
+    const data = Buffer.concat([cipher.update(plain), cipher.final()]);
+    return PREFIX + Buffer.concat([iv, cipher.getAuthTag(), data]).toString('base64');
+  }
+
+  decryptBytes(ciphertext: string): Buffer {
     if (!ciphertext.startsWith(PREFIX)) throw new Error('Unknown secret format');
     const raw = Buffer.from(ciphertext.slice(PREFIX.length), 'base64');
     const iv = raw.subarray(0, IV_BYTES);
@@ -34,6 +42,6 @@ export class AesGcmSecretCipher {
     const data = raw.subarray(IV_BYTES + TAG_BYTES);
     const decipher = createDecipheriv(ALGORITHM, this.key, iv);
     decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+    return Buffer.concat([decipher.update(data), decipher.final()]);
   }
 }

@@ -32,19 +32,9 @@ export interface AppConfig {
     brokers: string[];
     groupId: string;
   };
-  aws: {
-    region: string;
-    endpoint?: string;
-    dynamoDb: {
-      tables: {
-        invoices: string;
-        certificates: string;
-        companyConfig: string;
-      };
-    };
-    s3: {
-      bucket: string;
-    };
+  database: {
+    // PostgreSQL connection string of the faclab_invoicing database
+    url: string;
   };
   auth: {
     // faclab-core's JWT_SECRET and JWT_ISSUER: access tokens are checked here
@@ -62,12 +52,7 @@ export type AppEnvironment = (typeof APP_ENVIRONMENTS)[number];
 const ENV_VARS = [
   'SRI_ENVIRONMENT',
   'KAFKA_BROKERS',
-  'AWS_REGION',
-  'AWS_ENDPOINT_URL',
-  'DYNAMODB_INVOICES_TABLE',
-  'DYNAMODB_CERTIFICATES_TABLE',
-  'DYNAMODB_COMPANY_CONFIG_TABLE',
-  'S3_CERTIFICATES_BUCKET',
+  'DATABASE_URL',
   'CORS_ORIGINS',
   'JWT_SECRET',
   'JWT_ISSUER',
@@ -117,6 +102,14 @@ const commaList = (value: string) =>
 
 const positiveInt = z.coerce.number().int().positive();
 
+const isPostgresUrl = (value: string) => {
+  try {
+    return ['postgres:', 'postgresql:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+};
+
 function schemaFor(environment: AppEnvironment) {
   const production = environment === 'production';
   return z.object({
@@ -128,13 +121,9 @@ function schemaFor(environment: AppEnvironment) {
       .string()
       .transform(commaList)
       .pipe(z.array(z.string()).nonempty('must list at least one broker')),
-    AWS_REGION: z.string(),
-    // Unset in production means the real AWS endpoints
-    AWS_ENDPOINT_URL: z.string().url('must be a URL').optional(),
-    DYNAMODB_INVOICES_TABLE: z.string(),
-    DYNAMODB_CERTIFICATES_TABLE: z.string(),
-    DYNAMODB_COMPANY_CONFIG_TABLE: z.string(),
-    S3_CERTIFICATES_BUCKET: z.string(),
+    DATABASE_URL: z
+      .string()
+      .refine(isPostgresUrl, 'must be a postgres:// or postgresql:// connection string'),
     CORS_ORIGINS: z
       .string()
       .transform(commaList)
@@ -233,19 +222,8 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       brokers: values.KAFKA_BROKERS,
       groupId: 'faclab-invoicing',
     },
-    aws: {
-      region: values.AWS_REGION,
-      endpoint: values.AWS_ENDPOINT_URL,
-      dynamoDb: {
-        tables: {
-          invoices: values.DYNAMODB_INVOICES_TABLE,
-          certificates: values.DYNAMODB_CERTIFICATES_TABLE,
-          companyConfig: values.DYNAMODB_COMPANY_CONFIG_TABLE,
-        },
-      },
-      s3: {
-        bucket: values.S3_CERTIFICATES_BUCKET,
-      },
+    database: {
+      url: values.DATABASE_URL,
     },
     auth: {
       jwtSecret: values.JWT_SECRET,

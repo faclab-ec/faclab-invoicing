@@ -17,6 +17,16 @@ describe('AesGcmSecretCipher', () => {
     expect(cipher.decrypt(first)).toBe('clave-del-certificado');
   });
 
+  it('encrypts files: the .p12 bytes come back unchanged', () => {
+    const cipher = new AesGcmSecretCipher(key());
+    const p12 = randomBytes(2048);
+
+    const ciphertext = cipher.encryptBytes(p12);
+
+    expect(ciphertext.startsWith('v1:')).toBe(true);
+    expect(cipher.decryptBytes(ciphertext).equals(p12)).toBe(true);
+  });
+
   it('fails with another key', () => {
     const ciphertext = new AesGcmSecretCipher(key()).encrypt('secret');
     expect(() => new AesGcmSecretCipher(key()).decrypt(ciphertext)).toThrow();

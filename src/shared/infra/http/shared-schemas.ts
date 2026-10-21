@@ -35,3 +35,31 @@ export function successSchema(dataSchema: object): object {
     required: ['data', 'meta'],
   };
 }
+
+// Same as faclab-core's paginated lists
+export const paginationSchema = {
+  type: 'object',
+  description: 'Pagination details.',
+  properties: {
+    total: { type: 'integer', description: 'Records that match the query, in all pages.' },
+    limit: { type: 'integer', description: 'Maximum records per page (as requested).' },
+    offset: { type: 'integer', description: 'Records skipped (as requested).' },
+  },
+  required: ['total', 'limit', 'offset'],
+} as const;
+
+/** A page of `itemSchema` in `data`, with `meta.pagination` */
+export function paginatedSchema(itemSchema: object): object {
+  return {
+    type: 'object',
+    properties: {
+      data: { type: 'array', items: itemSchema },
+      meta: {
+        ...metaSchema,
+        properties: { ...metaSchema.properties, pagination: paginationSchema },
+        required: [...metaSchema.required, 'pagination'],
+      },
+    },
+    required: ['data', 'meta'],
+  };
+}

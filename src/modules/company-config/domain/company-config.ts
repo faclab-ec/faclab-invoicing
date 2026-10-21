@@ -24,6 +24,7 @@ export class CompanyConfig {
     public readonly accountingRequired: boolean,
     public readonly environment: Environment,
     public readonly emissionType: EmissionType,
+    // Number the next invoice will get; only an explicit value in the config moves it
     public readonly invoiceSequence: number,
     public readonly signingCertId: string | null,
     public readonly updatedAt: Date,

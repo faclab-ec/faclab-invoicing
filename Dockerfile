@@ -36,6 +36,8 @@ RUN groupadd --system --gid 10001 app && \
 COPY package.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# For `npm run migrate up`, run with the image before starting a new version
+COPY migrations ./migrations
 
 # Tag or commit SHA, reported as service.version in logs and traces:
 # docker build --target production --build-arg SERVICE_VERSION=$(git rev-parse --short HEAD) .

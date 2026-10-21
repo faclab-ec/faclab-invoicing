@@ -12,10 +12,13 @@ function buildMeta(request: FastifyRequest): { requestId: string; timestamp: str
 }
 
 async function responsePlugin(app: FastifyInstance): Promise<void> {
-  app.decorateReply('success', function (this: FastifyReply, data: unknown) {
-    const meta = buildMeta(this.request);
-    return this.send({ data, meta });
-  });
+  app.decorateReply(
+    'success',
+    function (this: FastifyReply, data: unknown, extraMeta: Record<string, unknown> = {}) {
+      const meta = { ...buildMeta(this.request), ...extraMeta };
+      return this.send({ data, meta });
+    },
+  );
 
   app.setErrorHandler(
     (error: Error & { statusCode?: number; validation?: unknown }, request, reply) => {

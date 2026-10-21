@@ -1,8 +1,10 @@
+import { DateTime } from 'luxon';
+
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 
-import { Invoice } from '../../domain/invoice';
-import { InvoiceRepository } from '../../domain/repository';
+import { Invoice, InvoiceStatus } from '../../domain/invoice';
+import { InvoicePage, InvoiceRepository } from '../../domain/repository';
 
 export class GetInvoiceQuery {
   constructor(private readonly invoiceRepository: InvoiceRepository) {}
@@ -12,16 +14,41 @@ export class GetInvoiceQuery {
   }
 }
 
-export class ListInvoicesQuery {
-  constructor(private readonly invoiceRepository: InvoiceRepository) {}
+export interface ListInvoicesOptions {
+  // Only unfinished invoices that are stuck or waiting to start, latest change first
+  attention?: boolean;
+  status?: InvoiceStatus;
+  // Days (YYYY-MM-DD) in the service's timezone, both included
+  fromDate?: string;
+  toDate?: string;
+  limit: number;
+  offset: number;
+}
 
-  /** `attention`: only unfinished invoices that are stuck or waiting to start, latest first */
-  async execute(options: { attention?: boolean } = {}): Promise<Invoice[]> {
-    if (!options.attention) return this.invoiceRepository.findAll();
-    const invoices = await this.invoiceRepository.findInFlight();
-    return invoices
-      .filter((invoice) => invoice.needsAttention)
-      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+export class ListInvoicesQuery {
+  constructor(
+    private readonly invoiceRepository: InvoiceRepository,
+    private readonly timezone: string,
+  ) {}
+
+  async execute(options: ListInvoicesOptions): Promise<InvoicePage> {
+    return this.invoiceRepository.findPage(
+      {
+        attention: options.attention,
+        status: options.status,
+        createdFrom: options.fromDate ? this.startOfDay(options.fromDate) : undefined,
+        // The day after `toDate`, excluded
+        createdBefore: options.toDate ? this.startOfDay(options.toDate, 1) : undefined,
+      },
+      { limit: options.limit, offset: options.offset },
+    );
+  }
+
+  private startOfDay(day: string, plusDays = 0): Date {
+    return DateTime.fromISO(day, { zone: this.timezone })
+      .plus({ days: plusDays })
+      .startOf('day')
+      .toJSDate();
   }
 }
 

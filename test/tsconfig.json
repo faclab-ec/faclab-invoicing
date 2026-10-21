@@ -4,7 +4,10 @@
     "rootDir": "..",
     "noEmit": true,
     "baseUrl": "..",
-    "types": ["node"]
+    "types": ["node"],
+    // Resolved as vitest loads them: node-pg-migrate only publishes its types through `exports`
+    "module": "ESNext",
+    "moduleResolution": "bundler"
   },
   "include": ["../src", "."]
 }
