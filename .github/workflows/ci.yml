@@ -18,6 +18,23 @@ jobs:
     name: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The repository tests in test/postgres run against it (skipped without TEST_DATABASE_URL)
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: faclab_invoicing
+          POSTGRES_PASSWORD: faclab_invoicing
+          POSTGRES_DB: faclab_invoicing_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U faclab_invoicing -d faclab_invoicing_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://faclab_invoicing:faclab_invoicing@localhost:5432/faclab_invoicing_test
     steps:
       - uses: actions/checkout@v7
 
@@ -79,9 +96,10 @@ jobs:
       - name: Refuse to start without settings
         run: |
           if docker run --rm -e OTEL_SDK_DISABLED=true faclab-invoicing:ci > startup.log 2>&1; then
-            echo "The image started without SRI_ENVIRONMENT and KAFKA_BROKERS"
+            echo "The image started without SRI_ENVIRONMENT, KAFKA_BROKERS and DATABASE_URL"
             exit 1
           fi
           cat startup.log
           grep -q 'SRI_ENVIRONMENT is required' startup.log
           grep -q 'KAFKA_BROKERS is required' startup.log
+          grep -q 'DATABASE_URL is required' startup.log

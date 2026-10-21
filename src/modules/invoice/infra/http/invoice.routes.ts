@@ -8,6 +8,7 @@ import {
   FindInvoicesBySaleIdQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  ListInvoicesOptions,
   ListInvoicesQuery,
 } from '../../app/queries/invoice.queries';
 import { toDetailResponse, toStatusResponse, toSummaryResponse } from './invoice.mapper';
@@ -49,13 +50,17 @@ export function registerInvoiceRoutes(
     },
   );
 
-  // GET /api/invoices — list all, or only those that need attention
-  app.get<{ Querystring: { attention?: boolean } }>(
+  // GET /api/invoices — one page, optionally only those that need attention
+  app.get<{ Querystring: ListInvoicesOptions }>(
     '/api/invoices',
     { schema: listInvoicesSchema, preHandler: canRead },
     async (request, reply) => {
-      const invoices = await handlers.list.execute({ attention: request.query.attention });
-      return reply.success(invoices.map(toSummaryResponse));
+      // The schema fills in the default limit and offset
+      const { limit, offset } = request.query;
+      const page = await handlers.list.execute(request.query);
+      return reply.success(page.items.map(toSummaryResponse), {
+        pagination: { total: page.total, limit, offset },
+      });
     },
   );
 

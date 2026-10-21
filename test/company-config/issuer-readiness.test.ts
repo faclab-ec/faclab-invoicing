@@ -21,6 +21,7 @@ function service(options: {
     save: vi.fn(),
     find: vi.fn(async () => options.config),
     nextInvoiceSequence: vi.fn(),
+    setNextInvoiceSequence: vi.fn(),
   };
   const certRepo = {
     findById: vi.fn(async () => options.certificate ?? null),

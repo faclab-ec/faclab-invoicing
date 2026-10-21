@@ -9,8 +9,8 @@ export class Certificate {
     public readonly validFrom: Date,
     public readonly validTo: Date,
     public readonly fileName: string,
-    public readonly s3Key: string,
-    public readonly s3Url: string,
+    // The .p12 file, encrypted
+    public readonly p12Ciphertext: string,
     public readonly uploadedAt: Date,
     // The .p12 password, encrypted. Null for certificates uploaded before it
     // was stored: those can't sign until they are uploaded again
@@ -24,8 +24,7 @@ export class Certificate {
     validFrom: Date;
     validTo: Date;
     fileName: string;
-    s3Key: string;
-    s3Url: string;
+    p12Ciphertext: string;
     passwordCiphertext: string;
   }): Certificate {
     return new Certificate(
@@ -36,8 +35,7 @@ export class Certificate {
       props.validFrom,
       props.validTo,
       props.fileName,
-      props.s3Key,
-      props.s3Url,
+      props.p12Ciphertext,
       new Date(),
       props.passwordCiphertext,
     );

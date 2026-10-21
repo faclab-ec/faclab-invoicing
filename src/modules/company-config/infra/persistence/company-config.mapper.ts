@@ -1,6 +1,7 @@
 import { CompanyConfig, EmissionType, Environment } from '../../domain/company-config';
 
-export interface CompanyConfigRecord {
+/** A row of `issuers`, joined with the `last_value` of its invoice sequence */
+export interface CompanyConfigRow {
   id: string;
   tax_id: string;
   name: string;
@@ -14,12 +15,15 @@ export interface CompanyConfigRecord {
   accounting_required: boolean;
   environment: number;
   emission_type: number;
-  invoice_sequence: number;
   signing_cert_id: string | null;
-  updated_at: string;
+  updated_at: Date;
+  // bigint: pg returns it as a string
+  last_invoice_sequence: string | null;
 }
 
-export function toCompanyConfigRecord(config: CompanyConfig): CompanyConfigRecord {
+export function toCompanyConfigRow(
+  config: CompanyConfig,
+): Omit<CompanyConfigRow, 'last_invoice_sequence'> {
   return {
     id: config.id,
     tax_id: config.taxId,
@@ -34,29 +38,28 @@ export function toCompanyConfigRecord(config: CompanyConfig): CompanyConfigRecor
     accounting_required: config.accountingRequired,
     environment: config.environment,
     emission_type: config.emissionType,
-    invoice_sequence: config.invoiceSequence,
     signing_cert_id: config.signingCertId,
-    updated_at: config.updatedAt.toISOString(),
+    updated_at: config.updatedAt,
   };
 }
 
-export function fromCompanyConfigRecord(record: CompanyConfigRecord): CompanyConfig {
+export function fromCompanyConfigRow(row: CompanyConfigRow): CompanyConfig {
   return new CompanyConfig(
-    record.id,
-    record.tax_id,
-    record.name,
-    record.trade_name,
-    record.main_address,
-    record.branch_address,
-    record.branch_code,
-    record.sale_point_code,
-    record.special_taxpayer_resolution,
-    record.withholding_agent_resolution,
-    record.accounting_required,
-    record.environment as Environment,
-    record.emission_type as EmissionType,
-    record.invoice_sequence ?? 1,
-    record.signing_cert_id ?? null,
-    new Date(record.updated_at),
+    row.id,
+    row.tax_id,
+    row.name,
+    row.trade_name,
+    row.main_address,
+    row.branch_address,
+    row.branch_code,
+    row.sale_point_code,
+    row.special_taxpayer_resolution,
+    row.withholding_agent_resolution,
+    row.accounting_required,
+    row.environment as Environment,
+    row.emission_type as EmissionType,
+    Number(row.last_invoice_sequence ?? 0) + 1,
+    row.signing_cert_id,
+    row.updated_at,
   );
 }

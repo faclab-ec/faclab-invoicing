@@ -1,5 +1,9 @@
 import { READINESS_ERROR_CODES } from '#/modules/company-config/domain/readiness';
-import { errorResponseSchema, successSchema } from '#/shared/infra/http/shared-schemas';
+import {
+  errorResponseSchema,
+  paginatedSchema,
+  successSchema,
+} from '#/shared/infra/http/shared-schemas';
 
 import { InvoiceStatus } from '../../domain/invoice';
 
@@ -105,15 +109,43 @@ export const listInvoicesSchema = {
   tags: ['Invoices'],
   summary: 'List invoices',
   description:
-    'Returns a summary of every invoice, without the XML. With `attention=true`, only unfinished invoices that are pending or whose last attempt failed, most recently updated first.',
+    'Returns one page of invoice summaries, without the XML, most recently created first, and `meta.pagination` with the total. With `attention=true`, only unfinished invoices that are pending or whose last attempt failed, most recently updated first.',
   querystring: {
     type: 'object',
     properties: {
       attention: { type: 'boolean', description: 'Only invoices that need attention.' },
+      status: {
+        type: 'string',
+        enum: Object.values(InvoiceStatus),
+        description: 'Only invoices in this status.',
+      },
+      fromDate: {
+        type: 'string',
+        format: 'date',
+        description: 'Created on or after this day (America/Guayaquil).',
+      },
+      toDate: {
+        type: 'string',
+        format: 'date',
+        description: 'Created on or before this day (America/Guayaquil).',
+      },
+      limit: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 1000,
+        default: 100,
+        description: 'Maximum number of invoices to return (1-1000).',
+      },
+      offset: {
+        type: 'integer',
+        minimum: 0,
+        default: 0,
+        description: 'Number of invoices to skip.',
+      },
     },
   },
   response: {
-    200: successSchema({ type: 'array', items: invoiceSummaryObjectSchema }),
+    200: paginatedSchema(invoiceSummaryObjectSchema),
   },
 } as const;
 

@@ -1,6 +1,3 @@
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { S3Client } from '@aws-sdk/client-s3';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { KafkaJS } from '@confluentinc/kafka-javascript';
 
 import { AppConfig } from '#/config';
@@ -12,9 +9,8 @@ import {
 } from '#/modules/certificate/app/certificate.commands';
 import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { P12ParserAdapter } from '#/modules/certificate/infra/adapters/p12-parser.adapter';
-import { S3StorageAdapter } from '#/modules/certificate/infra/adapters/s3-storage.adapter';
 import { registerCertificateRoutes } from '#/modules/certificate/infra/http/certificate.routes';
-import { DynamoCertificateRepository } from '#/modules/certificate/infra/persistence/dynamo-certificate.repository';
+import { PgCertificateRepository } from '#/modules/certificate/infra/persistence/pg-certificate.repository';
 import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
@@ -22,7 +18,7 @@ import {
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { IssuerChangeListener } from '#/modules/company-config/domain/readiness';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
-import { DynamoCompanyConfigRepository } from '#/modules/company-config/infra/persistence/dynamo-company-config.repository';
+import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
@@ -55,9 +51,10 @@ import {
   SaleConfirmedMessageSchema,
 } from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
-import { DynamoInvoiceRepository } from '#/modules/invoice/infra/persistence/dynamo-invoice.repository';
+import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
+import { createPool } from '#/shared/infra/database';
 import { DlqProducer } from '#/shared/infra/dlq-producer';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
@@ -88,18 +85,7 @@ export async function createContainer(config: AppConfig) {
     'max.in.flight.requests.per.connection': 5,
   });
 
-  const awsClientConfig = {
-    region: config.aws.region,
-    ...(config.aws.endpoint && { endpoint: config.aws.endpoint }),
-  };
-
-  const ddbClient = new DynamoDBClient(awsClientConfig);
-  const docClient = DynamoDBDocumentClient.from(ddbClient);
-
-  const s3Client = new S3Client({
-    ...awsClientConfig,
-    ...(config.aws.endpoint && { forcePathStyle: true }),
-  });
+  const pool = createPool(config.database.url);
 
   const validationClient = new SoapClient(
     config.externalServices.sriVoucherWsdl,
@@ -111,24 +97,14 @@ export async function createContainer(config: AppConfig) {
   );
 
   // Repositories
-  const invoiceRepository = new DynamoInvoiceRepository(
-    docClient,
-    config.aws.dynamoDb.tables.invoices,
-  );
-  const certificateRepository = new DynamoCertificateRepository(
-    docClient,
-    config.aws.dynamoDb.tables.certificates,
-  );
-  const companyConfigRepository = new DynamoCompanyConfigRepository(
-    docClient,
-    config.aws.dynamoDb.tables.companyConfig,
-  );
+  const invoiceRepository = new PgInvoiceRepository(pool);
+  const certificateRepository = new PgCertificateRepository(pool);
+  const companyConfigRepository = new PgCompanyConfigRepository(pool);
 
   // Issuer: certificates and readiness
-  const s3Storage = new S3StorageAdapter(s3Client, config.aws.s3.bucket, config.aws.endpoint);
   const p12Parser = new P12ParserAdapter();
   const secretCipher = new AesGcmSecretCipher(config.signing.passwordKey);
-  const certificateKeyLoader = new CertificateKeyLoader(s3Storage, secretCipher);
+  const certificateKeyLoader = new CertificateKeyLoader(secretCipher);
   const issuerReadiness = new IssuerReadinessService(
     companyConfigRepository,
     certificateRepository,
@@ -219,7 +195,6 @@ export async function createContainer(config: AppConfig) {
   // Certificate module
   const uploadCertificateCommand = new UploadCertificateCommand(
     p12Parser,
-    s3Storage,
     certificateRepository,
     secretCipher,
     issuerListener,
@@ -228,7 +203,6 @@ export async function createContainer(config: AppConfig) {
   const listCertificatesCommand = new ListCertificatesCommand(certificateRepository);
   const deleteCertificateCommand = new DeleteCertificateCommand(
     certificateRepository,
-    s3Storage,
     companyConfigRepository,
     issuerListener,
   );
@@ -276,7 +250,7 @@ export async function createContainer(config: AppConfig) {
     httpServer,
     {
       get: new GetInvoiceQuery(invoiceRepository),
-      list: new ListInvoicesQuery(invoiceRepository),
+      list: new ListInvoicesQuery(invoiceRepository, config.timezone),
       findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
       status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),
       retry: new RetryInvoiceCommand(invoiceRepository, issuerReadiness, invoiceEventHandler),
@@ -292,5 +266,6 @@ export async function createContainer(config: AppConfig) {
     producer: invoiceProducer,
     httpServer,
     recoveryScheduler,
+    pool,
   };
 }

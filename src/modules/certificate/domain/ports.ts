@@ -10,14 +10,10 @@ export interface P12ParserPort {
   parse(buffer: Buffer, password: string): P12Metadata;
 }
 
-export interface FileStoragePort {
-  upload(key: string, content: Buffer, contentType: string): Promise<string>;
-  download(key: string): Promise<Buffer>;
-  delete(key: string): Promise<void>;
-}
-
-/** Symmetric encryption for secrets kept at rest (certificate passwords) */
+/** Symmetric encryption for secrets kept at rest (certificate files and passwords) */
 export interface SecretCipherPort {
   encrypt(plaintext: string): string;
   decrypt(ciphertext: string): string;
+  encryptBytes(data: Buffer): string;
+  decryptBytes(ciphertext: string): Buffer;
 }

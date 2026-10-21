@@ -1,6 +1,6 @@
 # Faclab Invoicing — Electronic Invoice Service
 
-Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in DynamoDB.
+Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Re
 - [HTTP API](#http-api)
 - [API Response Format](#api-response-format)
 - [Kafka Topics](#kafka-topics)
+- [Persistence](#persistence)
 - [Configuration](#configuration)
 - [Observability](#observability)
 - [Local Development](#local-development)
@@ -25,7 +26,7 @@ Clean Architecture with CQRS and domain events. Dependencies flow inward: infras
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Infrastructure                    │
-│   Kafka  │  DynamoDB  │  S3  │  SRI SOAP  │  HTTP   │
+│     Kafka  │  PostgreSQL  │  SRI SOAP  │  HTTP      │
 ├─────────────────────────────────────────────────────┤
 │                    Application                      │
 │      Commands  │  Queries  │  Event Handlers         │
@@ -68,7 +69,7 @@ Each transition is an isolated Command. `InvoiceEventHandler` reads from the `in
 ### Nothing is lost: pending invoices, issues and recovery
 
 - **The sale is stored first.** `ReceiveSale` saves a `pending` invoice with the sale data before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the issuer is ready. The emission date is the day the XML is built.
-- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`, written with a condition: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`. Updates check a `version` attribute.
+- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
 - **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed messages and storage outages.
   - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`) wait until the issuer is ready.
   - `SRI_UNAVAILABLE` (SOAP error or timeout), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
@@ -88,7 +89,7 @@ Core business module. Manages the full invoice lifecycle.
 |-------|----------|
 | `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces, domain events |
 | `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `InvoiceEventHandler`, `SaleConfirmedHandler`, `InvoiceRecoveryService`, list/get/status queries |
-| `infra/` | `DynamoInvoiceRepository`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
+| `infra/` | `PgInvoiceRepository`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
 
 ### `certificate`
 
@@ -96,11 +97,12 @@ Manages PKCS#12 digital signing certificates.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `Certificate` entity, `P12ParserPort`, `FileStoragePort`, `SecretCipherPort` |
+| `domain/` | `Certificate` entity, `P12ParserPort`, `SecretCipherPort` |
 | `app/` | `UploadCertificateCommand`, `GetCertificateCommand`, `ListCertificatesCommand`, `DeleteCertificateCommand`, `CertificateKeyLoader` |
 
-Each certificate keeps its `.p12` password encrypted (AES-256-GCM, key in `CERTIFICATE_PASSWORD_KEY`); signing uses the password of the selected certificate. Expired certificates are rejected on upload, and the selected one can't be deleted (`CERTIFICATE_IN_USE`, 409).
-| `infra/` | `DynamoCertificateRepository`, `P12ParserAdapter`, `S3StorageAdapter`, HTTP routes |
+| `infra/` | `PgCertificateRepository`, `P12ParserAdapter`, HTTP routes |
+
+Each certificate keeps its `.p12` file and its password in the database, both encrypted (AES-256-GCM, key in `CERTIFICATE_PASSWORD_KEY`); signing uses the selected certificate. Expired certificates are rejected on upload, and the selected one can't be deleted (`CERTIFICATE_IN_USE`, 409).
 
 ### `company-config`
 
@@ -110,7 +112,7 @@ Singleton fiscal configuration for the company (RUC, addresses, SRI environment,
 |-------|----------|
 | `domain/` | `CompanyConfig` entity, readiness types |
 | `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `IssuerReadinessService` |
-| `infra/` | `DynamoCompanyConfigRepository`, HTTP routes |
+| `infra/` | `PgCompanyConfigRepository` (with the invoice sequence), HTTP routes |
 
 ---
 
@@ -123,7 +125,7 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/invoicing/status` | Whether the issuer can invoice, with issues and counts |
-| `GET` | `/api/invoices` | List all invoices (`?attention=true`: only pending or failed ones) |
+| `GET` | `/api/invoices` | One page of invoices, latest first, with `meta.pagination` (`limit` 1-1000, default 100; `offset`; `status`; `fromDate`/`toDate`, days in Ecuador; `attention=true`: only pending or failed ones) |
 | `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
 | `GET` | `/api/invoices/:id` | Get invoice by ID |
 | `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now |
@@ -234,6 +236,30 @@ When a contract changes, deploy the consumer before the producer.
 
 ---
 
+## Persistence
+
+PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's `invoicing-db` on `localhost:5434`). Repositories use `pg` with plain SQL (`src/modules/*/infra/persistence/pg-*.repository.ts`) and the pool from `src/shared/infra/database.ts`.
+
+| Table | Contents |
+|-------|----------|
+| `invoices` | One row per invoice: status, sale received, sequence, access code, XML, current issue, `version`. Indexes by sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per sale |
+| `invoice_events` | Status history of each invoice, in order (append-only) |
+| `issuers` | The fiscal profile (one row, `id = 'default'`, until S2.8) |
+| `sequences` | Last invoice number issued (`doc_type = '01'`). `UPDATE ... RETURNING` hands out each number once, also to concurrent callers; the first invoice of a new issuer is `000000001`. Saving the config only moves it when the request brings `invoiceSequence` (the number the next invoice will get) |
+| `certificates` | Certificate metadata, the `.p12` and its password, both encrypted |
+
+**Migrations** are plain SQL files in `migrations/`, applied with [node-pg-migrate](https://salsita.github.io/node-pg-migrate/) (table `pgmigrations`, advisory lock, up and down). They run as a separate step before starting a new version, like faclab-core's `make upgrade`:
+
+```bash
+npm run migrate up                                   # apply pending migrations (reads DATABASE_URL)
+npm run migrate down                                 # roll back the last one
+npm run migrate create <name> -- -j sql              # new SQL migration in migrations/
+```
+
+`npm run migrate` reads `DATABASE_URL` from the environment or `.env` (the service's local default doesn't apply to it). The production image includes `migrations/`: `docker run --rm -e DATABASE_URL=... faclab-invoicing npm run migrate up`.
+
+---
+
 ## Configuration
 
 `NODE_ENV` picks the mode: `local` (the default) or `production`; any other value stops the service. Every setting comes from an environment variable, validated with zod in `src/config/` when the process starts:
@@ -245,6 +271,7 @@ When a contract changes, deploy the consumer before the producer.
   Invalid configuration for NODE_ENV=production:
   - SRI_ENVIRONMENT is required
   - KAFKA_BROKERS is required
+  - DATABASE_URL is required
   ```
 
 `npm run dev` and `npm start` load `.env` when it exists (`node --env-file-if-exists`); variables already set in the environment win. `.env.example` lists them all.
@@ -255,16 +282,10 @@ When a contract changes, deploy the consumer before the producer.
 |----------|---------------|------------|-------------|
 | `SRI_ENVIRONMENT` | `test` (`production` is refused) | **Required** | SRI web services: `test` or `production`. See [SRI environment](#sri-environment) |
 | `KAFKA_BROKERS` | `localhost:29092` | **Required** | Comma-separated brokers. A container on `faclab_network` uses `kafka:9092` |
-| `AWS_REGION` | `us-east-1` | **Required** | AWS region |
-| `AWS_ENDPOINT_URL` | `http://localhost:4566` | Optional | DynamoDB and S3 endpoint (LocalStack); unset means AWS. A container on `faclab_network` uses `http://aws-local:4566` |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | — | Read by the AWS SDK's default chain (`test`/`test` for LocalStack) |
-| `DYNAMODB_INVOICES_TABLE` | `invoices` | **Required** | Invoices table |
-| `DYNAMODB_CERTIFICATES_TABLE` | `certificates` | **Required** | Certificates table |
-| `DYNAMODB_COMPANY_CONFIG_TABLE` | `company_config` | **Required** | Issuer configuration table |
-| `S3_CERTIFICATES_BUCKET` | `faclab-invoicing-certificates` | **Required** | Bucket for the `.p12` certificates |
+| `DATABASE_URL` | `postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing` | **Required** | PostgreSQL connection string (`postgres://` or `postgresql://`). A container on `faclab_network` uses `invoicing-db:5432` |
 | `CORS_ORIGINS` | `http://localhost:5173` | **Required**, without `*` | Comma-separated origins allowed to call the API (faclab-web) |
 | `JWT_SECRET` | `dev-only-change-me`, same as faclab-core | **Required**, 32+ characters | faclab-core's `JWT_SECRET` |
-| `CERTIFICATE_PASSWORD_KEY` | Fixed dev key | **Required** | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts certificate passwords. Losing or changing it makes stored certificates unreadable: upload them again |
+| `CERTIFICATE_PASSWORD_KEY` | Fixed dev key | **Required** | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts the certificate files and passwords. Losing or changing it makes stored certificates unreadable: upload them again |
 | `JWT_ISSUER` | `faclab-core` | Optional | faclab-core's `JWT_ISSUER` |
 | `HTTP_PORT` | `3173` | Optional | HTTP server port |
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
@@ -317,7 +338,8 @@ Both must agree: an issuer with `environment: 2` needs `SRI_ENVIRONMENT=producti
 - **Resource**: `service.name` (`OTEL_SERVICE_NAME`, default `faclab-invoicing`), `service.namespace=faclab`, `service.version` (`SERVICE_VERSION`) and `deployment.environment.name` (`NODE_ENV`).
 - **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `send invoices` → faclab-core's `process invoices`.
 - **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML and signatures are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
-- **Shutdown**: on SIGTERM or SIGINT the service closes Kafka and HTTP, then flushes the telemetry still buffered (up to 5 s) and logs `Telemetry flushed` before exiting.
+- **Database**: each query inside a request or a Kafka message gets a span (`@opentelemetry/instrumentation-pg`); the recovery job's polling, outside any span, doesn't start traces.
+- **Shutdown**: on SIGTERM or SIGINT the service closes Kafka, HTTP and the database pool, then flushes the telemetry still buffered (up to 5 s) and logs `Telemetry flushed` before exiting.
 
 To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
 
@@ -328,7 +350,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
 ### Prerequisites
 
 - Node.js 22.9 or later (CI uses 22)
-- Docker, for faclab-infra (Kafka and LocalStack)
+- Docker, for faclab-infra (Kafka and the invoicing PostgreSQL)
 
 ### Setup
 
@@ -338,7 +360,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
    npm install
    ```
 
-2. **Start faclab-infra** (Kafka, plus LocalStack for DynamoDB and S3)
+2. **Start faclab-infra** (Kafka and `invoicing-db`, which creates the `faclab_invoicing` and `faclab_invoicing_test` databases)
 
    ```bash
    cd ../faclab-infra && docker compose up -d
@@ -350,9 +372,15 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
    cp .env.example .env
    ```
 
-   The local defaults already point at faclab-infra; `.env` only adds the LocalStack credentials and whatever you override.
+   The local defaults already point at faclab-infra; `.env` adds `DATABASE_URL` for `npm run migrate` and whatever you override.
 
-4. **Run in dev mode**
+4. **Create the tables**
+
+   ```bash
+   npm run migrate up
+   ```
+
+5. **Run in dev mode**
 
    ```bash
    npm run dev
@@ -371,15 +399,25 @@ npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
 npm run format:check  # Prettier check
 npm run typecheck     # tsc over src and test
-npm test              # vitest (test/)
+npm test              # vitest (test/); test/postgres only runs with TEST_DATABASE_URL
+npm run test:postgres # only the PostgreSQL tests
+npm run migrate       # node-pg-migrate (up, down, create); reads DATABASE_URL
+```
+
+### Tests against PostgreSQL
+
+`test/postgres/` checks the repositories, the single active invoice per sale (concurrent resends), the invoice sequence and the full flow on a real database. They are skipped unless `TEST_DATABASE_URL` points at a database whose name ends in `_test` (faclab-infra creates `faclab_invoicing_test`). Each file migrates a schema of its own and drops it at the end; each test starts with empty tables.
+
+```bash
+TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing_test npm test
 ```
 
 ### Continuous Integration
 
 Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions:
 
-- `checks` (Node 22): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
-- `image`: builds the production image without publishing it, and checks that it refuses to start without `SRI_ENVIRONMENT` and `KAFKA_BROKERS`.
+- `checks` (Node 22, with a `postgres:17` service and `TEST_DATABASE_URL`, so `test/postgres` runs): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
+- `image`: builds the production image without publishing it, and checks that it refuses to start without `SRI_ENVIRONMENT`, `KAFKA_BROKERS` and `DATABASE_URL`.
 
 `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
 
@@ -432,25 +470,23 @@ Until this is done, sales wait as `pending` invoices (see `GET /api/invoicing/st
 - Stages `build` (`npm ci` and `npm run build`), `deps` (production dependencies only) and `production`.
 - Runs as `app` (uid 10001), with the code owned by root.
 - `NODE_ENV=production`, port `3173`, and a `HEALTHCHECK` on `/health` with Node's `fetch`.
-- Starts with `node -r ./dist/instrumentation.js dist/server.js`.
+- Starts with `node -r ./dist/instrumentation.js dist/server.js`. It doesn't migrate the database: run `npm run migrate up` with the same image first.
 - `SERVICE_VERSION` comes from the build: `--build-arg SERVICE_VERSION=$(git rev-parse --short HEAD)` (CI passes the commit SHA); without it the image reports `dev`.
 
 `.dockerignore` keeps `.env`, `.git`, tests and docs out of the image.
 
-To run it against faclab-infra (Kafka and LocalStack on `faclab_network`) with the SRI test environment:
+To run it against faclab-infra (Kafka and `invoicing-db` on `faclab_network`) with the SRI test environment:
 
 ```bash
 docker build --target production -t faclab-invoicing .
 
+DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@invoicing-db:5432/faclab_invoicing
+docker run --rm --network faclab_network -e DATABASE_URL=$DATABASE_URL faclab-invoicing npm run migrate up
+
 docker run --rm --network faclab_network -p 3173:3173 \
   -e SRI_ENVIRONMENT=test \
   -e KAFKA_BROKERS=kafka:9092 \
-  -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://aws-local:4566 \
-  -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test \
-  -e DYNAMODB_INVOICES_TABLE=invoices \
-  -e DYNAMODB_CERTIFICATES_TABLE=certificates \
-  -e DYNAMODB_COMPANY_CONFIG_TABLE=company_config \
-  -e S3_CERTIFICATES_BUCKET=faclab-invoicing-certificates \
+  -e DATABASE_URL=$DATABASE_URL \
   -e CORS_ORIGINS=http://localhost:5173 \
   -e JWT_SECRET='<faclab-core JWT_SECRET>' \
   -e CERTIFICATE_PASSWORD_KEY='<32 bytes in base64>' \
@@ -458,13 +494,14 @@ docker run --rm --network faclab_network -p 3173:3173 \
   faclab-invoicing
 ```
 
-To run it next to a local faclab-core, use the local defaults instead, including the dev keys and the same `JWT_SECRET`. Pass only `-e NODE_ENV=local`, `KAFKA_BROKERS`, `AWS_ENDPOINT_URL` and the AWS keys.
+To run it next to a local faclab-core, use the local defaults instead, including the dev keys and the same `JWT_SECRET`. Pass only `-e NODE_ENV=local`, `KAFKA_BROKERS` and `DATABASE_URL`.
 
 ---
 
 ## Project Structure
 
 ```
+migrations/                      # SQL migrations (node-pg-migrate)
 src/
 ├── server.ts                    # Entry point
 ├── container.ts                 # Composition root (manual DI)
@@ -492,13 +529,13 @@ src/
 │   │       ├── adapters/        # signer, sri-validation, sri-authorization
 │   │       ├── http/            # routes, schemas, mappers
 │   │       ├── messaging/       # kafka consumer, producer, schemas, topics
-│   │       ├── persistence/     # DynamoDB repo, mapper
+│   │       ├── persistence/     # PostgreSQL repo, row mapper
 │   │       └── signing/         # xades-signer, p12-reader
 │   ├── certificate/
 │   │   ├── domain/
 │   │   ├── app/
 │   │   └── infra/
-│   │       ├── adapters/        # p12-parser, s3-storage
+│   │       ├── adapters/        # p12-parser
 │   │       ├── http/
 │   │       └── persistence/
 │   └── company-config/
@@ -510,6 +547,7 @@ src/
 └── shared/
     ├── logger.ts
     └── infra/
+        ├── database.ts          # pg pool and transactions
         ├── http-server.ts       # Fastify + Swagger setup
         ├── kafka.ts             # BaseKafkaConsumer
         ├── soap-client.ts       # strong-soap wrapper

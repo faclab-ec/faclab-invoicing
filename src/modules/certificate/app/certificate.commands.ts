@@ -3,7 +3,7 @@ import { CompanyConfigRepository } from '#/modules/company-config/domain/reposit
 import { ConflictError, NotFoundError, ValidationError } from '#/shared/errors/app-error';
 
 import { Certificate } from '../domain/certificate';
-import { FileStoragePort, P12ParserPort, SecretCipherPort } from '../domain/ports';
+import { P12ParserPort, SecretCipherPort } from '../domain/ports';
 import { CertificateRepository } from '../domain/repository';
 
 export interface UploadCertificateInput {
@@ -15,7 +15,6 @@ export interface UploadCertificateInput {
 export class UploadCertificateCommand {
   constructor(
     private readonly p12Parser: P12ParserPort,
-    private readonly fileStorage: FileStoragePort,
     private readonly certificateRepository: CertificateRepository,
     private readonly cipher: SecretCipherPort,
     private readonly issuerListener: IssuerChangeListener,
@@ -28,9 +27,7 @@ export class UploadCertificateCommand {
       throw new ValidationError(`The certificate expired on ${metadata.validTo.toISOString()}`);
     }
 
-    const s3Key = `certificates/${metadata.serialNumber}/${input.fileName}`;
-    const s3Url = await this.fileStorage.upload(s3Key, input.fileBuffer, 'application/x-pkcs12');
-
+    // The file and its password are saved together, both encrypted
     const certificate = Certificate.create({
       serialNumber: metadata.serialNumber,
       subject: metadata.subject,
@@ -38,8 +35,7 @@ export class UploadCertificateCommand {
       validFrom: metadata.validFrom,
       validTo: metadata.validTo,
       fileName: input.fileName,
-      s3Key,
-      s3Url,
+      p12Ciphertext: this.cipher.encryptBytes(input.fileBuffer),
       passwordCiphertext: this.cipher.encrypt(input.password),
     });
 
@@ -68,7 +64,6 @@ export class ListCertificatesCommand {
 export class DeleteCertificateCommand {
   constructor(
     private readonly certificateRepository: CertificateRepository,
-    private readonly fileStorage: FileStoragePort,
     private readonly companyConfigRepository: CompanyConfigRepository,
     private readonly issuerListener: IssuerChangeListener,
   ) {}
@@ -87,7 +82,6 @@ export class DeleteCertificateCommand {
       );
     }
 
-    await this.fileStorage.delete(certificate.s3Key);
     await this.certificateRepository.delete(id);
     this.issuerListener.issuerChanged();
   }

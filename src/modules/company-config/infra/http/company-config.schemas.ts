@@ -59,7 +59,7 @@ const companyConfigResponseProperties = {
   invoiceSequence: {
     type: 'number',
     description:
-      'Current sequential invoice counter. Auto-incremented on each invoice creation. Can be seeded on first setup.',
+      'Sequential number the next invoice will get (`1` for a new issuer). Each invoice takes one; only an explicit `invoiceSequence` in PUT /api/company-config changes it.',
     example: 42,
   },
   signingCertId: {
@@ -84,7 +84,7 @@ export const saveCompanyConfigSchema = {
   tags: ['Company Config'],
   summary: 'Create or update the company fiscal configuration',
   description:
-    'Upserts the singleton company configuration used when generating invoices. This must be configured before the service can process any `sales.confirmed` Kafka events. The `invoiceSequence` field is optional — if omitted, the current counter is preserved.',
+    'Upserts the singleton company configuration used when generating invoices. This must be configured before the service can process any `sales.confirmed` Kafka events. The `invoiceSequence` field is optional — if omitted, the sequence stays as it is.',
   body: {
     type: 'object',
     required: [
@@ -151,10 +151,10 @@ export const saveCompanyConfigSchema = {
         description: '`1` = Normal. Only supported value.',
       },
       invoiceSequence: {
-        type: 'number',
+        type: 'integer',
         minimum: 1,
         description:
-          'Seed value for the invoice sequence counter. Optional — preserves the existing counter if omitted.',
+          'Sequential number the next invoice will get, for example to continue the numbering of a previous system. Optional — the sequence stays as it is if omitted.',
       },
       signingCertId: {
         type: ['string', 'null'],

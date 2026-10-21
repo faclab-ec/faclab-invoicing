@@ -32,7 +32,7 @@ const main = async () => {
     );
   }
 
-  const { consumer, producer, httpServer, recoveryScheduler } = await createContainer(config);
+  const { consumer, producer, httpServer, recoveryScheduler, pool } = await createContainer(config);
   await consumer.start();
   recoveryScheduler.start();
   await httpServer.listen({ port: config.http.port, host: config.http.host });
@@ -45,6 +45,8 @@ const main = async () => {
       await consumer.stop();
       await producer.disconnect();
       await httpServer.close();
+      // Last: the steps above may still be saving invoices
+      await pool.end();
     } catch (error) {
       logger.error({ error }, 'Error during shutdown');
     }

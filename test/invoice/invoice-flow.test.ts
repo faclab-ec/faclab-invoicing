@@ -154,11 +154,14 @@ describe('AuthorizeInvoiceCommand through the event handler', () => {
 
 describe('InvoiceRecoveryService', () => {
   const NOW = new Date('2026-10-09T15:00:00Z');
+  let saleId = 100;
 
   async function store(repo: InMemoryInvoiceRepository, id: string, setup: (i: Invoice) => void) {
-    const invoice = Invoice.receive(id, makeSale(), new Date(NOW.getTime() - 60 * 60_000));
+    // One sale per invoice: a sale has a single active invoice
+    const sale = makeSale({ sale_id: ++saleId });
+    const invoice = Invoice.receive(id, sale, new Date(NOW.getTime() - 60 * 60_000));
     setup(invoice);
-    await repo.createInvoice(invoice);
+    expect(await repo.createInvoice(invoice)).toBe(true);
   }
 
   function recovery(repo: InMemoryInvoiceRepository, ready: boolean) {

@@ -37,15 +37,15 @@ export class SaveCompanyConfigCommand {
       }
     }
 
-    let invoiceSequence = input.invoiceSequence;
-    if (invoiceSequence === undefined) {
-      const current = await this.repository.find();
-      invoiceSequence = current?.invoiceSequence ?? 1;
-    }
-    const config = CompanyConfig.create({ ...input, invoiceSequence });
+    const config = CompanyConfig.create(input);
     await this.repository.save(config);
+    // Only an explicit value moves the counter: saving the rest of the config leaves it alone
+    if (input.invoiceSequence !== undefined) {
+      await this.repository.setNextInvoiceSequence(input.invoiceSequence);
+    }
     this.issuerListener.issuerChanged();
-    return config;
+    // With the sequence as it is now
+    return (await this.repository.find()) ?? config;
   }
 }
 
