@@ -101,6 +101,7 @@
         },
         "payments": {
           "type": "array",
+          "description": "Formas de pago de la factura (`pagos`); sus montos suman `total`.",
           "items": { "$ref": "#/$defs/payment" }
         }
       }
@@ -219,7 +220,7 @@
         "method": { "enum": ["CASH", "CREDIT_CARD", "DEBIT_CARD", "TRANSFER", "OTHER"] },
         "amount": {
           "$ref": "#/$defs/decimal",
-          "description": "Monto entregado; en efectivo puede superar el total."
+          "description": "Monto aplicado a la venta, sin el vuelto (S3.3): la suma de los pagos es igual a `total`."
         }
       }
     }

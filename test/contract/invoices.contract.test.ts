@@ -46,6 +46,11 @@ describe('invoices v1 contract', () => {
       expect(event.tenantId).toBe(TENANT_A);
       expect(message).not.toHaveProperty('tenantId');
     }
+    // The SRI's messages travel with the rejection, and only there
+    const reasons = events.map((event) => ('reason' in event ? event.reason : undefined));
+    expect(reasons.filter((reason) => reason !== undefined)).toEqual([
+      'ERROR SECUENCIAL REGISTRADO',
+    ]);
     expect(new Set(events.map((event) => event.type))).toEqual(
       new Set([
         'InvoiceReceived',

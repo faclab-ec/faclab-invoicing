@@ -106,7 +106,8 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 | `invoice_tax` | decimal | no | Valor del IVA en la factura, en centavos |
 
 `payments[]`: `method` (`CASH` \| `CREDIT_CARD` \| `DEBIT_CARD` \| `TRANSFER` \| `OTHER`) y `amount`
-(decimal; lo entregado, que en efectivo puede superar el total).
+(decimal; lo aplicado a la venta, sin el vuelto). La suma de `payments[].amount` es igual a `total`
+desde S3.3: el core guarda aparte lo entregado y el vuelto, que no viajan a facturación.
 
 ### `sales.confirmed` v1
 
@@ -118,7 +119,8 @@ producción va a la cola de mensajes fallidos.
 ## `invoices` v1
 
 Cada transición de estado de una factura en faclab-invoicing. faclab-core solo actúa con
-`InvoiceAuthorized` (la venta pasa a `INVOICED`).
+`InvoiceAuthorized` (la venta pasa a `INVOICED` y su factura a `AUTHORIZED`) e `InvoiceRejected`
+(la factura pasa a `REJECTED`, con el motivo).
 
 | Campo | Tipo | Nulo | Notas |
 |---|---|---|---|
@@ -128,6 +130,7 @@ Cada transición de estado de una factura en faclab-invoicing. faclab-core solo 
 | `saleId` | texto con dígitos | no | `sale_id` de faclab-core |
 | `status` | `pending` \| `created` \| `signed` \| `sent` \| `authorized` \| `rejected` | no | |
 | `occurredAt` | fecha UTC | no | |
+| `reason` | texto | **sí** | Solo en `InvoiceRejected`: los mensajes del SRI unidos con `' >> '` (`null` si no trajo ninguno). Opcional: falta en los mensajes anteriores a S3.4. El core lo muestra en la venta (`invoiceRejectionReason`) |
 
 Este mensaje no usa todavía el envelope completo de ADR-0006 (`event_id`, `event_type`,
 `payload`); adoptarlo es un cambio incompatible y llegará como v2. La empresa no va en el cuerpo
@@ -140,12 +143,14 @@ un mensaje sin él se descarta.
   - el esquema es válido y cada ejemplo lo cumple (los de v1 cumplen v1 mientras facturación la acepte);
   - los mensajes que arma `build_sale_confirmed_message` y guarda `OutboxWriter` cumplen v2 con cliente completo, sin contacto, consumidor final, cliente o productos borrados, reenvío, venta sin número y sucursal sin dirección;
   - un cambio incompatible (quitar o renombrar un campo, un monto como número, un campo sin documentar) rompe la validación;
-  - `handle_invoice_message` procesa cada ejemplo de `invoices`.
+  - `handle_invoice_message` procesa cada ejemplo de `invoices` (el rechazo, con su `reason`), y
+    `reason` es opcional.
   - `tests/integration/postgres/test_invoicing.py` valida además el outbox de ventas POS reales.
 - **faclab-invoicing** (`test/contract/`, pasos `Contract copy matches faclab-core` y `Contract tests`):
   - cada ejemplo de `sales.confirmed` (v1 y v2) pasa por su zod y produce el XML de la factura; con
     v2, el XML usa el establecimiento, la dirección y el punto de emisión del mensaje;
-  - los mensajes que publica en `invoices` cumplen `invoices/v1.schema.json`.
+  - los mensajes que publica en `invoices` cumplen `invoices/v1.schema.json`, y el rechazo lleva
+    los mensajes del SRI en `reason`.
 
 ## Cómo lo obtiene faclab-invoicing
 

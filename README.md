@@ -235,7 +235,7 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 | Topic | Direction | Schema |
 |-------|-----------|--------|
 | `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v2.schema.json` (and v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
-| `invoices` | Inbound + Outbound | Contract `contracts/events/invoices/v1.schema.json`; domain events (`InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) sent through `toInvoiceMessage` and read with `InvoiceMessageSchema` |
+| `invoices` | Inbound + Outbound | Contract `contracts/events/invoices/v1.schema.json`; domain events (`InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) sent through `toInvoiceMessage` and read with `InvoiceMessageSchema`. `InvoiceRejected` carries the SRI's messages in `reason`, which faclab-core shows in the sale |
 
 The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
 

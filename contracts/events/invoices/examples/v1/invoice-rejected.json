@@ -4,5 +4,6 @@
   "invoiceId": "b56a64f1-de8f-5c84-af32-f7f233d03a0e",
   "saleId": "1204",
   "status": "rejected",
-  "occurredAt": "2026-10-15T15:30:07.402Z"
+  "occurredAt": "2026-10-15T15:30:07.402Z",
+  "reason": "ERROR 45 : ERROR SECUENCIAL REGISTRADO : La clave de acceso ya fue registrada"
 }

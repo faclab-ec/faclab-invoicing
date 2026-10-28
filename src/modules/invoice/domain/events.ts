@@ -39,6 +39,8 @@ export interface InvoiceAuthorized extends BaseInvoiceEvent {
 
 export interface InvoiceRejected extends BaseInvoiceEvent {
   type: 'InvoiceRejected';
+  // The SRI's messages, joined with ' >> '; faclab-core shows them in the sale
+  reason: string | null;
 }
 
 export type InvoiceDomainEvent =

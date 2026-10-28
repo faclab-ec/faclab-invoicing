@@ -246,6 +246,8 @@ export class Invoice {
       saleId: this.saleId,
       status,
       occurredAt: date,
+      // A rejection carries the SRI's messages (invoices v1 `reason`)
+      ...(status === InvoiceStatus.REJECTED ? { reason: description || null } : {}),
     } as InvoiceDomainEvent);
   }
 }

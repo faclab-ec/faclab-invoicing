@@ -15,6 +15,8 @@ export const InvoiceMessageSchema = z.object({
   saleId: z.string(),
   status: z.nativeEnum(InvoiceStatus),
   occurredAt: z.coerce.date(),
+  // Only in InvoiceRejected, and missing before S3.4
+  reason: z.string().nullable().optional(),
 });
 
 export type InvoiceMessage = z.infer<typeof InvoiceMessageSchema>;

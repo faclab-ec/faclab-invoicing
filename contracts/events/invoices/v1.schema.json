@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://faclab.ec/contracts/events/invoices/v1.schema.json",
   "title": "invoices v1",
-  "description": "Transición de estado de una factura que faclab-invoicing publica en el topic invoices. Productor: faclab-invoicing (Invoice.addStatusHistory y toInvoiceMessage). Consumidores: faclab-invoicing (su máquina de estados) y faclab-core (src/invoicing/infra/invoice_messages.py, que solo actúa con InvoiceAuthorized).",
+  "description": "Transición de estado de una factura que faclab-invoicing publica en el topic invoices. Productor: faclab-invoicing (Invoice.addStatusHistory y toInvoiceMessage). Consumidores: faclab-invoicing (su máquina de estados) y faclab-core (src/invoicing/infra/invoice_messages.py, que solo actúa con InvoiceAuthorized e InvoiceRejected).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "type", "invoiceId", "saleId", "status", "occurredAt"],
@@ -39,6 +39,10 @@
       "type": "string",
       "description": "ISO 8601 en UTC con milisegundos (Date.toISOString()).",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Solo en InvoiceRejected: los mensajes del SRI, unidos con ' >> '; null si no trajo ninguno. Opcional: falta en los mensajes anteriores a S3.4."
     }
   }
 }

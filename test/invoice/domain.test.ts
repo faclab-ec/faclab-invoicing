@@ -76,9 +76,13 @@ describe('Invoice', () => {
     const invoice = preparedInvoice();
     expect(invoice.isActive).toBe(true);
 
-    invoice.reject(['DEVUELTA']);
+    invoice.reject(['DEVUELTA', 'CLAVE REPETIDA']);
 
     expect(invoice.isActive).toBe(false);
+    expect(invoice.pullEvents().at(-1)).toMatchObject({
+      type: 'InvoiceRejected',
+      reason: 'DEVUELTA >> CLAVE REPETIDA',
+    });
     expect(invoice.isFinal).toBe(true);
     expect(() =>
       invoice.recordIssue({ code: 'SRI_UNAVAILABLE', message: 'x', at: new Date() }),
