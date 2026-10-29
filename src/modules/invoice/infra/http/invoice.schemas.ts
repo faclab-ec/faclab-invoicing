@@ -6,11 +6,14 @@ import {
 } from '#/shared/infra/http/shared-schemas';
 
 import { InvoiceStatus } from '../../domain/invoice';
+import { INVALID_ISSUE_CODES } from '../../domain/issue';
 
 const ISSUE_CODES = [
   ...READINESS_ERROR_CODES,
+  ...INVALID_ISSUE_CODES,
   'SRI_UNAVAILABLE',
   'SRI_PROCESSING',
+  'STORAGE_UNAVAILABLE',
   'UNEXPECTED_ERROR',
 ];
 
@@ -38,7 +41,7 @@ const statusHistorySchema = {
 const issueSchema = {
   type: ['object', 'null'],
   description:
-    'Why the last attempt could not move the invoice forward. Null once it moves. Issuer codes (`CONFIG_*`, `CERTIFICATE_*`) wait until the config is fixed; the rest are retried automatically.',
+    'Why the last attempt could not move the invoice forward. Null once it moves. Issuer codes (`CONFIG_*`, `CERTIFICATE_*`) wait until the config is fixed; `XML_SCHEMA_INVALID` and `INVOICE_DATA_INVALID` (the invoice itself is wrong) wait for a manual retry; the rest are retried automatically.',
   properties: {
     code: { type: 'string', enum: ISSUE_CODES },
     message: { type: 'string' },
@@ -71,6 +74,16 @@ const invoiceSummaryProperties = {
     type: 'array',
     description: 'Ordered list of all status transitions the invoice has gone through.',
     items: statusHistorySchema,
+  },
+  authorizationNumber: {
+    type: ['string', 'null'],
+    description:
+      'Authorization number the SRI gave the invoice (in the offline scheme, its access code). Null until `authorized`, and in invoices authorized before it was kept.',
+  },
+  authorizedAt: {
+    type: ['string', 'null'],
+    format: 'date-time',
+    description: 'When the SRI authorized it. Null until `authorized`.',
   },
   issue: issueSchema,
   attempts: {
@@ -175,6 +188,30 @@ export const getInvoiceSchema = {
   response: {
     200: successSchema(invoiceDetailObjectSchema),
     404: { ...errorResponseSchema, description: 'No invoice found with the given ID.' },
+  },
+} as const;
+
+export const getAuthorizedXmlSchema = {
+  tags: ['Invoices'],
+  summary: 'Download the authorized XML',
+  description:
+    'The authorized invoice as the SRI returned it (`autorizacion`: status, authorization number and date, environment and the signed voucher), kept in the object storage. It is the file the buyer receives. Answers `application/xml` as an attachment named after the access code.',
+  params: {
+    type: 'object',
+    properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
+    required: ['id'],
+  },
+  produces: ['application/xml'],
+  response: {
+    200: {
+      description: 'The authorized XML.',
+      content: { 'application/xml': { schema: { type: 'string' } } },
+    },
+    404: {
+      ...errorResponseSchema,
+      description:
+        'No invoice with the given ID, not authorized yet, or authorized before its XML was kept.',
+    },
   },
 } as const;
 

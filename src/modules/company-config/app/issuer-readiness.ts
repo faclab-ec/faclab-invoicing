@@ -3,7 +3,12 @@ import { Certificate } from '#/modules/certificate/domain/certificate';
 import { P12ParserPort } from '#/modules/certificate/domain/ports';
 import { CertificateRepository } from '#/modules/certificate/domain/repository';
 
-import { CompanyConfig, Environment } from '../domain/company-config';
+import {
+  CompanyConfig,
+  Environment,
+  SPECIAL_TAXPAYER_RESOLUTION_PATTERN,
+  WITHHOLDING_AGENT_RESOLUTION_PATTERN,
+} from '../domain/company-config';
 import {
   IssuerNotReadyError,
   ReadinessErrorCode,
@@ -18,7 +23,12 @@ const EXPIRY_WARNING_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Same rules as the PUT schema: the SRI rejects anything else
-const CONFIG_FIELD_PATTERNS: [keyof CompanyConfig, RegExp][] = [['taxId', /^\d{13}$/]];
+// A value that doesn't fit would only fail later, in the invoice XML; null fields are left out
+const CONFIG_FIELD_PATTERNS: [keyof CompanyConfig, RegExp][] = [
+  ['taxId', /^\d{13}$/],
+  ['specialTaxpayerResolution', SPECIAL_TAXPAYER_RESOLUTION_PATTERN],
+  ['withholdingAgentResolution', WITHHOLDING_AGENT_RESOLUTION_PATTERN],
+];
 
 export interface ReadyIssuer {
   config: CompanyConfig;
@@ -149,7 +159,7 @@ export class IssuerReadinessService {
     }
 
     const invalidFields = CONFIG_FIELD_PATTERNS.filter(
-      ([field, pattern]) => !pattern.test(String(config[field])),
+      ([field, pattern]) => config[field] !== null && !pattern.test(String(config[field])),
     ).map(([field]) => field);
     if (invalidFields.length > 0) {
       issues.push(

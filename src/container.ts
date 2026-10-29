@@ -38,16 +38,19 @@ import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-even
 import { SaleConfirmedHandler } from '#/modules/invoice/app/handlers/sale-confirmed.handler';
 import {
   FindInvoicesBySaleIdQuery,
+  GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { S3DocumentStorage } from '#/modules/invoice/infra/adapters/s3-document-storage.adapter';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
 import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
+import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
@@ -122,6 +125,8 @@ export async function createContainer(config: AppConfig) {
   const signerAdapter = new SignerAdapter(issuerReadiness, certificateKeyLoader, xadesSigner);
   const sriValidationAdapter = new SriValidationAdapter(sriClients);
   const sriAuthorizationAdapter = new SriAuthorizationAdapter(sriClients);
+  const schemaValidator = new XsdInvoiceSchemaValidator();
+  const documentStorage = new S3DocumentStorage(config.objectStorage);
 
   // Producers
   const invoiceProducer = new KafkaProducer(
@@ -132,12 +137,18 @@ export async function createContainer(config: AppConfig) {
   );
 
   // Commands
-  const prepareInvoiceCommand = new PrepareInvoiceCommand(issuerReadiness, invoiceRepository);
+  const prepareInvoiceCommand = new PrepareInvoiceCommand(
+    issuerReadiness,
+    invoiceRepository,
+    schemaValidator,
+    config.invoicing,
+  );
   const signInvoiceCommand = new SignInvoiceCommand(signerAdapter, invoiceRepository);
   const sendInvoiceCommand = new SendInvoiceCommand(sriValidationAdapter, invoiceRepository);
   const authorizeInvoiceCommand = new AuthorizeInvoiceCommand(
     sriAuthorizationAdapter,
     invoiceRepository,
+    documentStorage,
   );
 
   // Command dispatch map
@@ -263,6 +274,7 @@ export async function createContainer(config: AppConfig) {
     httpServer,
     {
       get: new GetInvoiceQuery(invoiceRepository),
+      authorizedXml: new GetAuthorizedXmlQuery(invoiceRepository, documentStorage),
       list: new ListInvoicesQuery(invoiceRepository, config.timezone),
       findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
       status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),

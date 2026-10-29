@@ -39,6 +39,25 @@ export interface AppConfig {
     // PostgreSQL connection string of the faclab_invoicing database
     url: string;
   };
+  // S3-compatible bucket for the authorized invoices (D-2: self-hosted on the VPS)
+  objectStorage: {
+    // Null for AWS itself
+    endpoint: string | null;
+    region: string;
+    bucket: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    forcePathStyle: boolean;
+  };
+  // Rules that the accountant may still change (D-4)
+  invoicing: {
+    // `sale`: when faclab-core asked to invoice the sale; `prepared`: when the XML is built
+    emissionDate: EmissionDateRule;
+    // Highest total of an invoice to the final consumer, in USD
+    finalConsumerMaxTotal: number;
+    // RUC of the invoicing system's provider, written in every invoice (Anexo 26)
+    providerRuc: string | null;
+  };
   auth: {
     // faclab-core's JWT_SECRET and JWT_ISSUER: access tokens are checked here
     jwtSecret: string;
@@ -47,6 +66,9 @@ export interface AppConfig {
   timezone: string;
   environment: AppEnvironment;
 }
+
+export const EMISSION_DATE_RULES = ['sale', 'prepared'] as const;
+export type EmissionDateRule = (typeof EMISSION_DATE_RULES)[number];
 
 export const APP_ENVIRONMENTS = ['local', 'production'] as const;
 export type AppEnvironment = (typeof APP_ENVIRONMENTS)[number];
@@ -65,6 +87,15 @@ const ENV_VARS = [
   'INVOICE_RETRY_INTERVAL_MS',
   'SERVICE_VERSION',
   'SALES_V1_TENANT_ID',
+  'OBJECT_STORAGE_ENDPOINT',
+  'OBJECT_STORAGE_REGION',
+  'OBJECT_STORAGE_BUCKET',
+  'OBJECT_STORAGE_ACCESS_KEY_ID',
+  'OBJECT_STORAGE_SECRET_ACCESS_KEY',
+  'OBJECT_STORAGE_FORCE_PATH_STYLE',
+  'INVOICE_EMISSION_DATE',
+  'FINAL_CONSUMER_MAX_TOTAL',
+  'INVOICING_PROVIDER_RUC',
 ] as const;
 type EnvVar = (typeof ENV_VARS)[number];
 export type EnvDefaults = Partial<Record<EnvVar, string>>;
@@ -77,6 +108,10 @@ const DEFAULTS: EnvDefaults = {
   INVOICE_RETRY_INTERVAL_MS: '60000',
   // Set at build time (tag or commit SHA); instrumentation.ts reads it too
   SERVICE_VERSION: 'dev',
+  OBJECT_STORAGE_FORCE_PATH_STYLE: 'true',
+  INVOICE_EMISSION_DATE: 'sale',
+  // ficha técnica 2.34, 9.10: above this the invoice needs the buyer's data
+  FINAL_CONSUMER_MAX_TOTAL: '50',
 };
 
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -104,6 +139,14 @@ const commaList = (value: string) =>
     .filter(Boolean);
 
 const positiveInt = z.coerce.number().int().positive();
+
+const isHttpUrl = (value: string) => {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+};
 
 const isPostgresUrl = (value: string) => {
   try {
@@ -155,6 +198,24 @@ function schemaFor(environment: AppEnvironment) {
       .uuid()
       .optional()
       .refine((value) => !production || value === undefined, "can't be set in production"),
+    // Empty: AWS S3 itself
+    OBJECT_STORAGE_ENDPOINT: z
+      .string()
+      .refine(isHttpUrl, 'must be an http:// or https:// URL')
+      .optional(),
+    OBJECT_STORAGE_REGION: z.string().min(1),
+    OBJECT_STORAGE_BUCKET: z.string().min(1),
+    OBJECT_STORAGE_ACCESS_KEY_ID: z.string().min(1),
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
+    OBJECT_STORAGE_FORCE_PATH_STYLE: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true'),
+    INVOICE_EMISSION_DATE: z.enum(EMISSION_DATE_RULES),
+    FINAL_CONSUMER_MAX_TOTAL: z.coerce.number().positive(),
+    INVOICING_PROVIDER_RUC: z
+      .string()
+      .regex(/^\d{13}$/, 'must be a RUC of 13 digits')
+      .optional(),
   });
 }
 
@@ -228,6 +289,19 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
     },
     database: {
       url: values.DATABASE_URL,
+    },
+    objectStorage: {
+      endpoint: values.OBJECT_STORAGE_ENDPOINT ?? null,
+      region: values.OBJECT_STORAGE_REGION,
+      bucket: values.OBJECT_STORAGE_BUCKET,
+      accessKeyId: values.OBJECT_STORAGE_ACCESS_KEY_ID,
+      secretAccessKey: values.OBJECT_STORAGE_SECRET_ACCESS_KEY,
+      forcePathStyle: values.OBJECT_STORAGE_FORCE_PATH_STYLE,
+    },
+    invoicing: {
+      emissionDate: values.INVOICE_EMISSION_DATE,
+      finalConsumerMaxTotal: values.FINAL_CONSUMER_MAX_TOTAL,
+      providerRuc: values.INVOICING_PROVIDER_RUC ?? null,
     },
     auth: {
       jwtSecret: values.JWT_SECRET,

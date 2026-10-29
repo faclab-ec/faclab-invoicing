@@ -18,6 +18,8 @@ export interface ReceivedSale {
   eventId: string;
   point: IssuingPoint;
   sale: SaleData;
+  // occurred_at of the message: when faclab-core asked to invoice it
+  requestedAt: Date;
 }
 
 /**
@@ -31,7 +33,7 @@ export interface ReceivedSale {
 export class ReceiveSaleCommand {
   constructor(private invoiceRepository: InvoiceRepository) {}
 
-  async execute({ eventId, point, sale }: ReceivedSale): Promise<Invoice | null> {
+  async execute({ eventId, point, sale, requestedAt }: ReceivedSale): Promise<Invoice | null> {
     const id = invoiceIdForEvent(eventId);
     const saleId = String(sale.sale_id);
     const { tenantId } = point;
@@ -51,7 +53,7 @@ export class ReceiveSaleCommand {
       return null;
     }
 
-    const invoice = Invoice.receive(id, point, sale);
+    const invoice = Invoice.receive(id, point, sale, new Date(), requestedAt);
     // A concurrent delivery or resend may have stored its invoice since the checks above
     if (!(await this.invoiceRepository.createInvoice(invoice))) {
       logger.info(

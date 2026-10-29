@@ -25,6 +25,7 @@ import {
 import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
 import {
   FindInvoicesBySaleIdQuery,
+  GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   ListInvoicesQuery,
@@ -38,8 +39,10 @@ import { createHttpServer } from '#/shared/infra/http-server';
 import {
   InMemoryCertificateRepository,
   InMemoryCompanyConfigRepository,
+  InMemoryDocumentStorage,
   InMemoryInvoiceRepository,
   InMemorySequenceRepository,
+  makeAuthorizedInvoice,
   makeCertificate,
   makeConfig,
   makePoint,
@@ -52,7 +55,8 @@ import {
 } from '../helpers';
 import { accessToken, AUTH, bearer } from './tokens';
 
-// Two companies with the same data: an invoice of sale 42, a profile, a certificate and a counter
+// Two companies with the same data: an invoice of sale 42, a profile, a certificate and a counter;
+// B's invoice is authorized, with its XML kept
 const INVOICE_A = '0f9a0d1e-1c2b-4a3d-8e4f-5a6b7c8d9e01';
 const INVOICE_B = '0f9a0d1e-1c2b-4a3d-8e4f-5a6b7c8d9e02';
 const CERT_A = '5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b01';
@@ -64,13 +68,14 @@ describe('API isolation between companies', () => {
   const configs = new InMemoryCompanyConfigRepository();
   const certificates = new InMemoryCertificateRepository();
   const sequences = new InMemorySequenceRepository();
+  const storage = new InMemoryDocumentStorage();
   const listener = { issuerChanged: vi.fn() };
   const process = vi.fn();
 
   beforeAll(async () => {
     const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
     await invoices.createInvoice(Invoice.receive(INVOICE_A, makePoint(), makeSale()));
-    await invoices.createInvoice(Invoice.receive(INVOICE_B, pointB, makeSale()));
+    await invoices.createInvoice(await makeAuthorizedInvoice(INVOICE_B, pointB, storage));
     await certificates.save(makeCertificate({ id: CERT_A }));
     await certificates.save(makeCertificate({ id: CERT_B, tenantId: TENANT_B, taxIds: [RUC_B] }));
     await configs.save(makeConfig({ signingCertId: CERT_A }));
@@ -100,6 +105,7 @@ describe('API isolation between companies', () => {
       app,
       {
         get: new GetInvoiceQuery(invoices),
+        authorizedXml: new GetAuthorizedXmlQuery(invoices, storage),
         list: new ListInvoicesQuery(invoices, 'America/Guayaquil'),
         findBySaleId: new FindInvoicesBySaleIdQuery(invoices),
         status: new GetInvoicingStatusQuery(
@@ -160,6 +166,11 @@ describe('API isolation between companies', () => {
     expect((await get(`/api/invoices/${INVOICE_B}`, TENANT_B)).statusCode).toBe(200);
   });
 
+  it("downloads only the company's authorized XML", async () => {
+    expect((await get(`/api/invoices/${INVOICE_B}/authorized-xml`)).statusCode).toBe(404);
+    expect((await get(`/api/invoices/${INVOICE_B}/authorized-xml`, TENANT_B)).statusCode).toBe(200);
+  });
+
   it("doesn't retry another company's invoice", async () => {
     const response = await app.inject({
       method: 'POST',
@@ -176,8 +187,8 @@ describe('API isolation between companies', () => {
     const ofB = (await get('/api/invoicing/status', TENANT_B)).json().data;
 
     expect(ofA).toMatchObject({ ready: true, pendingInvoices: 1 });
-    // B's issuer isn't ready, which doesn't change A's answer
-    expect(ofB).toMatchObject({ ready: false, pendingInvoices: 1 });
+    // B's issuer isn't ready, which doesn't change A's answer; its invoice is authorized
+    expect(ofB).toMatchObject({ ready: false, pendingInvoices: 0 });
   });
 
   it("reads and writes only the company's fiscal profile", async () => {

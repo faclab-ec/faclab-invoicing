@@ -7,6 +7,12 @@ export enum EmissionType {
   NORMAL = 1,
 }
 
+// Resolution numbers as the invoice XML takes them (XSD factura 1.1.0, ficha técnica Anexo 21):
+// contribuyenteEspecial has 3 to 13 letters or digits, agenteRetencion up to 8 digits without
+// leading zeros
+export const SPECIAL_TAXPAYER_RESOLUTION_PATTERN = /^[A-Za-z0-9]{3,13}$/;
+export const WITHHOLDING_AGENT_RESOLUTION_PATTERN = /^[1-9][0-9]{0,7}$/;
+
 // Régimen RIMPE of the taxpayer, when it has one
 export enum RimpeRegime {
   ENTREPRENEUR = 'EMPRENDEDOR',

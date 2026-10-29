@@ -1,5 +1,10 @@
 import { errorResponseSchema, successSchema } from '#/shared/infra/http/shared-schemas';
 
+import {
+  SPECIAL_TAXPAYER_RESOLUTION_PATTERN,
+  WITHHOLDING_AGENT_RESOLUTION_PATTERN,
+} from '../../domain/company-config';
+
 const companyConfigResponseProperties = {
   taxId: {
     type: 'string',
@@ -97,13 +102,15 @@ export const saveCompanyConfigSchema = {
       mainAddress: { type: 'string', description: 'Main establishment address (dirMatriz).' },
       specialTaxpayerResolution: {
         type: 'string',
-        maxLength: 32,
-        description: 'SRI special taxpayer resolution number (optional).',
+        pattern: SPECIAL_TAXPAYER_RESOLUTION_PATTERN.source,
+        description:
+          'SRI special taxpayer resolution number (optional): 3 to 13 letters or digits, as contribuyenteEspecial takes it.',
       },
       withholdingAgentResolution: {
         type: 'string',
-        maxLength: 32,
-        description: 'SRI withholding agent resolution number (optional).',
+        pattern: WITHHOLDING_AGENT_RESOLUTION_PATTERN.source,
+        description:
+          'SRI withholding agent resolution number (optional): up to 8 digits without leading zeros, as agenteRetencion takes it.',
       },
       rimpeRegime: {
         type: ['string', 'null'],

@@ -51,10 +51,11 @@ export class PgInvoiceRepository implements InvoiceRepository {
            id, tenant_id, sale_id, issuer_ruc, establishment, emission_point,
            establishment_address, status, sale, access_code, sequence, signature_id, xml,
            issue_code, issue_message, issue_at, attempts, next_attempt_at, created_at,
-           updated_at, version
+           updated_at, version, requested_at, numeric_code, authorization_number, authorized_at,
+           authorized_xml_key
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21
+           $19, $20, $21, $22, $23, $24, $25, $26
          )
          ON CONFLICT DO NOTHING`,
         [
@@ -79,6 +80,11 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.created_at,
           row.updated_at,
           row.version,
+          row.requested_at,
+          row.numeric_code,
+          row.authorization_number,
+          row.authorized_at,
+          row.authorized_xml_key,
         ],
       );
       if (result.rowCount === 0) return false;
@@ -97,7 +103,9 @@ export class PgInvoiceRepository implements InvoiceRepository {
         `UPDATE invoices SET
            status = $3, access_code = $4, sequence = $5, signature_id = $6, xml = $7,
            issue_code = $8, issue_message = $9, issue_at = $10, attempts = $11,
-           next_attempt_at = $12, updated_at = $13, version = $2 + 1
+           next_attempt_at = $12, updated_at = $13, numeric_code = $14,
+           authorization_number = $15, authorized_at = $16, authorized_xml_key = $17,
+           version = $2 + 1
          WHERE id = $1 AND version = $2`,
         [
           row.id,
@@ -113,6 +121,10 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.attempts,
           row.next_attempt_at,
           row.updated_at,
+          row.numeric_code,
+          row.authorization_number,
+          row.authorized_at,
+          row.authorized_xml_key,
         ],
       );
       if (result.rowCount === 0) throw new ConcurrentUpdateError(invoice.id);
@@ -135,9 +147,9 @@ export class PgInvoiceRepository implements InvoiceRepository {
       invoice.assignSequence(formatSequence(value));
       // uq_invoices_tenant_number: a number is never stored twice
       const result = await client.query(
-        `UPDATE invoices SET sequence = $3, updated_at = $4, version = $2 + 1
+        `UPDATE invoices SET sequence = $3, numeric_code = $4, updated_at = $5, version = $2 + 1
          WHERE id = $1 AND version = $2`,
-        [invoice.id, expected, invoice.sequence, invoice.updatedAt],
+        [invoice.id, expected, invoice.sequence, invoice.numericCode, invoice.updatedAt],
       );
       // Rolled back with the number: the invoice changed since it was read
       if (result.rowCount === 0) throw new ConcurrentUpdateError(invoice.id);

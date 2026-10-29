@@ -37,6 +37,51 @@ describe('SRI authorization mapper', () => {
   });
 });
 
+describe('SRI authorization mapper: an authorized invoice', () => {
+  const CODE = '0910202601179214100100110010010000000011234567812';
+  const authorized = (fields: Record<string, unknown> = {}) =>
+    mapAuthorizationVoucherToDomain({
+      claveAccesoConsultada: CODE,
+      numeroComprobantes: '1',
+      autorizaciones: {
+        autorizacion: [
+          {
+            estado: 'AUTORIZADO',
+            numeroAutorizacion: CODE,
+            fechaAutorizacion: '2026-10-09T10:01:02-05:00',
+            ambiente: 'PRUEBAS',
+            comprobante: '<factura id="comprobante">...</factura>',
+            ...fields,
+          },
+        ],
+      },
+    });
+
+  it('keeps the number, the date as the SRI wrote it and the voucher it authorized', () => {
+    const voucher = authorized();
+
+    expect(voucher.status).toBe(AuthorizationVoucherStatus.AUTHORIZED);
+    expect(voucher.authorizationDate).toEqual(new Date('2026-10-09T15:01:02Z'));
+    expect(voucher.authorized).toEqual({
+      number: CODE,
+      date: '2026-10-09T10:01:02-05:00',
+      environment: 'PRUEBAS',
+      voucherXml: '<factura id="comprobante">...</factura>',
+    });
+  });
+
+  it('takes the date when the SOAP client parsed it', () => {
+    const voucher = authorized({ fechaAutorizacion: new Date('2026-10-09T15:01:02Z') });
+
+    expect(voucher.authorized?.date).toBe('2026-10-09T15:01:02.000Z');
+  });
+
+  it('has nothing to keep without the number or the voucher', () => {
+    expect(authorized({ numeroAutorizacion: undefined }).authorized).toBeNull();
+    expect(authorized({ comprobante: '' }).authorized).toBeNull();
+  });
+});
+
 describe('SRI reception mapper', () => {
   const returned = (...codes: string[]) =>
     mapValidationVoucherToDomain({

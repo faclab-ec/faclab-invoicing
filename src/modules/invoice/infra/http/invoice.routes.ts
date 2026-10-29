@@ -6,6 +6,7 @@ import { Authorize, tenantOf } from '#/shared/infra/http/auth';
 import { RetryInvoiceCommand, RetryInvoicesCommand } from '../../app/commands/retry-invoice';
 import {
   FindInvoicesBySaleIdQuery,
+  GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   ListInvoicesOptions,
@@ -14,6 +15,7 @@ import {
 import { toDetailResponse, toStatusResponse, toSummaryResponse } from './invoice.mapper';
 import {
   findBySaleIdSchema,
+  getAuthorizedXmlSchema,
   getInvoiceSchema,
   invoicingStatusSchema,
   listInvoicesSchema,
@@ -23,6 +25,7 @@ import {
 
 export interface InvoiceHandlers {
   get: GetInvoiceQuery;
+  authorizedXml: GetAuthorizedXmlQuery;
   list: ListInvoicesQuery;
   findBySaleId: FindInvoicesBySaleIdQuery;
   status: GetInvoicingStatusQuery;
@@ -98,6 +101,22 @@ export function registerInvoiceRoutes(
         throw new NotFoundError('Invoice not found');
       }
       return reply.success(toDetailResponse(invoice));
+    },
+  );
+
+  // GET /api/invoices/:id/authorized-xml — the authorized invoice, as a file
+  app.get<{ Params: { id: string } }>(
+    '/api/invoices/:id/authorized-xml',
+    { schema: getAuthorizedXmlSchema, preHandler: canRead },
+    async (request, reply) => {
+      const authorized = await handlers.authorizedXml.execute(tenantOf(request), request.params.id);
+      if (!authorized) {
+        throw new NotFoundError('Authorized XML not found');
+      }
+      return reply
+        .header('Content-Type', 'application/xml; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="${authorized.fileName}"`)
+        .send(authorized.xml);
     },
   );
 

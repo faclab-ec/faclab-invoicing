@@ -5,13 +5,23 @@ import {
 } from '#/modules/company-config/domain/readiness';
 
 // Failures that may go away by themselves: retried with a growing delay
-export type TransientIssueCode = 'SRI_UNAVAILABLE' | 'SRI_PROCESSING' | 'UNEXPECTED_ERROR';
+export type TransientIssueCode =
+  | 'SRI_UNAVAILABLE'
+  | 'SRI_PROCESSING'
+  | 'STORAGE_UNAVAILABLE'
+  | 'UNEXPECTED_ERROR';
+
+// The invoice itself is wrong (XML outside the SRI schema, amounts that don't add up): retrying
+// gives the same result, so only a manual retry after the fix runs it again
+export const INVALID_ISSUE_CODES = ['XML_SCHEMA_INVALID', 'INVOICE_DATA_INVALID'] as const;
+export type InvalidIssueCode = (typeof INVALID_ISSUE_CODES)[number];
 
 /**
  * Why an invoice couldn't move to its next status. Issuer problems (config,
- * certificate) block it until they are fixed; the rest are retried.
+ * certificate) block it until they are fixed; invalid invoices wait for a manual retry; the rest
+ * are retried.
  */
-export type InvoiceIssueCode = ReadinessErrorCode | TransientIssueCode;
+export type InvoiceIssueCode = ReadinessErrorCode | TransientIssueCode | InvalidIssueCode;
 
 export interface InvoiceIssue {
   code: InvoiceIssueCode;
@@ -31,6 +41,18 @@ export class InvoiceIssueError extends Error {
   }
 }
 
+/** The invoice can't be issued as it is: no automatic retry */
+export class InvoiceInvalidError extends Error {
+  constructor(
+    public readonly code: InvalidIssueCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'InvoiceInvalidError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 const RETRY_DELAYS_MS = [1, 5, 15, 60].map((minutes) => minutes * 60_000);
 
 // After this many attempts a transient issue is only retried by hand
@@ -40,8 +62,16 @@ export function isBlockingIssue(code: InvoiceIssueCode): boolean {
   return isReadinessErrorCode(code);
 }
 
+export function isInvalidIssue(code: InvoiceIssueCode): boolean {
+  return (INVALID_ISSUE_CODES as readonly string[]).includes(code);
+}
+
 export function issueFromError(error: unknown, at: Date): InvoiceIssue {
-  if (error instanceof IssuerNotReadyError || error instanceof InvoiceIssueError) {
+  if (
+    error instanceof IssuerNotReadyError ||
+    error instanceof InvoiceIssueError ||
+    error instanceof InvoiceInvalidError
+  ) {
     return { code: error.code, message: error.message, at };
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -49,11 +79,13 @@ export function issueFromError(error: unknown, at: Date): InvoiceIssue {
 }
 
 /**
- * When to try again after `attempts` failed attempts. Blocking issues wait for
- * the issuer to be ready instead of a date; null also means "stop retrying".
+ * When to try again after `attempts` failed attempts. Blocking issues wait for the issuer to be
+ * ready instead of a date and invalid invoices for a manual retry; null also means "stop retrying".
  */
 export function nextAttemptAt(code: InvoiceIssueCode, attempts: number, now: Date): Date | null {
-  if (isBlockingIssue(code) || attempts >= MAX_AUTOMATIC_ATTEMPTS) return null;
+  if (isBlockingIssue(code) || isInvalidIssue(code) || attempts >= MAX_AUTOMATIC_ATTEMPTS) {
+    return null;
+  }
   const step = Math.min(Math.max(attempts, 1), RETRY_DELAYS_MS.length);
   const delay = RETRY_DELAYS_MS[step - 1];
   return new Date(now.getTime() + delay);

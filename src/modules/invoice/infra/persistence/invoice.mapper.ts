@@ -14,10 +14,15 @@ export interface InvoiceRow {
   establishment_address: string | null;
   status: string;
   sale: SaleData | null;
+  requested_at: Date | null;
   access_code: string | null;
   sequence: string | null;
+  numeric_code: string | null;
   signature_id: string | null;
   xml: string | null;
+  authorization_number: string | null;
+  authorized_at: Date | null;
+  authorized_xml_key: string | null;
   issue_code: string | null;
   issue_message: string | null;
   issue_at: Date | null;
@@ -49,10 +54,15 @@ export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history
     establishment_address: invoice.point.establishmentAddress,
     status: invoice.status,
     sale: invoice.sale,
+    requested_at: invoice.requestedAt,
     access_code: invoice.accessCode?.value ?? null,
     sequence: invoice.sequence,
+    numeric_code: invoice.numericCode,
     signature_id: invoice.signatureId,
     xml: invoice.xml,
+    authorization_number: invoice.authorization?.number ?? null,
+    authorized_at: invoice.authorization?.authorizedAt ?? null,
+    authorized_xml_key: invoice.authorization?.xmlKey ?? null,
     issue_code: invoice.issue?.code ?? null,
     issue_message: invoice.issue?.message ?? null,
     issue_at: invoice.issue?.at ?? null,
@@ -86,10 +96,21 @@ export function fromInvoiceRow(row: InvoiceRow): Invoice {
     },
     status: row.status as InvoiceStatus,
     sale: row.sale,
+    requestedAt: row.requested_at,
     accessCode: row.access_code ? AccessCode.create(row.access_code) : null,
     sequence: row.sequence,
+    numericCode: row.numeric_code,
     signatureId: row.signature_id,
     xml: row.xml,
+    // Invoices authorized before S4.1 have none
+    authorization:
+      row.authorization_number && row.authorized_at && row.authorized_xml_key
+        ? {
+            number: row.authorization_number,
+            authorizedAt: row.authorized_at,
+            xmlKey: row.authorized_xml_key,
+          }
+        : null,
     statusHistory: row.status_history.map(
       (entry) =>
         new InvoiceStatusHistory(

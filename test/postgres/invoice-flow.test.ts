@@ -5,7 +5,6 @@ import { PgCertificateRepository } from '#/modules/certificate/infra/persistence
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
-import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
 import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
@@ -22,13 +21,16 @@ import {
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 
 import {
+  InMemoryDocumentStorage,
   makeCertificate,
   makeConfig,
   makePoint,
   makeReceivedSale,
   makeSale,
   makeSaleMessage,
+  prepareCommand,
   readinessStub,
+  REQUESTED_AT,
   RUC_A,
   RUC_B,
   TENANT_A,
@@ -73,6 +75,7 @@ describePostgres('Invoice flow on PostgreSQL', () => {
       ready[tenantId] = { config: (await configs.find(tenantId))!, certificate };
     }
     const readiness = readinessStub(ready);
+    const storage = new InMemoryDocumentStorage();
 
     const published: InvoiceDomainEvent[] = [];
     const producer = {
@@ -80,7 +83,7 @@ describePostgres('Invoice flow on PostgreSQL', () => {
     };
     // The SRI, simulated: receives and authorizes
     const commands = new Map<InvoiceStatus, InvoiceCommand>([
-      [InvoiceStatus.PENDING, new PrepareInvoiceCommand(readiness, invoices)],
+      [InvoiceStatus.PENDING, prepareCommand(readiness, invoices)],
       [
         InvoiceStatus.CREATED,
         new SignInvoiceCommand({ signInvoice: async (xml) => `${xml}<!-- signed -->` }, invoices),
@@ -100,11 +103,21 @@ describePostgres('Invoice flow on PostgreSQL', () => {
         new AuthorizeInvoiceCommand(
           {
             authorizeXml: async (code) =>
-              new AuthorizationVoucher(AuthorizationVoucherStatus.AUTHORIZED, code, new Date(), [
-                'AUTORIZADO',
-              ]),
+              new AuthorizationVoucher(
+                AuthorizationVoucherStatus.AUTHORIZED,
+                code,
+                new Date('2026-10-09T15:01:02Z'),
+                ['AUTORIZADO'],
+                {
+                  number: code,
+                  date: '2026-10-09T10:01:02-05:00',
+                  environment: 'PRODUCCIÓN',
+                  voucherXml: '<factura firmada/>',
+                },
+              ),
           },
           invoices,
+          storage,
         ),
       ],
     ]);
@@ -143,6 +156,16 @@ describePostgres('Invoice flow on PostgreSQL', () => {
     expect(invoice.xml).toContain('<secuencial>000000001</secuencial>');
     expect(invoice.xml).toContain('<!-- signed -->');
     expect(invoice.issue).toBeNull();
+    // Stored and read back: the request date, the numeric code and the authorization
+    const accessCode = invoice.requireAccessCode().value;
+    expect(invoice.requestedAt).toEqual(REQUESTED_AT);
+    expect(invoice.numericCode).toBe(accessCode.slice(39, 47));
+    expect(invoice.authorization).toEqual({
+      number: accessCode,
+      authorizedAt: new Date('2026-10-09T15:01:02Z'),
+      xmlKey: `tenants/${TENANT_A}/invoices/2026/${accessCode}.xml`,
+    });
+    expect(storage.objects.has(invoice.authorization!.xmlKey)).toBe(true);
 
     const { rows } = await pool().query(
       'SELECT status, description FROM invoice_events WHERE invoice_id = $1 ORDER BY position',
