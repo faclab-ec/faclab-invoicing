@@ -8,6 +8,7 @@ It is **multi-company**: each company (a faclab-core tenant, one RUC) has its ow
 
 - [Architecture Overview](#architecture-overview)
 - [Invoice Lifecycle](#invoice-lifecycle)
+- [SRI Compliance](#sri-compliance)
 - [Modules](#modules)
 - [HTTP API](#http-api)
 - [API Response Format](#api-response-format)
@@ -64,25 +65,46 @@ sales.confirmed ──► ReceiveSale ──► PENDING
                                          │
                     ◄────── invoices ◄───┘
                       AuthorizeInvoice ──► AUTHORIZED (or REJECTED)
+                                           authorized XML kept in the object storage
 ```
 
 Each transition is an isolated Command. `InvoiceEventHandler` reads from the `invoices` topic and dispatches to the right command based on the invoice's current status.
 
 ### Nothing is lost: pending invoices, issues and recovery
 
-- **The sale is stored first.** `ReceiveSale` saves a `pending` invoice of its company, with the sale data and where it was made (establishment, its address and emission point), before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the company's issuer is ready. The emission date is the day the XML is built.
+- **The sale is stored first.** `ReceiveSale` saves a `pending` invoice of its company, with the sale data and where it was made (establishment, its address and emission point), before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the company's issuer is ready, dated by `INVOICE_EMISSION_DATE` (see [SRI Compliance](#sri-compliance)).
 - **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` (company and sale) keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
 - **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed messages and storage outages.
   - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `ENVIRONMENT_NOT_ALLOWED`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`, `CERTIFICATE_RUC_MISMATCH`) wait until the company's issuer is ready.
   - `ISSUER_RUC_MISMATCH`: the sale names a RUC other than the company's profile. The invoice waits until the profile has that RUC.
-  - `SRI_UNAVAILABLE` (SOAP error or timeout), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
+  - `SRI_UNAVAILABLE` (SOAP error or timeout, or an authorization without its number or voucher), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`), `STORAGE_UNAVAILABLE` (the authorized XML couldn't be kept: the invoice stays `sent`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
+  - `XML_SCHEMA_INVALID` (the XML doesn't pass the SRI's XSD; the message lists the first errors) and `INVOICE_DATA_INVALID` (its payments don't add up to the total) mean the invoice itself is wrong: they are never retried automatically, only by hand (`POST /api/invoices/:id/retry` or "retry all") once the cause is fixed. The invoice keeps its number.
   - A reception `DEVUELTA` whose only messages are 43 (access code already registered) or 70 (access code being processed) means the SRI already has the voucher: the invoice moves on to authorization.
 - **Recovery** (`InvoiceRecoveryService`) runs at start, every `INVOICE_RETRY_INTERVAL_MS`, right after a company's config or a certificate changes (only that company's invoices), and from `POST /api/invoices/retry` (the caller's company). It takes invoices waiting for their issuer (once it is ready), transient issues that are due, and invoices without an issue that haven't moved for 5 minutes (lost event). Each company's issuer is checked on its own: one that can't invoice doesn't hold back another. It assumes a single instance of the service.
 - **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`), per company: config saved and valid (13-digit RUC), an SRI environment this deployment reaches (only `NODE_ENV=production` reaches production), a certificate of its RUC selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute per company and refreshed on that company's config or certificate changes.
 
 ### Numbering
 
+The access code's numeric code (8 digits, ficha técnica 5.2) is random (`crypto.randomInt`), drawn when the sequence is assigned and kept with the invoice (`numeric_code`): the code says nothing of the sale and a retry builds the same one.
+
 The SRI number (`secuencial`, 9 digits) is per company, establishment, emission point and document type (`sequences`). `PrepareInvoice` takes it in the same transaction that stores it on the invoice (`INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`): concurrent invoices of an emission point get consecutive numbers, none twice, and a failed save gives it back. The first invoice of an emission point is `000000001`, unless `PUT /api/sequences/{establishment}/{emissionPoint}` set where it continues (for example after a previous system); that value never goes back (`SEQUENCE_CANNOT_GO_BACK`, 409), and saving the fiscal profile never moves a counter. `uq_invoices_tenant_number` refuses the same number twice in an emission point; a rejected invoice keeps its number.
+
+---
+
+## SRI Compliance
+
+Checked against the SRI's offline scheme ficha técnica **2.34** (27/07/2026), the factura XSD and resolutions NAC-DGERCGC25-00000014 and NAC-DGERCGC25-00000017, all from [sri.gob.ec/facturacion-electronica](https://www.sri.gob.ec/facturacion-electronica) (S4.1, 2026-10-29).
+
+- **XML version 1.1.0.** 2.0.0 and 2.1.0 only add the invoice that replaces a remission guide and third-party items. The XSD is in `resources/xsd/` (its README has the source, the hashes and the one local change: the Negocio Popular legend of `contribuyenteRimpe`, required by the ficha but missing from the published XSD).
+- **XSD before signing.** `PrepareInvoice` validates every XML with libxml2 (`xmllint-wasm`); a failure stays as a `XML_SCHEMA_INVALID` issue. Free texts are fitted to the schema first: one line, at most 300 characters; a SKU longer than 25 is left out of `codigoAuxiliar`; `pagos` is left out when the sale has no payments.
+- **Issuer legends**, from the fiscal profile: `agenteRetencion` (Anexo 21: the resolution number, up to 8 digits without leading zeros), `contribuyenteRimpe` (Anexo 22: `CONTRIBUYENTE RÉGIMEN RIMPE` or `CONTRIBUYENTE NEGOCIO POPULAR - RÉGIMEN RIMPE`) and `contribuyenteEspecial` (3 to 13 letters or digits). `PUT /api/company-config` refuses other formats (422) and readiness reports stored ones that don't fit (`CONFIG_INVALID`).
+- **RUC of the provider** (Anexo 26, Res. NAC-DGERCGC26-00000027): with `INVOICING_PROVIDER_RUC`, every invoice carries `<campoAdicional nombre="RUC Proveedor">`, the RUC of whoever runs Faclab. The ficha makes it mandatory 60 days after the resolution's publication for issuers that use third-party systems: set it in production.
+- **Emission date** (D-4, `INVOICE_EMISSION_DATE`). `sale` (default): when faclab-core asked to invoice the sale, the `occurred_at` of `sales.confirmed` (the confirmation, or the resend). Since 2026-01-01 vouchers must be transmitted when they are issued (Res. NAC-DGERCGC25-00000014 removed the 4 working days; the SRI answers error 65, *fecha de emisión extemporánea*): an invoice that waited may then be rejected, and a resend from faclab-core dates it again. `prepared`: when the XML is built, as before S4.1. Invoices received before S4.1 have no request date and use the second.
+- **Final consumer** (`FINAL_CONSUMER_MAX_TOTAL`, default 50, ficha 9.10): a sale without a customer over the limit is rejected before it takes a number, with the reason in `InvoiceRejected`, so faclab-core shows it. Such invoices can't be annulled nor corrected with a credit note since 2026 (Res. NAC-DGERCGC25-00000014).
+- **Payments**: `pagos` must add up to `importeTotal` (faclab-core sends what each payment applied since S3.3); otherwise `INVOICE_DATA_INVALID`.
+- **Authorized invoice.** When the SRI authorizes, the `autorizacion` document (status, `numeroAutorizacion`, `fechaAutorizacion`, environment and the signed voucher in CDATA) goes to the object storage at `tenants/{tenant_id}/invoices/{year of emission}/{access code}.xml` **before** the invoice is marked: an authorized invoice always has its XML. The invoice keeps the number, the date and the key; `GET /api/invoices/:id/authorized-xml` downloads it. `fechaAutorizacion` is in UTC (the SOAP client parses it). Invoices authorized before S4.1 have none.
+
+Not covered yet: the Gran Contribuyente legend (Anexo 24) and the construction materials codes in `codigoAuxiliar` (Anexo 23, S4.6).
 
 ---
 
@@ -139,7 +161,8 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | `GET` | `/api/invoicing/status` | Whether the company's issuer can invoice, with issues and counts |
 | `GET` | `/api/invoices` | One page of invoices, latest first, with `meta.pagination` (`limit` 1-1000, default 100; `offset`; `status`; `fromDate`/`toDate`, days in Ecuador; `attention=true`: only pending or failed ones) |
 | `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
-| `GET` | `/api/invoices/:id` | Get invoice by ID |
+| `GET` | `/api/invoices/:id` | Get invoice by ID, with `authorizationNumber` and `authorizedAt` once authorized |
+| `GET` | `/api/invoices/:id/authorized-xml` | The authorized XML as an attachment (`<access code>.xml`); 404 until authorized |
 | `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now |
 | `POST` | `/api/invoices/retry` | Retry every invoice that needs attention, in the background (202) |
 
@@ -262,11 +285,13 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 
 | Table | Contents |
 |-------|----------|
-| `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, status, sequence, access code, XML, current issue, `version`. Indexes by company and sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
+| `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, when faclab-core asked to invoice it (`requested_at`), status, sequence and the access code's `numeric_code` (`ck_invoices_numbered_numeric_code`: together), access code, XML, the SRI's `authorization_number` and `authorized_at` and the `authorized_xml_key` in the object storage, current issue, `version`. Indexes by company and sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
 | `invoice_events` | Status history of each invoice, in order (append-only) |
 | `issuers` | The fiscal profile of each company (key `tenant_id`) |
 | `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
 | `certificates` | Certificates of each company: metadata, the RUCs and cédulas they name (`tax_ids`), the `.p12` and its password, both encrypted. An issuer can only select one of its company (composite foreign key `fk_issuers_signing_cert_tenant`) |
+
+**Object storage** (D-2): the authorized XML of each invoice, in an S3-compatible bucket (`S3DocumentStorage`, AWS SDK v3, path-style), self-hosted on the VPS. Locally, faclab-infra's `object-storage` (Garage) on `localhost:3900`, bucket `faclab-invoicing`. Which service runs on the VPS is decided with its deployment (S8.1); a copy outside the server, with the backups (S8.3).
 
 **Isolation between companies** is a filter the application never skips: every repository method the API uses takes the company and puts it in the `WHERE`; the pipeline (Kafka, recovery) moves invoices by id and uses each invoice's company. The database has a single role for now: separate owner and application roles, and row-level security like faclab-core's, are pending.
 
@@ -311,6 +336,14 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
 | `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the recovery runs |
+| `OBJECT_STORAGE_ENDPOINT` | `http://localhost:3900` (faclab-infra) | Optional | S3-compatible service; empty means AWS S3 itself. A container on `faclab_network` uses `http://object-storage:3900` |
+| `OBJECT_STORAGE_REGION` | `garage` | **Required** | Region of the service (Garage: its `s3_region`) |
+| `OBJECT_STORAGE_BUCKET` | `faclab-invoicing` | **Required** | Bucket of the authorized invoices |
+| `OBJECT_STORAGE_ACCESS_KEY_ID` / `OBJECT_STORAGE_SECRET_ACCESS_KEY` | faclab-infra's development key | **Required** | Key with read and write access to the bucket |
+| `OBJECT_STORAGE_FORCE_PATH_STYLE` | `true` | Optional | `bucket/key` paths instead of bucket subdomains (self-hosted services need them) |
+| `INVOICE_EMISSION_DATE` | `sale` | Optional | `sale` or `prepared`: the date an invoice carries (D-4, see [SRI Compliance](#sri-compliance)) |
+| `FINAL_CONSUMER_MAX_TOTAL` | `50` | Optional | Highest total in USD of an invoice to the final consumer |
+| `INVOICING_PROVIDER_RUC` | — | Set it | RUC of whoever runs Faclab, in every invoice as `RUC Proveedor` (Anexo 26) |
 | `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message goes to the DLQ |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
@@ -323,7 +356,7 @@ Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ..
 | Routes | Permission |
 |--------|------------|
 | `/api/company-config`, `/api/certificates`, `/api/sequences` | `user:manage` |
-| `GET /api/invoices`, `GET /api/invoicing/status` | `sale:read` |
+| `GET /api/invoices` (and `/api/invoices/:id/authorized-xml`), `GET /api/invoicing/status` | `sale:read` |
 | `POST /api/invoices/retry`, `POST /api/invoices/:id/retry` | `sale:write` |
 
 Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` / `TENANT_REQUIRED` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
@@ -363,7 +396,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
 ### Prerequisites
 
 - Node.js 22.9 or later (CI uses 22)
-- Docker, for faclab-infra (Kafka and the invoicing PostgreSQL)
+- Docker, for faclab-infra (Kafka, the invoicing PostgreSQL and the object storage)
 
 ### Setup
 
@@ -373,7 +406,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
    npm install
    ```
 
-2. **Start faclab-infra** (Kafka and `invoicing-db`, which creates the `faclab_invoicing` and `faclab_invoicing_test` databases)
+2. **Start faclab-infra** (Kafka; `invoicing-db`, which creates the `faclab_invoicing` and `faclab_invoicing_test` databases; and `object-storage`, which creates the bucket and its development key)
 
    ```bash
    cd ../faclab-infra && docker compose up -d
@@ -412,7 +445,8 @@ npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
 npm run format:check  # Prettier check
 npm run typecheck     # tsc over src and test
-npm test              # vitest (test/); test/postgres only runs with TEST_DATABASE_URL
+npm test              # vitest (test/); test/postgres only runs with TEST_DATABASE_URL, and
+                      # test/storage with TEST_OBJECT_STORAGE_ENDPOINT=http://localhost:3900
 npm run test:postgres # only the PostgreSQL tests
 npm run migrate       # node-pg-migrate (up, down, create); reads DATABASE_URL
 ```
@@ -424,6 +458,8 @@ npm run migrate       # node-pg-migrate (up, down, create); reads DATABASE_URL
 ```bash
 TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing_test npm test
 ```
+
+`test/storage/` checks `S3DocumentStorage` against a real S3-compatible service: faclab-infra's `object-storage` with `TEST_OBJECT_STORAGE_ENDPOINT=http://localhost:3900` (the key and the bucket default to its development ones; `TEST_OBJECT_STORAGE_*` overrides them). CI doesn't run it.
 
 ### Continuous Integration
 
@@ -515,6 +551,7 @@ To run it next to a local faclab-core, use the local defaults instead, including
 
 ```
 migrations/                      # SQL migrations (node-pg-migrate)
+resources/xsd/                   # SRI's invoice XSD 1.1.0 and the W3C signature schema
 src/
 ├── server.ts                    # Entry point
 ├── container.ts                 # Composition root (manual DI)
@@ -530,6 +567,8 @@ src/
 │   │   │   ├── access-code.ts
 │   │   │   ├── access-code-generator.ts
 │   │   │   ├── invoice-xml-builder.ts
+│   │   │   ├── authorized-xml.ts
+│   │   │   ├── issue.ts
 │   │   │   ├── sri-catalogs.ts
 │   │   │   ├── voucher.ts
 │   │   │   ├── events.ts
@@ -539,7 +578,8 @@ src/
 │   │   │   ├── handlers/        # invoice-event, sale-confirmed
 │   │   │   └── queries/         # get, list
 │   │   └── infra/
-│   │       ├── adapters/        # signer, sri-clients, sri-validation, sri-authorization
+│   │       ├── adapters/        # signer, sri-clients, sri-validation, sri-authorization,
+│   │       │                    # xsd-validator, s3-document-storage
 │   │       ├── http/            # routes, schemas, mappers
 │   │       ├── messaging/       # kafka consumer, producer, schemas, topics
 │   │       ├── persistence/     # PostgreSQL repo, row mapper
