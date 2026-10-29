@@ -4,6 +4,7 @@ import { IssuerReadinessService } from '#/modules/company-config/app/issuer-read
 import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
+import { DocumentStorage } from '../../domain/ports';
 import { InvoicePage, InvoiceRepository } from '../../domain/repository';
 
 // Every query reads the invoices of one company: the one of the token
@@ -13,6 +14,30 @@ export class GetInvoiceQuery {
 
   async execute(tenantId: string, id: string): Promise<Invoice | null> {
     return this.invoiceRepository.findForTenant(tenantId, id);
+  }
+}
+
+export interface AuthorizedXml {
+  // <access code>.xml
+  fileName: string;
+  xml: string;
+}
+
+/** The authorized XML of an invoice of the company, as kept in the document storage */
+export class GetAuthorizedXmlQuery {
+  constructor(
+    private readonly invoiceRepository: InvoiceRepository,
+    private readonly documentStorage: DocumentStorage,
+  ) {}
+
+  /** Null when the invoice isn't found, isn't authorized or was authorized before S4.1 */
+  async execute(tenantId: string, id: string): Promise<AuthorizedXml | null> {
+    const invoice = await this.invoiceRepository.findForTenant(tenantId, id);
+    const key = invoice?.authorization?.xmlKey;
+    if (!invoice || !key) return null;
+    const xml = await this.documentStorage.get(key);
+    if (xml === null) return null;
+    return { fileName: `${invoice.requireAccessCode().value}.xml`, xml };
   }
 }
 

@@ -8,6 +8,8 @@ export function toSummaryResponse(invoice: Invoice) {
     accessCode: invoice.accessCode?.value ?? null,
     status: invoice.status,
     signatureId: invoice.signatureId,
+    authorizationNumber: invoice.authorization?.number ?? null,
+    authorizedAt: invoice.authorization?.authorizedAt.toISOString() ?? null,
     statusHistory: invoice.statusHistory.map((h) => ({
       name: h.name,
       statusDate: h.statusDate.toISOString(),

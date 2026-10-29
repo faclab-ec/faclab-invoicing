@@ -67,6 +67,33 @@ describe('IssuerReadinessService', () => {
     await expect(readiness.requireReady(TENANT_A)).rejects.toBeInstanceOf(IssuerNotReadyError);
   });
 
+  it('flags resolution numbers the invoice XML would not take', async () => {
+    const { readiness } = service({
+      config: makeConfig({
+        specialTaxpayerResolution: 'NAC-2024-01',
+        withholdingAgentResolution: '00000001',
+      }),
+      certificate: makeCertificate(),
+    });
+
+    const report = await readiness.check(TENANT_A);
+
+    expect(report.ready).toBe(false);
+    expect(report.issues[0].code).toBe('CONFIG_INVALID');
+    expect(report.issues[0].message).toContain(
+      'specialTaxpayerResolution, withholdingAgentResolution',
+    );
+  });
+
+  it('takes resolution numbers as the XML writes them', async () => {
+    const { readiness } = service({
+      config: makeConfig({ specialTaxpayerResolution: '5368', withholdingAgentResolution: '1' }),
+      certificate: makeCertificate(),
+    });
+
+    expect((await readiness.check(TENANT_A)).ready).toBe(true);
+  });
+
   it('flags config fields the SRI would reject', async () => {
     const { readiness } = service({
       config: makeConfig({ taxId: '179214100' }),

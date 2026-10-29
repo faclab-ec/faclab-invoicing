@@ -6,6 +6,7 @@ import { ConfigError, parseConfig } from '#/config';
 const JWT_SECRET = randomBytes(32).toString('hex');
 const CERTIFICATE_PASSWORD_KEY = randomBytes(32).toString('base64');
 const DATABASE_URL = `postgres://faclab_invoicing:${randomBytes(8).toString('hex')}@db:5432/faclab_invoicing`;
+const STORAGE_SECRET = randomBytes(32).toString('hex');
 
 const production = (overrides: Record<string, string | undefined> = {}) => ({
   NODE_ENV: 'production',
@@ -14,6 +15,11 @@ const production = (overrides: Record<string, string | undefined> = {}) => ({
   CORS_ORIGINS: 'https://app.faclab.test',
   JWT_SECRET,
   CERTIFICATE_PASSWORD_KEY,
+  OBJECT_STORAGE_ENDPOINT: 'http://object-storage:3900',
+  OBJECT_STORAGE_REGION: 'garage',
+  OBJECT_STORAGE_BUCKET: 'faclab-invoicing',
+  OBJECT_STORAGE_ACCESS_KEY_ID: 'GK0123456789abcdef0123456789abcdef',
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: STORAGE_SECRET,
   ...overrides,
 });
 
@@ -47,6 +53,44 @@ describe('parseConfig in local', () => {
       corsOrigins: ['http://localhost:5173'],
     });
     expect(config.logger.level).toBe('debug');
+    // faclab-infra's object-storage
+    expect(config.objectStorage).toMatchObject({
+      endpoint: 'http://localhost:3900',
+      region: 'garage',
+      bucket: 'faclab-invoicing',
+      forcePathStyle: true,
+    });
+    expect(config.invoicing).toEqual({
+      emissionDate: 'sale',
+      finalConsumerMaxTotal: 50,
+      providerRuc: null,
+    });
+  });
+
+  it('takes the invoicing rules that may change (D-4) and the provider RUC', () => {
+    const config = parseConfig({
+      INVOICE_EMISSION_DATE: 'prepared',
+      FINAL_CONSUMER_MAX_TOTAL: '200',
+      INVOICING_PROVIDER_RUC: '1792141001001',
+    });
+
+    expect(config.invoicing).toEqual({
+      emissionDate: 'prepared',
+      finalConsumerMaxTotal: 200,
+      providerRuc: '1792141001001',
+    });
+  });
+
+  it('rejects an unknown emission date rule, a bad limit and a provider RUC of other length', () => {
+    const message = errorOf({
+      INVOICE_EMISSION_DATE: 'today',
+      FINAL_CONSUMER_MAX_TOTAL: '-1',
+      INVOICING_PROVIDER_RUC: '179214100',
+    });
+
+    expect(message).toContain('INVOICE_EMISSION_DATE must be one of: sale, prepared');
+    expect(message).toContain('FINAL_CONSUMER_MAX_TOTAL');
+    expect(message).toContain('INVOICING_PROVIDER_RUC must be a RUC of 13 digits');
   });
 
   it('takes overrides, such as a container on faclab_network', () => {
@@ -107,6 +151,26 @@ describe('parseConfig in production', () => {
     expect(config.http.corsOrigins).toEqual(['https://app.faclab.test']);
     expect(config.auth).toEqual({ jwtSecret: JWT_SECRET, jwtIssuer: 'faclab-core' });
     expect(config.logger.level).toBe('info');
+    expect(config.objectStorage).toEqual({
+      endpoint: 'http://object-storage:3900',
+      region: 'garage',
+      bucket: 'faclab-invoicing',
+      accessKeyId: 'GK0123456789abcdef0123456789abcdef',
+      secretAccessKey: STORAGE_SECRET,
+      forcePathStyle: true,
+    });
+  });
+
+  it('takes AWS S3 itself when there is no endpoint', () => {
+    const config = parseConfig(production({ OBJECT_STORAGE_ENDPOINT: undefined }));
+
+    expect(config.objectStorage.endpoint).toBeNull();
+  });
+
+  it('refuses a storage endpoint that is not a URL', () => {
+    expect(errorOf(production({ OBJECT_STORAGE_ENDPOINT: 'object-storage:3900' }))).toContain(
+      'OBJECT_STORAGE_ENDPOINT must be an http:// or https:// URL',
+    );
   });
 
   it('refuses to start without KAFKA_BROKERS or DATABASE_URL, naming both', () => {
@@ -132,9 +196,15 @@ describe('parseConfig in production', () => {
       'CORS_ORIGINS',
       'JWT_SECRET',
       'CERTIFICATE_PASSWORD_KEY',
+      'OBJECT_STORAGE_REGION',
+      'OBJECT_STORAGE_BUCKET',
+      'OBJECT_STORAGE_ACCESS_KEY_ID',
+      'OBJECT_STORAGE_SECRET_ACCESS_KEY',
     ]) {
       expect(message).toContain(`${name} is required`);
     }
+    // The secret never shows up in the error
+    expect(errorOf(production({ OBJECT_STORAGE_BUCKET: '' }))).not.toContain(STORAGE_SECRET);
   });
 
   it('rejects a short JWT_SECRET and a bad CERTIFICATE_PASSWORD_KEY without echoing them', () => {

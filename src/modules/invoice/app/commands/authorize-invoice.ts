@@ -1,8 +1,9 @@
 import { logger } from '#/shared/logger';
 
+import { authorizedXmlKey, buildAuthorizedXml } from '../../domain/authorized-xml';
 import { Invoice } from '../../domain/invoice';
 import { InvoiceIssueError } from '../../domain/issue';
-import { SriAuthorizationPort } from '../../domain/ports';
+import { DocumentStorage, SriAuthorizationPort } from '../../domain/ports';
 import { InvoiceRepository } from '../../domain/repository';
 import { AuthorizationVoucherStatus } from '../../domain/voucher';
 import { InvoiceCommand } from './command';
@@ -11,10 +12,12 @@ export class AuthorizeInvoiceCommand implements InvoiceCommand {
   constructor(
     private sriAuthorizationPort: SriAuthorizationPort,
     private invoiceRepository: InvoiceRepository,
+    private documentStorage: DocumentStorage,
   ) {}
 
   async execute(invoice: Invoice): Promise<void> {
-    const { value: accessCode, environment } = invoice.requireAccessCode();
+    const code = invoice.requireAccessCode();
+    const { value: accessCode, environment } = code;
     logger.info({ invoiceId: invoice.id, accessCode }, 'Authorizing invoice');
     // Where it was sent: the environment of its access code
     const authorizationVoucher = await this.sriAuthorizationPort.authorizeXml(
@@ -29,7 +32,26 @@ export class AuthorizeInvoiceCommand implements InvoiceCommand {
       );
     }
     if (authorizationVoucher.status === AuthorizationVoucherStatus.AUTHORIZED) {
-      invoice.authorize(authorizationVoucher.messages);
+      const authorized = authorizationVoucher.authorized;
+      if (!authorized) {
+        // Asked again later: the SRI keeps answering for the access code
+        throw new InvoiceIssueError(
+          'SRI_UNAVAILABLE',
+          'The SRI authorized the invoice without its authorization number or voucher',
+        );
+      }
+      // Kept before the invoice is marked: an authorized invoice always has its XML. If the
+      // upload fails it stays `sent`, and the retry asks the SRI and uploads to the same key again
+      const xmlKey = authorizedXmlKey(invoice.tenantId, code.emissionYear, accessCode);
+      await this.documentStorage.put(xmlKey, buildAuthorizedXml(authorized), 'application/xml');
+      invoice.authorize(
+        {
+          number: authorized.number,
+          authorizedAt: authorizationVoucher.authorizationDate ?? new Date(authorized.date),
+          xmlKey,
+        },
+        authorizationVoucher.messages,
+      );
     } else {
       invoice.reject(authorizationVoucher.messages);
     }

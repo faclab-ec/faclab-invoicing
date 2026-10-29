@@ -3,8 +3,16 @@ export const TAX_TYPE_CODES: Record<string, string> = {
   RUC: '04',
   NATIONAL_ID: '05',
   PASSPORT: '06',
-  FOREIGN_ID: '07',
+  // 07 is the final consumer
+  FOREIGN_ID: '08',
 };
+
+// A sale without a customer goes to the final consumer: code 07 and thirteen nines (Tabla 6)
+export const FINAL_CONSUMER = {
+  taxIdCode: '07',
+  name: 'CONSUMIDOR FINAL',
+  taxId: '9999999999999',
+} as const;
 
 // payment method (event) → SRI formaPago code (Tabla 24)
 export const PAYMENT_METHOD_CODES: Record<string, string> = {

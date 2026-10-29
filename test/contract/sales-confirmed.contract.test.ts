@@ -1,9 +1,9 @@
 import { DOMParser } from '@xmldom/xmldom';
 import { describe, expect, it } from 'vitest';
 
-import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
 import { toReceivedSale } from '#/modules/invoice/app/handlers/sale-confirmed.handler';
 import { Invoice } from '#/modules/invoice/domain/invoice';
+import { InvoiceInvalidError } from '#/modules/invoice/domain/issue';
 import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 import { NonRetryableError } from '#/shared/errors/non-retryable.error';
 
@@ -11,6 +11,7 @@ import {
   InMemoryInvoiceRepository,
   makeCertificate,
   makeConfig,
+  prepareCommand,
   readinessStub,
   TENANT_A,
 } from '../helpers';
@@ -28,9 +29,9 @@ type XmlDocument = ReturnType<DOMParser['parseFromString']>;
 async function invoiceOf(example: unknown): Promise<Invoice> {
   const message = SaleConfirmedMessageSchema.parse(example);
   // v1 names no company: a development setup invoices it with its default issuer
-  const { point, sale } = toReceivedSale(message, TENANT_A);
+  const { point, sale, requestedAt } = toReceivedSale(message, TENANT_A);
   const repo = new InMemoryInvoiceRepository();
-  const invoice = Invoice.receive('inv-1', point, sale);
+  const invoice = Invoice.receive('inv-1', point, sale, new Date(), requestedAt);
   await repo.createInvoice(invoice);
   const ready = readinessStub({
     [TENANT_A]: { config: makeConfig(), certificate: makeCertificate() },
@@ -40,8 +41,21 @@ async function invoiceOf(example: unknown): Promise<Invoice> {
     },
   });
 
-  await new PrepareInvoiceCommand(ready, repo).execute(invoice);
+  // With the real XSD: every example has to build an invoice the SRI's schema accepts
+  await prepareCommand(ready, repo).execute(invoice);
   return invoice;
+}
+
+type Example = { payload: { total: string; payments: { amount: string }[] } };
+
+/**
+ * v1 examples are from before S3.3: their cash payment is what the customer handed over, more than
+ * the total, and such an invoice is not issued
+ */
+function paymentsAddUp(example: unknown): boolean {
+  const { total, payments } = (example as Example).payload;
+  const cents = (amount: string) => Math.round(Number(amount) * 100);
+  return payments.reduce((sum, p) => sum + cents(p.amount), 0) === cents(total);
 }
 
 async function invoiceXml(example: unknown): Promise<XmlDocument> {
@@ -64,6 +78,8 @@ describe.each([
   ['v1', v1],
   ['v2', v2],
 ])('sales.confirmed %s contract', (_version, examples) => {
+  const buildable = Object.keys(examples).filter((name) => paymentsAddUp(examples[name]));
+
   it('has the edge cases faclab-core must be able to send', () => {
     expect(Object.keys(examples)).toEqual(
       expect.arrayContaining([
@@ -75,7 +91,7 @@ describe.each([
     );
   });
 
-  it.each(Object.keys(examples))('%s is accepted and builds a complete invoice', async (name) => {
+  it.each(buildable)('%s is accepted and builds a complete invoice', async (name) => {
     const doc = await invoiceXml(examples[name]);
 
     expect(emptyElements(doc)).toEqual([]);
@@ -111,14 +127,17 @@ describe.each([
     expect(doc.getElementsByTagName('infoAdicional')).toHaveLength(0);
   });
 
-  it('invoices a final consumer with the values the SRI requires', async () => {
-    const doc = await invoiceXml(examples['final-consumer']);
+  it.runIf(buildable.includes('final-consumer'))(
+    'invoices a final consumer with the values the SRI requires',
+    async () => {
+      const doc = await invoiceXml(examples['final-consumer']);
 
-    expect(texts(doc, 'tipoIdentificacionComprador')).toEqual(['07']);
-    expect(texts(doc, 'identificacionComprador')).toEqual(['9999999999999']);
-    expect(texts(doc, 'razonSocialComprador')).toEqual(['CONSUMIDOR FINAL']);
-    expect(doc.getElementsByTagName('infoAdicional')).toHaveLength(0);
-  });
+      expect(texts(doc, 'tipoIdentificacionComprador')).toEqual(['07']);
+      expect(texts(doc, 'identificacionComprador')).toEqual(['9999999999999']);
+      expect(texts(doc, 'razonSocialComprador')).toEqual(['CONSUMIDOR FINAL']);
+      expect(doc.getElementsByTagName('infoAdicional')).toHaveLength(0);
+    },
+  );
 
   it('leaves out codigoAuxiliar without a SKU and names a product that no longer exists', async () => {
     const doc = await invoiceXml(examples['product-without-sku']);
@@ -126,6 +145,18 @@ describe.each([
     expect(doc.getElementsByTagName('codigoAuxiliar')).toHaveLength(0);
     expect(texts(doc, 'descripcion')).toEqual(['Corte de tubo PVC a medida', 'Producto 106']);
     expect(texts(doc, 'campoAdicional')).toEqual(['ventas@eltornillo.ec']);
+  });
+});
+
+describe('sales.confirmed v1 from before S3.3', () => {
+  it('has an example whose cash payment is more than the total, and refuses to number it', async () => {
+    const overpaid = Object.keys(v1).filter((name) => !paymentsAddUp(v1[name]));
+    expect(overpaid).toEqual(['final-consumer']);
+
+    await expect(invoiceOf(v1['final-consumer'])).rejects.toMatchObject({
+      constructor: InvoiceInvalidError,
+      code: 'INVOICE_DATA_INVALID',
+    });
   });
 });
 

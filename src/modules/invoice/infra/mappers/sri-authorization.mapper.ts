@@ -1,4 +1,8 @@
-import { AuthorizationVoucher, AuthorizationVoucherStatus } from '../../domain/voucher';
+import {
+  AuthorizationVoucher,
+  AuthorizationVoucherStatus,
+  AuthorizedVoucher,
+} from '../../domain/voucher';
 
 interface MessageDTO {
   identificador: string;
@@ -9,7 +13,9 @@ interface MessageDTO {
 
 interface AuthorizationDTO {
   estado: 'AUTORIZADO' | 'NO AUTORIZADO' | 'EN PROCESO';
-  fechaAutorizacion: string;
+  numeroAutorizacion?: string;
+  // strong-soap may hand back the xsd:dateTime as a Date
+  fechaAutorizacion: string | Date;
   ambiente: string;
   comprobante: string;
   mensajes?: {
@@ -38,20 +44,36 @@ function mapAuthorizationStatus(status: string): AuthorizationVoucherStatus {
   }
 }
 
+function authorizedVoucher(authorization: AuthorizationDTO): AuthorizedVoucher | null {
+  const { numeroAutorizacion, fechaAutorizacion, comprobante } = authorization;
+  if (!numeroAutorizacion || !fechaAutorizacion || !comprobante) return null;
+  return {
+    number: numeroAutorizacion,
+    date:
+      typeof fechaAutorizacion === 'string' ? fechaAutorizacion : fechaAutorizacion.toISOString(),
+    environment: authorization.ambiente,
+    voucherXml: comprobante,
+  };
+}
+
 export function mapAuthorizationVoucherToDomain(
   dto: AuthorizationVoucherResponseDTO,
 ): AuthorizationVoucher {
   const authorization = dto.autorizaciones?.autorizacion?.[0];
 
   // No authorization yet: the SRI is still processing the voucher
+  const status = authorization
+    ? mapAuthorizationStatus(authorization.estado)
+    : AuthorizationVoucherStatus.PROCESSING;
   return new AuthorizationVoucher(
-    authorization
-      ? mapAuthorizationStatus(authorization.estado)
-      : AuthorizationVoucherStatus.PROCESSING,
+    status,
     dto.claveAccesoConsultada,
     authorization?.fechaAutorizacion ? new Date(authorization.fechaAutorizacion) : null,
     authorization?.mensajes?.mensaje?.map(
       (m) => `${m.tipo} ${m.identificador} : ${m.mensaje} : ${m.informacionAdicional}`,
     ) ?? [],
+    authorization && status === AuthorizationVoucherStatus.AUTHORIZED
+      ? authorizedVoucher(authorization)
+      : null,
   );
 }

@@ -19,3 +19,21 @@ export interface SriValidationPort {
 export interface SriAuthorizationPort {
   authorizeXml(code: string, environment: Environment): Promise<AuthorizationVoucher>;
 }
+
+export interface SchemaValidationResult {
+  valid: boolean;
+  // What the schema rejected, one entry per problem
+  errors: string[];
+}
+
+/** Checks an invoice XML against the SRI schema (XSD) before it is signed */
+export interface InvoiceSchemaValidator {
+  validate(xml: string): Promise<SchemaValidationResult>;
+}
+
+/** Object storage for the documents kept for each company (the authorized XML) */
+export interface DocumentStorage {
+  put(key: string, body: string, contentType: string): Promise<void>;
+  /** Null when there is nothing under the key */
+  get(key: string): Promise<string | null>;
+}

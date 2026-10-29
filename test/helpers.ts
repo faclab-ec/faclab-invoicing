@@ -19,8 +19,16 @@ import {
   Sequence,
   SequenceKey,
 } from '#/modules/company-config/domain/sequence';
+import {
+  PrepareInvoiceCommand,
+  PrepareInvoiceOptions,
+} from '#/modules/invoice/app/commands/prepare-invoice';
 import { ReceivedSale } from '#/modules/invoice/app/commands/receive-sale';
+import { AccessCode } from '#/modules/invoice/domain/access-code';
+import { authorizedXmlKey } from '#/modules/invoice/domain/authorized-xml';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
+import { DocumentStorage, InvoiceSchemaValidator } from '#/modules/invoice/domain/ports';
 import {
   ConcurrentUpdateError,
   InFlightCounts,
@@ -30,6 +38,7 @@ import {
   PageRequest,
 } from '#/modules/invoice/domain/repository';
 import { IssuingPoint, SaleData } from '#/modules/invoice/domain/sale';
+import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { SaleConfirmedV2Message } from '#/modules/invoice/infra/messaging/schemas';
 import {
   fromInvoiceRow,
@@ -44,6 +53,48 @@ export const TENANT_A = '2b3c4d5e-6f70-4a8b-9c0d-1e2f3a4b5c6d';
 export const TENANT_B = '0b7e5c4d-3a2f-4e1d-9c8b-7a6f5e4d3c2b';
 export const RUC_A = '1792141001001';
 export const RUC_B = '0990012345001';
+
+// occurred_at of the sales.confirmed messages the helpers build
+export const REQUESTED_AT = new Date('2026-10-09T15:00:00Z');
+
+// The SRI's XSD: the invoices the tests build are validated against it, as in the service
+export const xsdValidator: InvoiceSchemaValidator = new XsdInvoiceSchemaValidator();
+
+export const PREPARE_OPTIONS: PrepareInvoiceOptions = {
+  emissionDate: 'sale',
+  finalConsumerMaxTotal: 50,
+  providerRuc: null,
+};
+
+/** PrepareInvoiceCommand with the real XSD and the service's defaults, unless overridden */
+export function prepareCommand(
+  readiness: IssuerReadinessService,
+  repo: InvoiceRepository,
+  overrides: Partial<PrepareInvoiceOptions> & { validator?: InvoiceSchemaValidator } = {},
+) {
+  const { validator = xsdValidator, ...options } = overrides;
+  return new PrepareInvoiceCommand(readiness, repo, validator, {
+    ...PREPARE_OPTIONS,
+    ...options,
+  });
+}
+
+/** Object storage kept in memory; `failing` makes every upload fail like an unreachable service */
+export class InMemoryDocumentStorage implements DocumentStorage {
+  readonly objects = new Map<string, { body: string; contentType: string }>();
+  failing = false;
+
+  async put(key: string, body: string, contentType: string): Promise<void> {
+    if (this.failing) {
+      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
+    }
+    this.objects.set(key, { body, contentType });
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.objects.get(key)?.body ?? null;
+  }
+}
 
 function toRow(invoice: Invoice): InvoiceRow {
   return {
@@ -266,7 +317,7 @@ export function makeSaleMessage(
     schema_version: 2,
     tenant_id: point.tenantId,
     aggregate_id: sale.sale_id,
-    occurred_at: new Date('2026-10-09T15:00:00Z'),
+    occurred_at: REQUESTED_AT,
     payload: {
       ...sale,
       sale_number: null,
@@ -284,7 +335,37 @@ export function makeReceivedSale(
   sale: SaleData = makeSale(),
   point: IssuingPoint = makePoint(),
 ): ReceivedSale {
-  return { eventId, point, sale };
+  return { eventId, point, sale, requestedAt: REQUESTED_AT };
+}
+
+// An access code of 2026 in testing, for invoices that don't go through PrepareInvoiceCommand
+export const TEST_ACCESS_CODE = '0910202601179214100100110010010000000011234567812';
+
+/**
+ * An invoice the SRI authorized, with its authorized XML in `storage` (left out when null, like
+ * an invoice authorized before S4.1)
+ */
+export async function makeAuthorizedInvoice(
+  id: string,
+  point: IssuingPoint,
+  storage: DocumentStorage | null,
+  sale: SaleData = makeSale(),
+): Promise<Invoice> {
+  const invoice = Invoice.receive(id, point, sale);
+  invoice.assignSequence('000000001');
+  const accessCode = AccessCode.create(TEST_ACCESS_CODE);
+  invoice.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
+  invoice.sign('<factura firmada/>');
+  invoice.markAsSent([]);
+  const xmlKey = authorizedXmlKey(point.tenantId, accessCode.emissionYear, accessCode.value);
+  invoice.authorize(
+    { number: accessCode.value, authorizedAt: new Date('2026-10-09T15:01:02Z'), xmlKey },
+    ['AUTORIZADO'],
+  );
+  if (storage) {
+    await storage.put(xmlKey, `<autorizacion><estado>AUTORIZADO</estado></autorizacion>`, 'xml');
+  }
+  return invoice;
 }
 
 /** Company A's fiscal profile, unless overridden */

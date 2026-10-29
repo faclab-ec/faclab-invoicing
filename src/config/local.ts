@@ -16,4 +16,11 @@ export const LOCAL_DEFAULTS: EnvDefaults = {
   JWT_SECRET: 'dev-only-change-me',
   CERTIFICATE_PASSWORD_KEY: DEV_PASSWORD_KEY,
   LOG_LEVEL: 'debug',
+  // faclab-infra's object-storage (Garage) and its development-only key
+  OBJECT_STORAGE_ENDPOINT: 'http://localhost:3900',
+  OBJECT_STORAGE_REGION: 'garage',
+  OBJECT_STORAGE_BUCKET: 'faclab-invoicing',
+  OBJECT_STORAGE_ACCESS_KEY_ID: 'GKfac00000000000000000000000000000',
+  OBJECT_STORAGE_SECRET_ACCESS_KEY:
+    'facfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfac0',
 };

@@ -25,7 +25,10 @@ function publishedEvents(): InvoiceDomainEvent[] {
   authorized.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
   authorized.sign('<factura firmada/>');
   authorized.markAsSent([]);
-  authorized.authorize([]);
+  authorized.authorize(
+    { number: accessCode.value, authorizedAt: new Date(), xmlKey: 'tenants/a/invoices/x.xml' },
+    [],
+  );
   const rejected = Invoice.receive('0f3a9d55-7c2e-5b1a-9e44-3c8d2b6f1a90', makePoint(), makeSale());
   rejected.assignSequence('000000002');
   rejected.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });

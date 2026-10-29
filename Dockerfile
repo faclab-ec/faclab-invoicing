@@ -38,6 +38,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 # For `npm run migrate up`, run with the image before starting a new version
 COPY migrations ./migrations
+# The SRI's XSD: every invoice XML is validated against them before it is signed
+COPY resources ./resources
 
 # Tag or commit SHA, reported as service.version in logs and traces:
 # docker build --target production --build-arg SERVICE_VERSION=$(git rev-parse --short HEAD) .

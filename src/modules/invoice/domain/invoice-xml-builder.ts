@@ -1,5 +1,20 @@
 import { create } from 'xmlbuilder2';
 
+import { RimpeRegime } from '#/modules/company-config/domain/company-config';
+
+// contribuyenteRimpe of each regime, as the ficha técnica writes them (Anexo 22)
+export const RIMPE_LEGENDS: Record<RimpeRegime, string> = {
+  [RimpeRegime.ENTREPRENEUR]: 'CONTRIBUYENTE RÉGIMEN RIMPE',
+  [RimpeRegime.POPULAR_BUSINESS]: 'CONTRIBUYENTE NEGOCIO POPULAR - RÉGIMEN RIMPE',
+};
+
+// campoAdicional with the RUC of the invoicing system's provider (Anexo 26)
+export const PROVIDER_RUC_FIELD = 'RUC Proveedor';
+
+// Lengths the SRI schema allows (factura 1.1.0)
+const MAX_TEXT = 300;
+const MAX_CODE = 25;
+
 export interface InvoiceXmlInput {
   environment: number;
   emissionType: number;
@@ -12,6 +27,12 @@ export interface InvoiceXmlInput {
   companyBranchCode: string;
   companySalePointCode: string;
   companyAccountingRequired: boolean;
+  // The issuer's legends, from its fiscal profile; null when they don't apply
+  companySpecialTaxpayerResolution: string | null;
+  companyWithholdingAgentResolution: string | null;
+  companyRimpeRegime: RimpeRegime | null;
+  // RUC of whoever runs Faclab, the invoicing system the issuer uses (Anexo 26); null to leave out
+  providerRuc: string | null;
   accessCode: string;
   sequence: string;
   voucherTypeCode: string;
@@ -73,6 +94,14 @@ function formatMoney(amount: number): string {
   return formatCents(toCents(amount));
 }
 
+/** One line of at most `max` characters: the schema allows no line breaks in these texts */
+function fitText(value: string, max: number = MAX_TEXT): string {
+  return value
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
 function getInvoiceData(input: InvoiceXmlInput) {
   const taxGroups = new Map<number, { baseImponible: number; valor: number }>();
   let totalSinImpuestos = 0;
@@ -94,7 +123,7 @@ function getInvoiceData(input: InvoiceXmlInput) {
     valor: formatCents(group.valor),
   }));
 
-  const campoAdicional = buildCampoAdicional(input.customer);
+  const campoAdicional = buildCampoAdicional(input.customer, input.providerRuc);
 
   const data = {
     factura: {
@@ -103,23 +132,35 @@ function getInvoiceData(input: InvoiceXmlInput) {
       infoTributaria: {
         ambiente: input.environment,
         tipoEmision: input.emissionType,
-        razonSocial: input.companyName,
-        nombreComercial: input.companyTradeName,
+        razonSocial: fitText(input.companyName),
+        nombreComercial: fitText(input.companyTradeName),
         ruc: input.companyCode,
         claveAcceso: input.accessCode,
         codDoc: input.voucherTypeCode,
         estab: input.companyBranchCode,
         ptoEmi: input.companySalePointCode,
         secuencial: input.sequence,
-        dirMatriz: input.companyMainAddress,
+        dirMatriz: fitText(input.companyMainAddress),
+        // Only the legends that apply to the issuer, in the schema's order (Anexos 21 and 22)
+        ...(input.companyWithholdingAgentResolution
+          ? { agenteRetencion: input.companyWithholdingAgentResolution }
+          : {}),
+        ...(input.companyRimpeRegime
+          ? { contribuyenteRimpe: RIMPE_LEGENDS[input.companyRimpeRegime] }
+          : {}),
       },
       infoFactura: {
         fechaEmision: formatDate(input.date),
         // Optional: an empty element would break the SRI schema
-        ...(input.companyBranchAddress ? { dirEstablecimiento: input.companyBranchAddress } : {}),
+        ...(input.companyBranchAddress
+          ? { dirEstablecimiento: fitText(input.companyBranchAddress) }
+          : {}),
+        ...(input.companySpecialTaxpayerResolution
+          ? { contribuyenteEspecial: input.companySpecialTaxpayerResolution }
+          : {}),
         obligadoContabilidad: input.companyAccountingRequired ? 'SI' : 'NO',
         tipoIdentificacionComprador: input.customer.taxIdCode,
-        razonSocialComprador: input.customer.name,
+        razonSocialComprador: fitText(input.customer.name),
         identificacionComprador: input.customer.taxId,
         totalSinImpuestos: formatCents(totalSinImpuestos),
         totalDescuento: formatCents(totalDescuento),
@@ -129,9 +170,15 @@ function getInvoiceData(input: InvoiceXmlInput) {
         propina: 0,
         importeTotal: formatMoney(input.total),
         moneda: 'DOLAR',
-        pagos: {
-          pago: [] as { formaPago: string; total: string }[],
-        },
+        // A pagos element needs at least one pago: left out when the sale has none
+        ...(input.payments.length > 0 && {
+          pagos: {
+            pago: input.payments.map((payment) => ({
+              formaPago: payment.formaPago,
+              total: formatMoney(payment.amount),
+            })),
+          },
+        }),
       },
       detalles: {
         detalle: [] as {
@@ -159,19 +206,12 @@ function getInvoiceData(input: InvoiceXmlInput) {
     },
   };
 
-  input.payments.forEach((payment) => {
-    data.factura.infoFactura.pagos.pago.push({
-      formaPago: payment.formaPago,
-      total: formatMoney(payment.amount),
-    });
-  });
-
   input.items.forEach((item) => {
     data.factura.detalles.detalle.push({
       codigoPrincipal: item.productId,
-      // Optional in the SRI schema, but never empty
-      ...(item.sku ? { codigoAuxiliar: item.sku } : {}),
-      descripcion: item.description,
+      // Optional in the SRI schema, but never empty; left out when it doesn't fit (25 characters)
+      ...(item.sku && item.sku.length <= MAX_CODE ? { codigoAuxiliar: item.sku } : {}),
+      descripcion: fitText(item.description),
       cantidad: item.quantity,
       precioUnitario: item.unitPrice,
       descuento: formatMoney(item.discount),
@@ -195,17 +235,21 @@ function getInvoiceData(input: InvoiceXmlInput) {
 
 function buildCampoAdicional(
   customer: InvoiceXmlInput['customer'],
+  providerRuc: string | null,
 ): { '@nombre': string; '#text': string }[] {
   const campos: { '@nombre': string; '#text': string }[] = [];
 
   if (customer.address) {
-    campos.push({ '@nombre': 'Dirección', '#text': customer.address });
+    campos.push({ '@nombre': 'Dirección', '#text': fitText(customer.address) });
   }
   if (customer.phone) {
-    campos.push({ '@nombre': 'Telefono', '#text': customer.phone });
+    campos.push({ '@nombre': 'Telefono', '#text': fitText(customer.phone) });
   }
   if (customer.email) {
-    campos.push({ '@nombre': 'Email', '#text': customer.email });
+    campos.push({ '@nombre': 'Email', '#text': fitText(customer.email) });
+  }
+  if (providerRuc) {
+    campos.push({ '@nombre': PROVIDER_RUC_FIELD, '#text': providerRuc });
   }
 
   return campos;

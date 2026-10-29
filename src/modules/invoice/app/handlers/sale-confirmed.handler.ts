@@ -29,6 +29,7 @@ export function toReceivedSale(
     } = message.payload;
     return {
       eventId: message.event_id,
+      requestedAt: message.occurred_at,
       point: {
         tenantId: message.tenant_id.toLowerCase(),
         issuerRuc: issuer_ruc,
@@ -46,6 +47,7 @@ export function toReceivedSale(
   }
   return {
     eventId: message.event_id,
+    requestedAt: message.occurred_at,
     point: {
       tenantId: v1TenantId,
       issuerRuc: null,

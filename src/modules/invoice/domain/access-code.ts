@@ -17,6 +17,11 @@ export class AccessCode {
     return Number(this.value[23]) as Environment;
   }
 
+  /** Year of its emission date (ddmmaaaa, the first 8 digits) */
+  get emissionYear(): string {
+    return this.value.slice(4, 8);
+  }
+
   toString(): string {
     return this.value;
   }
