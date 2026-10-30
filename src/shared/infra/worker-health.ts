@@ -1,7 +1,21 @@
 import { createServer, Server } from 'node:http';
 
+/** Whether a part of the worker is still doing its cycles */
+export interface HealthCheck {
+  readonly healthy: boolean;
+}
+
+/** Healthy while every part is: a stalled one makes the whole worker stalled */
+export function allHealthy(...checks: HealthCheck[]): HealthCheck {
+  return {
+    get healthy() {
+      return checks.every((check) => check.healthy);
+    },
+  };
+}
+
 /** When the worker last finished a cycle: stalled once that is longer ago than `maxAgeMs` */
-export class WorkerHealth {
+export class WorkerHealth implements HealthCheck {
   private lastBeat: number;
 
   constructor(
@@ -26,7 +40,7 @@ export class WorkerHealth {
  * commands: 200 while its cycles keep finishing, 503 once they stall
  */
 export async function startHealthServer(
-  health: WorkerHealth,
+  health: HealthCheck,
   port: number,
   host: string,
 ): Promise<Server> {

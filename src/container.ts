@@ -87,14 +87,14 @@ import {
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
-import { WorkerHealth } from '#/shared/infra/worker-health';
+import { HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
 import { logger } from '#/shared/logger';
 import { captureTraceContext } from '#/shared/telemetry/trace-context';
 
 /** What runs in the background: the consumer of sales.confirmed, the worker and the recovery */
 export interface Background {
   // The worker's cycles: the worker process answers /health with it
-  health: WorkerHealth;
+  health: HealthCheck;
   start(): Promise<void>;
   /** In order: no new sales, the invoices in progress finish, then Kafka */
   stop(): Promise<void>;
