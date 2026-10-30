@@ -60,6 +60,26 @@ export interface AppConfig {
     secretAccessKey: string;
     forcePathStyle: boolean;
   };
+  // The delivery of authorized invoices to their buyers: RIDE and email (S4.4, D-3: any SMTP)
+  invoiceEmail: {
+    // Off: deliveries only keep the RIDE (the rollback switch)
+    enabled: boolean;
+    // The platform's sender address; the issuer's trade name goes as its name
+    from: string | null;
+    smtp: {
+      host: string | null;
+      port: number;
+      // TLS from the start (465); otherwise STARTTLS when the server offers it
+      secure: boolean;
+      // Refuse to send without STARTTLS: production
+      requireTls: boolean;
+      user: string | null;
+      password: string | null;
+      timeoutMs: number;
+    };
+    // Deliveries processed at the same time by each worker
+    concurrency: number;
+  };
   // Rules that the accountant may still change (D-4)
   invoicing: {
     // `sale`: when faclab-core asked to invoice the sale; `prepared`: when the XML is built
@@ -111,6 +131,15 @@ const ENV_VARS = [
   'INVOICE_EMISSION_DATE',
   'FINAL_CONSUMER_MAX_TOTAL',
   'INVOICING_PROVIDER_RUC',
+  'INVOICE_EMAIL_ENABLED',
+  'INVOICE_EMAIL_FROM',
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_SECURE',
+  'SMTP_USER',
+  'SMTP_PASSWORD',
+  'SMTP_TIMEOUT_MS',
+  'INVOICE_DELIVERY_CONCURRENCY',
 ] as const;
 type EnvVar = (typeof ENV_VARS)[number];
 export type EnvDefaults = Partial<Record<EnvVar, string>>;
@@ -132,6 +161,12 @@ const DEFAULTS: EnvDefaults = {
   INVOICE_EMISSION_DATE: 'sale',
   // ficha técnica 2.34, 9.10: above this the invoice needs the buyer's data
   FINAL_CONSUMER_MAX_TOTAL: '50',
+  INVOICE_EMAIL_ENABLED: 'true',
+  // Submission with STARTTLS, what every transactional provider offers
+  SMTP_PORT: '587',
+  SMTP_SECURE: 'false',
+  SMTP_TIMEOUT_MS: '20000',
+  INVOICE_DELIVERY_CONCURRENCY: '2',
 };
 
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -164,6 +199,10 @@ const booleanFlag = z.enum(['true', 'false']).transform((value) => value === 'tr
 
 // A lease shorter than this could run out while its worker still waits for the SRI
 const MIN_LOCK_TIMEOUT_SRI_CALLS = 2;
+// …or for the mail server: connecting, its greeting and the message each wait up to the timeout
+const MIN_LOCK_TIMEOUT_SMTP_CALLS = 3;
+// Slots of both workers: each holds a database connection while it saves, and the pool has 10
+const MAX_WORKER_SLOTS = 8;
 
 const isHttpUrl = (value: string) => {
   try {
@@ -245,6 +284,15 @@ function schemaFor(environment: AppEnvironment) {
         .string()
         .regex(/^\d{13}$/, 'must be a RUC of 13 digits')
         .optional(),
+      INVOICE_EMAIL_ENABLED: booleanFlag,
+      INVOICE_EMAIL_FROM: z.string().email('must be an email address').optional(),
+      SMTP_HOST: z.string().min(1).optional(),
+      SMTP_PORT: z.coerce.number().int().min(1).max(65535),
+      SMTP_SECURE: booleanFlag,
+      SMTP_USER: z.string().min(1).optional(),
+      SMTP_PASSWORD: z.string().min(1).optional(),
+      SMTP_TIMEOUT_MS: positiveInt,
+      INVOICE_DELIVERY_CONCURRENCY: positiveInt.max(4),
     })
     .refine(
       (values) =>
@@ -253,7 +301,35 @@ function schemaFor(environment: AppEnvironment) {
         message: `must be at least ${MIN_LOCK_TIMEOUT_SRI_CALLS} times SRI_TIMEOUT_MS`,
         path: ['INVOICE_LOCK_TIMEOUT_MS'],
       },
-    );
+    )
+    .refine(
+      (values) =>
+        values.INVOICE_LOCK_TIMEOUT_MS >= MIN_LOCK_TIMEOUT_SMTP_CALLS * values.SMTP_TIMEOUT_MS,
+      {
+        message: `must be at least ${MIN_LOCK_TIMEOUT_SMTP_CALLS} times SMTP_TIMEOUT_MS`,
+        path: ['INVOICE_LOCK_TIMEOUT_MS'],
+      },
+    )
+    .refine(
+      (values) =>
+        values.INVOICE_WORKER_CONCURRENCY + values.INVOICE_DELIVERY_CONCURRENCY <= MAX_WORKER_SLOTS,
+      {
+        message: `plus INVOICE_WORKER_CONCURRENCY must be at most ${MAX_WORKER_SLOTS}`,
+        path: ['INVOICE_DELIVERY_CONCURRENCY'],
+      },
+    )
+    .refine((values) => !values.INVOICE_EMAIL_ENABLED || values.SMTP_HOST !== undefined, {
+      message: 'is required while INVOICE_EMAIL_ENABLED is true',
+      path: ['SMTP_HOST'],
+    })
+    .refine((values) => !values.INVOICE_EMAIL_ENABLED || values.INVOICE_EMAIL_FROM !== undefined, {
+      message: 'is required while INVOICE_EMAIL_ENABLED is true',
+      path: ['INVOICE_EMAIL_FROM'],
+    })
+    .refine((values) => (values.SMTP_USER === undefined) === (values.SMTP_PASSWORD === undefined), {
+      message: 'must be set together with SMTP_USER',
+      path: ['SMTP_PASSWORD'],
+    });
 }
 
 // Messages name the variable but never echo its value, which may be a secret
@@ -340,6 +416,20 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       accessKeyId: values.OBJECT_STORAGE_ACCESS_KEY_ID,
       secretAccessKey: values.OBJECT_STORAGE_SECRET_ACCESS_KEY,
       forcePathStyle: values.OBJECT_STORAGE_FORCE_PATH_STYLE,
+    },
+    invoiceEmail: {
+      enabled: values.INVOICE_EMAIL_ENABLED,
+      from: values.INVOICE_EMAIL_FROM ?? null,
+      smtp: {
+        host: values.SMTP_HOST ?? null,
+        port: values.SMTP_PORT,
+        secure: values.SMTP_SECURE,
+        requireTls: environment === 'production' && !values.SMTP_SECURE,
+        user: values.SMTP_USER ?? null,
+        password: values.SMTP_PASSWORD ?? null,
+        timeoutMs: values.SMTP_TIMEOUT_MS,
+      },
+      concurrency: values.INVOICE_DELIVERY_CONCURRENCY,
     },
     invoicing: {
       emissionDate: values.INVOICE_EMISSION_DATE,

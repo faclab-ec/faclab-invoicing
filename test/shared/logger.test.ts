@@ -42,6 +42,31 @@ describe('logger', () => {
     expect(entry.saleId).toBe(42);
   });
 
+  it("never writes the buyers' email addresses nor the SMTP password", () => {
+    const { log, lines } = capture();
+
+    log.info(
+      {
+        deliveryId: 'd-1',
+        recipient: 'compras@andinas.ec',
+        mail: { replyTo: 'ventas@acme.ec', email: 'otro@andinas.ec' },
+        smtp_password: 'smtp-secret',
+      },
+      'Invoice delivery',
+    );
+
+    const [line] = lines;
+    for (const secret of [
+      'compras@andinas.ec',
+      'ventas@acme.ec',
+      'otro@andinas.ec',
+      'smtp-secret',
+    ]) {
+      expect(line).not.toContain(secret);
+    }
+    expect(JSON.parse(line).deliveryId).toBe('d-1');
+  });
+
   it('names the service and keeps errors for the serializer', () => {
     const { log, lines } = capture();
 

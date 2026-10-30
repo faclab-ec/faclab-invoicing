@@ -47,3 +47,45 @@ export interface DocumentStorage {
 export interface RideRenderer {
   render(ride: Ride, logo: Buffer | null): Promise<Buffer>;
 }
+
+export interface MailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
+
+/** An email with the invoice to its buyer */
+export interface OutgoingMail {
+  from: { name: string; address: string };
+  replyTo: string | null;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  attachments: MailAttachment[];
+}
+
+export interface SentMail {
+  messageId: string;
+  // What the mail server answered (250 …)
+  response: string;
+}
+
+/** Sends emails through the mail server (SMTP, D-3) */
+export interface InvoiceMailer {
+  /**
+   * Throws MailRejectedError when the server refuses it for good; anything else it throws may go
+   * through later
+   */
+  send(mail: OutgoingMail): Promise<SentMail>;
+  close(): void;
+}
+
+/** The mail server refused the message or its recipient for good (5xx): a bounce */
+export class MailRejectedError extends Error {
+  constructor(public readonly response: string) {
+    super('The mail server refused the message');
+    this.name = 'MailRejectedError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

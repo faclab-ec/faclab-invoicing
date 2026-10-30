@@ -51,11 +51,13 @@ import {
   GetRideQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import { InvoiceDeliveryProcessor } from '#/modules/invoice/app/services/invoice-delivery-processor';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { RideService } from '#/modules/invoice/app/services/ride-service';
 import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { NodemailerInvoiceMailer } from '#/modules/invoice/infra/adapters/nodemailer-mailer.adapter';
 import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { S3DocumentStorage } from '#/modules/invoice/infra/adapters/s3-document-storage.adapter';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
@@ -74,6 +76,7 @@ import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer'
 import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
+import { PgInvoiceDeliveryRepository } from '#/modules/invoice/infra/persistence/pg-invoice-delivery.repository';
 import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
 import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
@@ -86,17 +89,21 @@ import {
 } from '#/shared/infra/dead-letters';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
+import { QueueWorker } from '#/shared/infra/queue-worker';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
-import { HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
+import { allHealthy, HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
 import { logger } from '#/shared/logger';
 import { captureTraceContext } from '#/shared/telemetry/trace-context';
 
-/** What runs in the background: the consumer of sales.confirmed, the worker and the recovery */
+/**
+ * What runs in the background: the consumer of sales.confirmed, the workers (invoices and their
+ * deliveries) and the recovery
+ */
 export interface Background {
   // The worker's cycles: the worker process answers /health with it
   health: HealthCheck;
   start(): Promise<void>;
-  /** In order: no new sales, the invoices in progress finish, then Kafka */
+  /** In order: no new sales, the invoices and deliveries in progress finish, then Kafka */
   stop(): Promise<void>;
 }
 
@@ -126,6 +133,7 @@ export function createContainer(config: AppConfig): Container {
   // Repositories
   const invoiceRepository = new PgInvoiceRepository(pool);
   const invoiceQueue = new PgInvoiceQueue(pool);
+  const deliveryRepository = new PgInvoiceDeliveryRepository(pool);
   const certificateRepository = new PgCertificateRepository(pool);
   const companyConfigRepository = new PgCompanyConfigRepository(pool);
   const sequenceRepository = new PgSequenceRepository(pool);
@@ -340,7 +348,7 @@ export function createContainer(config: AppConfig): Container {
       config.invoiceRecovery.intervalMs,
     );
     // A slot busy with one invoice beats again within its lease
-    const health = new WorkerHealth(lockTimeoutMs + 2 * pollIntervalMs);
+    const invoiceHealth = new WorkerHealth(lockTimeoutMs + 2 * pollIntervalMs);
     const worker = new InvoiceWorker(
       invoiceQueue,
       processor,
@@ -351,7 +359,40 @@ export function createContainer(config: AppConfig): Container {
         errorBackoffMs: config.invoiceRecovery.intervalMs,
         holder: processHolder,
       },
-      health,
+      invoiceHealth,
+    );
+
+    // The delivery of each authorized invoice: its RIDE and the email to the buyer
+    const mailer = config.invoiceEmail.enabled
+      ? new NodemailerInvoiceMailer(config.invoiceEmail.smtp)
+      : null;
+    const deliveryProcessor = new InvoiceDeliveryProcessor(
+      deliveryRepository,
+      invoiceRepository,
+      rideService,
+      documentStorage,
+      companyConfigRepository,
+      mailer,
+      config.invoiceEmail.from,
+    );
+    const deliveryHealth = new WorkerHealth(lockTimeoutMs + 2 * pollIntervalMs);
+    const deliveryWorker = new QueueWorker(
+      deliveryRepository,
+      (job) => deliveryProcessor.run(job.id),
+      {
+        name: 'Delivery worker',
+        spanName: 'deliver invoice',
+        attributes: (job) => ({ 'faclab.delivery.id': job.id, 'faclab.invoice.id': job.invoiceId }),
+        logFields: (job) => ({ deliveryId: job.id, invoiceId: job.invoiceId }),
+      },
+      {
+        concurrency: config.invoiceEmail.concurrency,
+        pollIntervalMs,
+        leaseMs: lockTimeoutMs,
+        errorBackoffMs: config.invoiceRecovery.intervalMs,
+        holder: `${processHolder}:delivery`,
+      },
+      deliveryHealth,
     );
     const recoveryScheduler = new RecoveryScheduler(
       invoiceRecovery,
@@ -359,16 +400,19 @@ export function createContainer(config: AppConfig): Container {
     );
 
     return {
-      health,
+      health: allHealthy(invoiceHealth, deliveryHealth),
       async start() {
         await resultProducer.connect();
         await kafkaConsumer.start();
         worker.start();
+        deliveryWorker.start();
         recoveryScheduler.start();
       },
       async stop() {
         await kafkaConsumer.stop();
         await worker.stop();
+        await deliveryWorker.stop();
+        mailer?.close();
         recoveryScheduler.stop();
         await resultProducer.disconnect();
       },
