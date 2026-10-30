@@ -1,5 +1,5 @@
 import { AccessCode } from '../../domain/access-code';
-import { Invoice, InvoiceStatus, InvoiceStatusHistory } from '../../domain/invoice';
+import { Invoice, InvoiceStatus, InvoiceStatusHistory, TraceContext } from '../../domain/invoice';
 import { InvoiceIssueCode } from '../../domain/issue';
 import { SaleData } from '../../domain/sale';
 
@@ -28,6 +28,8 @@ export interface InvoiceRow {
   issue_at: Date | null;
   attempts: number;
   next_attempt_at: Date | null;
+  result_published_at: Date | null;
+  trace_context: TraceContext | null;
   created_at: Date;
   updated_at: Date;
   version: number;
@@ -68,6 +70,8 @@ export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history
     issue_at: invoice.issue?.at ?? null,
     attempts: invoice.attempts,
     next_attempt_at: invoice.nextAttemptAt,
+    result_published_at: invoice.resultPublishedAt,
+    trace_context: invoice.traceContext,
     created_at: invoice.createdAt,
     updated_at: invoice.updatedAt,
     version: invoice.version,
@@ -129,6 +133,8 @@ export function fromInvoiceRow(row: InvoiceRow): Invoice {
         : null,
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
+    resultPublishedAt: row.result_published_at,
+    traceContext: row.trace_context,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     version: row.version,

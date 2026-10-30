@@ -6,9 +6,9 @@ import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
-import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
+import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
-import { InvoiceDomainEvent } from '#/modules/invoice/domain/events';
+import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { InvoiceSchemaValidator, SriAuthorizationPort } from '#/modules/invoice/domain/ports';
 import {
@@ -20,6 +20,8 @@ import {
 import {
   InMemoryDocumentStorage,
   InMemoryInvoiceRepository,
+  invoiceSteps,
+  makeAuthorizedInvoice,
   makeCertificate,
   makeConfig,
   makePoint,
@@ -35,8 +37,8 @@ import {
 } from '../helpers';
 
 function producerStub() {
-  const sent: InvoiceDomainEvent[] = [];
-  return { sent, sendMessage: vi.fn(async (event: InvoiceDomainEvent) => void sent.push(event)) };
+  const sent: InvoiceResultEvent[] = [];
+  return { sent, sendMessage: vi.fn(async (event: InvoiceResultEvent) => void sent.push(event)) };
 }
 
 const READY: ReadyIssuer = { config: makeConfig(), certificate: makeCertificate() };
@@ -87,15 +89,23 @@ function saleOf(total: string, customer: typeof BUYER | null = null) {
   });
 }
 
+/** One step at a time, as a manual retry runs them; publishes the result once final */
 function handlerFor(
   repo: InMemoryInvoiceRepository,
   commands: [InvoiceStatus, InvoiceCommand][],
   producer = producerStub(),
 ) {
-  return new InvoiceEventHandler(repo, new Map(commands), producer);
+  const processor = new InvoiceProcessor(
+    repo,
+    repo,
+    new Map(commands),
+    readinessStub(READY),
+    producer,
+  );
+  return { process: (id: string) => processor.run(id, { maxSteps: 1 }) };
 }
 
-describe('PrepareInvoiceCommand through the event handler', () => {
+describe('PrepareInvoiceCommand through the processor', () => {
   it('builds the XML when the issuer is ready', async () => {
     const repo = new InMemoryInvoiceRepository();
     await storedPending(repo);
@@ -110,7 +120,9 @@ describe('PrepareInvoiceCommand through the event handler', () => {
     expect(invoice.signatureId).toBe('cert-1');
     expect(invoice.requireXml()).toContain('<secuencial>000000001</secuencial>');
     expect(invoice.requireAccessCode().value).toHaveLength(49);
-    expect(producer.sent.map((e) => e.type)).toEqual(['InvoiceCreated']);
+    // Due for its signature; faclab-core only hears of the result
+    expect(invoice.nextAttemptAt).not.toBeNull();
+    expect(producer.sent).toEqual([]);
   });
 
   it('keeps the invoice pending with the reason when the issuer is not ready', async () => {
@@ -389,7 +401,7 @@ describe('PrepareInvoiceCommand through the event handler', () => {
   });
 });
 
-describe('AuthorizeInvoiceCommand through the event handler', () => {
+describe('AuthorizeInvoiceCommand through the processor', () => {
   async function storedSent(repo: InMemoryInvoiceRepository): Promise<string> {
     const invoice = await storedPending(repo);
     const prepare = prepareCommand(readinessStub(READY), repo);
@@ -472,6 +484,9 @@ describe('AuthorizeInvoiceCommand through the event handler', () => {
     expect(stored.body).toContain(`<fechaAutorizacion>${AUTHORIZED_AT}</fechaAutorizacion>`);
     expect(stored.body).toContain('<![CDATA[<factura firmada/>]]>');
     expect(producer.sent.map((e) => e.type)).toEqual(['InvoiceAuthorized']);
+    // Nothing left to do with it
+    expect(invoice.resultPublishedAt).not.toBeNull();
+    expect(invoice.nextAttemptAt).toBeNull();
   });
 
   it('stays sent and is retried when the authorized XML could not be kept', async () => {
@@ -517,8 +532,135 @@ describe('AuthorizeInvoiceCommand through the event handler', () => {
   });
 });
 
+describe('InvoiceProcessor', () => {
+  const sriCommands = (repo: InMemoryInvoiceRepository) => invoiceSteps(repo, readinessStub(READY));
+
+  const LEASE = { holder: 'worker-1:1', leaseMs: 60_000 };
+
+  it('runs every step until the invoice is final and publishes its result once', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    await storedPending(repo);
+    const producer = producerStub();
+    const processor = new InvoiceProcessor(
+      repo,
+      repo,
+      sriCommands(repo),
+      readinessStub(READY),
+      producer,
+    );
+    expect(await repo.claim('inv-1', LEASE.holder, LEASE.leaseMs)).toBe(true);
+
+    const invoice = await processor.run('inv-1', { lease: LEASE });
+
+    expect(invoice?.status).toBe(InvoiceStatus.AUTHORIZED);
+    expect(producer.sent).toEqual([
+      expect.objectContaining({ type: 'InvoiceAuthorized', invoiceId: 'inv-1', saleId: '42' }),
+    ]);
+    const stored = (await repo.getInvoiceById('inv-1'))!;
+    expect(stored.statusHistory.map((entry) => entry.name)).toEqual([
+      InvoiceStatus.PENDING,
+      InvoiceStatus.CREATED,
+      InvoiceStatus.SIGNED,
+      InvoiceStatus.SENT,
+      InvoiceStatus.AUTHORIZED,
+    ]);
+    expect(stored.resultPublishedAt).not.toBeNull();
+    expect(await repo.claimDue('worker-2:1', 60_000, 10)).toEqual([]);
+
+    // Taken again by mistake: nothing to do, nothing published twice
+    await processor.run('inv-1', { lease: LEASE });
+    expect(producer.sent).toHaveLength(1);
+  });
+
+  it('keeps the result due when Kafka fails, and publishes it on a later run', async () => {
+    const now = new Date('2026-10-09T15:00:00Z');
+    const repo = new InMemoryInvoiceRepository();
+    const invoice = await makeAuthorizedInvoice('inv-1', makePoint(), null);
+    await repo.createInvoice(invoice);
+    const producer = producerStub();
+    producer.sendMessage.mockRejectedValueOnce(new Error('broker down'));
+    const processor = new InvoiceProcessor(
+      repo,
+      repo,
+      new Map(),
+      readinessStub(READY),
+      producer,
+      60_000,
+      () => now,
+    );
+
+    await processor.run('inv-1');
+
+    let stored = (await repo.getInvoiceById('inv-1'))!;
+    expect(stored.resultPublishedAt).toBeNull();
+    expect(stored.nextAttemptAt).toEqual(new Date(now.getTime() + 60_000));
+
+    await processor.run('inv-1');
+
+    stored = (await repo.getInvoiceById('inv-1'))!;
+    expect(producer.sent.map((e) => e.type)).toEqual(['InvoiceAuthorized']);
+    expect(stored.resultPublishedAt).toEqual(now);
+    expect(stored.nextAttemptAt).toBeNull();
+  });
+
+  it('leaves the result to the worker without a producer (a manual retry in the API)', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    await repo.createInvoice(await makeAuthorizedInvoice('inv-1', makePoint(), null));
+    const processor = new InvoiceProcessor(repo, repo, new Map(), readinessStub(READY), null);
+
+    await processor.run('inv-1', { maxSteps: 1 });
+
+    const stored = (await repo.getInvoiceById('inv-1'))!;
+    expect(stored.resultPublishedAt).toBeNull();
+    expect(stored.nextAttemptAt).not.toBeNull();
+  });
+
+  it('stops once its lease is taken by another worker', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    await storedPending(repo);
+    const producer = producerStub();
+    const processor = new InvoiceProcessor(
+      repo,
+      repo,
+      sriCommands(repo),
+      readinessStub(READY),
+      producer,
+    );
+    // The lease ran out and another worker has the invoice now
+    repo.locks.set('inv-1', { holder: 'worker-2:1', until: Date.now() + 60_000 });
+
+    const invoice = await processor.run('inv-1', { lease: LEASE });
+
+    expect(invoice?.status).toBe(InvoiceStatus.CREATED);
+    expect(producer.sent).toEqual([]);
+  });
+
+  it('asks again for the issuer of an invoice released after its issuer changed', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    const invoice = await storedPending(repo);
+    invoice.recordIssue({ code: 'CERTIFICATE_NOT_SELECTED', message: 'x', at: new Date() });
+    await repo.updateInvoice(invoice);
+    const releasedAt = new Date();
+    await repo.requeue(['inv-1'], releasedAt);
+    const readiness = readinessStub(READY);
+    const processor = new InvoiceProcessor(
+      repo,
+      repo,
+      new Map([[InvoiceStatus.PENDING, prepareCommand(readiness, repo)]]),
+      readiness,
+      null,
+    );
+
+    await processor.run('inv-1', { maxSteps: 1 });
+
+    expect(readiness.invalidateIfOlder).toHaveBeenCalledWith(TENANT_A, releasedAt);
+    expect((await repo.getInvoiceById('inv-1'))!.status).toBe(InvoiceStatus.CREATED);
+  });
+});
+
 describe('InvoiceRecoveryService', () => {
   const NOW = new Date('2026-10-09T15:00:00Z');
+  const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
   let saleId = 100;
 
   async function store(
@@ -529,38 +671,18 @@ describe('InvoiceRecoveryService', () => {
   ) {
     // One sale per invoice: a sale has a single active invoice
     const sale = makeSale({ sale_id: ++saleId });
-    const invoice = Invoice.receive(id, point, sale, new Date(NOW.getTime() - 60 * 60_000));
+    const invoice = Invoice.receive(id, point, sale, minutesAgo(60));
     setup(invoice);
     expect(await repo.createInvoice(invoice)).toBe(true);
   }
 
-  function recovery(
-    repo: InMemoryInvoiceRepository,
-    ready: boolean | Parameters<typeof readinessStub>[0],
-  ) {
-    const processed: string[] = [];
-    const handler = {
-      process: vi.fn(async (id: string) => {
-        processed.push(id);
-        return null;
-      }),
-    } as unknown as InvoiceEventHandler;
-    const service = new InvoiceRecoveryService(
-      repo,
-      readinessStub(typeof ready === 'boolean' ? (ready ? READY : NOT_READY) : ready),
-      handler,
-      5 * 60_000,
-      () => NOW,
-    );
-    return { service, processed };
-  }
-
-  it('picks what is due and leaves the rest', async () => {
-    const repo = new InMemoryInvoiceRepository();
-    const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+  /** Invoices of every kind, waiting or due */
+  async function invoicesOfEveryKind(): Promise<InMemoryInvoiceRepository> {
+    const repo = new InMemoryInvoiceRepository(() => NOW);
     await store(repo, 'blocked', (i) =>
       i.recordIssue({ code: 'CERTIFICATE_EXPIRED', message: 'x', at: minutesAgo(30) }),
     );
+    // Due by itself: the worker takes it, the recovery doesn't touch it
     await store(repo, 'transient-due', (i) =>
       i.recordIssue({ code: 'SRI_UNAVAILABLE', message: 'x', at: minutesAgo(2) }),
     );
@@ -571,50 +693,81 @@ describe('InvoiceRecoveryService', () => {
     await store(repo, 'invalid', (i) =>
       i.recordIssue({ code: 'XML_SCHEMA_INVALID', message: 'x', at: minutesAgo(90) }),
     );
-    // No issue and still for an hour: its event was lost
-    await store(repo, 'stale', () => undefined);
+    // No issue: due since it was received
+    await store(repo, 'moving', () => undefined);
+    // No issue and no date (left by an older version): nothing would take it
+    await store(repo, 'stuck', () => undefined);
+    repo.records.get('stuck')!.next_attempt_at = null;
+    return repo;
+  }
 
-    const notReady = recovery(repo, false);
-    await notReady.service.run();
-    expect(notReady.processed.sort()).toEqual(['stale', 'transient-due']);
+  function recovery(
+    repo: InMemoryInvoiceRepository,
+    ready: boolean | Parameters<typeof readinessStub>[0],
+  ) {
+    const readiness = readinessStub(
+      typeof ready === 'boolean' ? (ready ? READY : NOT_READY) : ready,
+    );
+    return new InvoiceRecoveryService(repo, readiness, () => NOW);
+  }
 
-    const ready = recovery(repo, true);
-    await ready.service.run();
-    expect(ready.processed.sort()).toEqual(['blocked', 'stale', 'transient-due']);
+  // Put back in the queue: due now
+  const released = (repo: InMemoryInvoiceRepository) =>
+    [...repo.records.values()]
+      .filter((row) => row.next_attempt_at?.getTime() === NOW.getTime())
+      .map((row) => row.id)
+      .sort();
 
-    const all = recovery(repo, true);
-    await all.service.run({ all: true });
-    expect(all.processed.sort()).toEqual([
-      'blocked',
-      'invalid',
-      'stale',
-      'transient-due',
-      'transient-later',
-    ]);
+  it('puts back what waits for an issuer that is ready, and what nothing would take', async () => {
+    const notReady = await invoicesOfEveryKind();
+    expect(await recovery(notReady, false).run()).toBe(1);
+    expect(released(notReady)).toEqual(['stuck']);
+
+    const ready = await invoicesOfEveryKind();
+    expect(await recovery(ready, true).run()).toBe(2);
+    expect(released(ready)).toEqual(['blocked', 'stuck']);
+  });
+
+  it('puts back everything that needs attention with "retry all"', async () => {
+    const repo = await invoicesOfEveryKind();
+
+    expect(await recovery(repo, true).run({ all: true })).toBe(4);
+
+    expect(released(repo)).toEqual(['blocked', 'invalid', 'stuck', 'transient-later']);
+    // Only the dates change: a step in progress still saves over the same version
+    expect(repo.records.get('blocked')!.version).toBe(1);
+  });
+
+  it('asks the issuer again instead of trusting an answer cached by this process', async () => {
+    const repo = await invoicesOfEveryKind();
+    const readiness = readinessStub(READY);
+
+    await new InvoiceRecoveryService(repo, readiness, () => NOW).run();
+
+    expect(readiness.invalidate).toHaveBeenCalledWith(TENANT_A);
   });
 
   it("doesn't let a company whose issuer can't invoice hold back another one", async () => {
-    const repo = new InMemoryInvoiceRepository();
+    const repo = new InMemoryInvoiceRepository(() => NOW);
     const waiting = (i: Invoice) =>
       i.recordIssue({ code: 'CERTIFICATE_NOT_SELECTED', message: 'x', at: NOW });
     await store(repo, 'of-a', waiting);
     await store(repo, 'of-b', waiting, makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B }));
 
     // A has no certificate; B is ready
-    const { service, processed } = recovery(repo, {
+    await recovery(repo, {
       [TENANT_A]: NOT_READY,
       [TENANT_B]: {
         config: makeConfig({ tenantId: TENANT_B, taxId: RUC_B }),
         certificate: makeCertificate({ tenantId: TENANT_B, taxIds: [RUC_B] }),
       },
-    });
-    await service.run();
+    }).run();
 
-    expect(processed).toEqual(['of-b']);
+    expect(released(repo)).toEqual(['of-b']);
   });
 
   it('retries a sale of another RUC only once the profile has that RUC', async () => {
-    const repo = new InMemoryInvoiceRepository();
+    const repo = new InMemoryInvoiceRepository(() => NOW);
     await store(
       repo,
       'other-ruc',
@@ -622,28 +775,25 @@ describe('InvoiceRecoveryService', () => {
       makePoint({ issuerRuc: RUC_B }),
     );
 
-    const unchanged = recovery(repo, true);
-    await unchanged.service.run({ all: true });
-    expect(unchanged.processed).toEqual([]);
+    await recovery(repo, true).run({ all: true });
+    expect(released(repo)).toEqual([]);
 
-    const fixed = recovery(repo, {
+    await recovery(repo, {
       config: makeConfig({ taxId: RUC_B }),
       certificate: makeCertificate(),
-    });
-    await fixed.service.run();
-    expect(fixed.processed).toEqual(['other-ruc']);
+    }).run();
+    expect(released(repo)).toEqual(['other-ruc']);
   });
 
-  it('runs only the invoices of the company that changed', async () => {
-    const repo = new InMemoryInvoiceRepository();
+  it('puts back only the invoices of the company that changed', async () => {
+    const repo = new InMemoryInvoiceRepository(() => NOW);
     const waiting = (i: Invoice) =>
       i.recordIssue({ code: 'CONFIG_MISSING', message: 'x', at: NOW });
     await store(repo, 'of-a', waiting);
     await store(repo, 'of-b', waiting, makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B }));
 
-    const { service, processed } = recovery(repo, true);
-    await service.run({ tenantId: TENANT_B });
+    await recovery(repo, true).run({ tenantId: TENANT_B });
 
-    expect(processed).toEqual(['of-b']);
+    expect(released(repo)).toEqual(['of-b']);
   });
 });

@@ -116,6 +116,15 @@ export class IssuerReadinessService {
     }
   }
 
+  /**
+   * Forgets the company's answer if it was worked out before `at`: another process (the API, after
+   * a config or certificate change) saw the issuer later and may know better
+   */
+  invalidateIfOlder(tenantId: string, at: Date): void {
+    const cached = this.entries.get(tenantId)?.cached;
+    if (cached && cached.at < at.getTime()) this.invalidate(tenantId);
+  }
+
   private evaluate(tenantId: string): Promise<Evaluation> {
     let entry = this.entries.get(tenantId);
     if (!entry) {

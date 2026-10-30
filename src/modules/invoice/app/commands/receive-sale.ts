@@ -2,7 +2,7 @@ import { v5 as uuidv5 } from 'uuid';
 
 import { logger } from '#/shared/logger';
 
-import { Invoice } from '../../domain/invoice';
+import { Invoice, TraceContext } from '../../domain/invoice';
 import { InvoiceRepository } from '../../domain/repository';
 import { IssuingPoint, SaleData } from '../../domain/sale';
 
@@ -23,15 +23,20 @@ export interface ReceivedSale {
 }
 
 /**
- * Stores the sale as a `pending` invoice of its company, whether or not its issuer can invoice
- * yet: nothing is lost while the config or the certificate are missing.
+ * Stores the sale as a `pending` invoice of its company, due right away, whether or not its issuer
+ * can invoice yet: nothing is lost while the config or the certificate are missing. Nothing else
+ * happens here: a worker takes it from the queue, so a slow SRI never holds back new sales.
  *
  * Kafka may deliver the same message twice (same event id, same invoice id). A
  * resend from faclab-core brings a new event id: it only creates an invoice if
  * the sale has none, or only rejected ones.
  */
 export class ReceiveSaleCommand {
-  constructor(private invoiceRepository: InvoiceRepository) {}
+  constructor(
+    private invoiceRepository: InvoiceRepository,
+    // The trace of the message being handled, kept so the worker continues it
+    private traceContext: () => TraceContext | null = () => null,
+  ) {}
 
   async execute({ eventId, point, sale, requestedAt }: ReceivedSale): Promise<Invoice | null> {
     const id = invoiceIdForEvent(eventId);
@@ -53,7 +58,7 @@ export class ReceiveSaleCommand {
       return null;
     }
 
-    const invoice = Invoice.receive(id, point, sale, new Date(), requestedAt);
+    const invoice = Invoice.receive(id, point, sale, new Date(), requestedAt, this.traceContext());
     // A concurrent delivery or resend may have stored its invoice since the checks above
     if (!(await this.invoiceRepository.createInvoice(invoice))) {
       logger.info(

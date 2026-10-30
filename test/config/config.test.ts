@@ -93,6 +93,45 @@ describe('parseConfig in local', () => {
     expect(message).toContain('INVOICING_PROVIDER_RUC must be a RUC of 13 digits');
   });
 
+  it('runs the consumer and the worker in the API by default, four invoices at a time', () => {
+    const config = parseConfig({});
+
+    expect(config.runBackground).toBe(true);
+    expect(config.invoiceQueue).toEqual({
+      concurrency: 4,
+      pollIntervalMs: 1000,
+      lockTimeoutMs: 120_000,
+    });
+    expect(config.invoiceRecovery.intervalMs).toBe(60_000);
+  });
+
+  it('takes the worker settings, and leaves the background to the worker process', () => {
+    const config = parseConfig({
+      RUN_BACKGROUND: 'false',
+      INVOICE_WORKER_CONCURRENCY: '2',
+      INVOICE_POLL_INTERVAL_MS: '500',
+      SRI_TIMEOUT_MS: '10000',
+      INVOICE_LOCK_TIMEOUT_MS: '20000',
+    });
+
+    expect(config.runBackground).toBe(false);
+    expect(config.invoiceQueue).toEqual({
+      concurrency: 2,
+      pollIntervalMs: 500,
+      lockTimeoutMs: 20_000,
+    });
+  });
+
+  it('refuses a lease an SRI call could outlast, and more slots than the pool holds', () => {
+    expect(errorOf({ SRI_TIMEOUT_MS: '30000', INVOICE_LOCK_TIMEOUT_MS: '45000' })).toContain(
+      'INVOICE_LOCK_TIMEOUT_MS must be at least 2 times SRI_TIMEOUT_MS',
+    );
+    expect(errorOf({ INVOICE_WORKER_CONCURRENCY: '9' })).toContain('INVOICE_WORKER_CONCURRENCY');
+    expect(errorOf({ RUN_BACKGROUND: 'yes' })).toContain(
+      'RUN_BACKGROUND must be one of: true, false',
+    );
+  });
+
   it('takes overrides, such as a container on faclab_network', () => {
     const config = parseConfig({
       KAFKA_BROKERS: ' kafka:9092 , ,other:9092,',

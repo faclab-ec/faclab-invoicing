@@ -1,25 +1,12 @@
 import { z } from 'zod';
 
-import { InvoiceStatus } from '../../domain/invoice';
 import { IVA_CODE_KEYS } from '../../domain/sri-catalogs';
 
 // --- Kafka Message Schemas ---
 // The contracts are the JSON Schemas in contracts/events/, copied from faclab-core (see
 // contracts/README.md): test/contract checks these schemas against their examples. A message
 // without schema_version predates v1 and is read as v1; a version not listed here goes to the DLQ.
-
-export const InvoiceMessageSchema = z.object({
-  schema_version: z.literal(1).optional(),
-  type: z.string(),
-  invoiceId: z.string(),
-  saleId: z.string(),
-  status: z.nativeEnum(InvoiceStatus),
-  occurredAt: z.coerce.date(),
-  // Only in InvoiceRejected, and missing before S3.4
-  reason: z.string().nullable().optional(),
-});
-
-export type InvoiceMessage = z.infer<typeof InvoiceMessageSchema>;
+// Only `sales.confirmed` comes in: `invoices` goes out to faclab-core (S4.2).
 
 const SaleConfirmedCustomerSchema = z.object({
   id: z.number(),

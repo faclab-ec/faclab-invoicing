@@ -2,16 +2,11 @@ import { IssuerReadinessService } from '#/modules/company-config/app/issuer-read
 import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 import { logger } from '#/shared/logger';
 
-import { Invoice } from '../../domain/invoice';
 import { isBlockingIssue } from '../../domain/issue';
-import { InvoiceRepository } from '../../domain/repository';
-import { InvoiceEventHandler } from '../handlers/invoice-event.handler';
-
-// An invoice with no issue that hasn't moved for this long lost its event
-const DEFAULT_STALE_AFTER_MS = 5 * 60_000;
+import { InvoiceQueue, WaitingInvoice } from '../../domain/queue';
 
 export interface RecoveryRunOptions {
-  // Manual "retry all": also invoices waiting for their next attempt or past
+  // Manual "retry all": also invoices waiting for their next attempt, invalid ones and those past
   // the automatic attempt limit
   all?: boolean;
   // Only this company's invoices
@@ -19,88 +14,60 @@ export interface RecoveryRunOptions {
 }
 
 /**
- * Moves forward the invoices the Kafka flow left behind, of every company:
- * - waiting for their issuer (config, certificate), once it is ready: each company's issuer
- *   on its own, so one that can't invoice doesn't hold back another;
- * - failed for a transient reason, when their next attempt is due;
- * - stuck without an issue (event lost, crash), after a while.
+ * Puts back in the queue the invoices that wait for something other than a date, of every company:
+ * - waiting for their issuer (config, certificate), once it is ready: each company's issuer on its
+ *   own, so one that can't invoice doesn't hold back another;
+ * - with "retry all", also the transient issues not yet due, the invalid invoices and those past
+ *   the automatic limit;
+ * - in flight with no date and no issue (left by an older version), always.
  *
- * Runs on a timer, after a config or certificate change and on demand. Assumes
- * a single instance of the service; two would only waste work (the version
- * check keeps them from overwriting each other).
+ * It only sets their next attempt: a worker runs them. Runs in the worker on a timer, in the API
+ * after a config or certificate change and on demand; two runs at once only repeat an update.
  */
 export class InvoiceRecoveryService {
-  private running: Promise<number> | null = null;
-
   constructor(
-    private invoiceRepository: InvoiceRepository,
+    private queue: InvoiceQueue,
     private readiness: IssuerReadinessService,
-    private eventHandler: InvoiceEventHandler,
-    private staleAfterMs: number = DEFAULT_STALE_AFTER_MS,
     private now: () => Date = () => new Date(),
   ) {}
 
-  /** Number of invoices processed. Runs one at a time: a call waits for the current run */
-  async run(options: RecoveryRunOptions = {}): Promise<number> {
-    while (this.running) {
-      await this.running.catch(() => undefined);
-    }
-    const run = this.runOnce(options);
-    this.running = run;
-    try {
-      return await run;
-    } finally {
-      this.running = null;
-    }
-  }
-
-  private async runOnce({ all = false, tenantId }: RecoveryRunOptions): Promise<number> {
-    const now = this.now();
-    const inFlight = (await this.invoiceRepository.findInFlight()).filter(
-      (invoice) => tenantId === undefined || invoice.tenantId === tenantId,
-    );
-    // Only the issuers of the companies with invoices in flight, once each
+  /** How many invoices were put back in the queue */
+  async run({ all = false, tenantId }: RecoveryRunOptions = {}): Promise<number> {
+    const waiting = await this.queue.findWaiting(tenantId);
+    // Only the issuers of the companies with invoices waiting for them, once each and freshly:
+    // the change may have been saved by another process
     const reports = new Map<string, ReadinessReport>();
-    for (const invoice of inFlight) {
-      if (!reports.has(invoice.tenantId)) {
+    for (const invoice of waiting) {
+      if (waitsForIssuer(invoice) && !reports.has(invoice.tenantId)) {
+        this.readiness.invalidate(invoice.tenantId);
         reports.set(invoice.tenantId, await this.readiness.check(invoice.tenantId));
       }
     }
-    const due = inFlight
-      .filter((invoice) => this.isDue(invoice, reports.get(invoice.tenantId)!, now, all))
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    const due = waiting.filter((invoice) => isDue(invoice, reports.get(invoice.tenantId), all));
+    if (due.length === 0) return 0;
 
-    let processed = 0;
-    for (const invoice of due) {
-      try {
-        await this.eventHandler.process(invoice.id);
-        processed += 1;
-      } catch (error) {
-        logger.error({ invoiceId: invoice.id, err: error }, 'Invoice recovery failed');
-      }
-    }
-    if (due.length > 0) {
-      const notReady = [...reports].filter(([, report]) => !report.ready).map(([id]) => id);
-      logger.info(
-        { due: due.length, processed, issuersNotReady: notReady },
-        'Invoice recovery run',
-      );
-    }
-    return processed;
+    const released = await this.queue.requeue(
+      due.map((invoice) => invoice.id),
+      this.now(),
+    );
+    const notReady = [...reports].filter(([, report]) => !report.ready).map(([id]) => id);
+    logger.info({ released, issuersNotReady: notReady }, 'Invoices put back in the queue');
+    return released;
   }
+}
 
-  private isDue(invoice: Invoice, issuer: ReadinessReport, now: Date, all: boolean): boolean {
-    const { issue } = invoice;
-    if (issue) {
-      // Waits until the profile has the RUC the sale was made with, not just any change
-      if (issue.code === 'ISSUER_RUC_MISMATCH') {
-        return issuer.ready && issuer.taxId === invoice.point.issuerRuc;
-      }
-      if (isBlockingIssue(issue.code)) return issuer.ready;
-      if (all) return true;
-      return invoice.nextAttemptAt !== null && invoice.nextAttemptAt <= now;
-    }
-    // No issue: Kafka is moving it, unless it has been still for too long
-    return now.getTime() - invoice.updatedAt.getTime() >= this.staleAfterMs;
+function waitsForIssuer({ issueCode }: WaitingInvoice): boolean {
+  return issueCode !== null && isBlockingIssue(issueCode);
+}
+
+function isDue(invoice: WaitingInvoice, issuer: ReadinessReport | undefined, all: boolean) {
+  const { issueCode } = invoice;
+  // No issue and no date: nothing would ever take it
+  if (issueCode === null) return invoice.nextAttemptAt === null || all;
+  // Waits until the profile has the RUC the sale was made with, not just any change
+  if (issueCode === 'ISSUER_RUC_MISMATCH') {
+    return issuer!.ready && issuer!.taxId === invoice.issuerRuc;
   }
+  if (isBlockingIssue(issueCode)) return issuer!.ready;
+  return all;
 }

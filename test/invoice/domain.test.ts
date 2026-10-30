@@ -17,7 +17,7 @@ import {
   nextAttemptAt,
 } from '#/modules/invoice/domain/issue';
 
-import { makeConfig, makePoint, makeSale } from '../helpers';
+import { makeConfig, makePoint, makeSale, TENANT_A } from '../helpers';
 
 const MINUTE = 60_000;
 const ACCESS_CODE = '0910202601179214100100120010010000000420000004213';
@@ -34,14 +34,18 @@ function preparedInvoice(): Invoice {
 }
 
 describe('Invoice', () => {
-  it('starts pending with the sale and announces it', () => {
-    const invoice = Invoice.receive('inv-1', makePoint(), makeSale());
+  it('starts pending with the sale, due right away for the worker', () => {
+    const now = new Date('2026-10-09T15:00:00Z');
+    const trace = { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' };
+    const invoice = Invoice.receive('inv-1', makePoint(), makeSale(), now, null, trace);
 
     expect(invoice.status).toBe(InvoiceStatus.PENDING);
     expect(invoice.saleId).toBe('42');
     expect(invoice.accessCode).toBeNull();
     expect(invoice.needsAttention).toBe(true);
-    expect(invoice.pullEvents().map((e) => e.type)).toEqual(['InvoiceReceived']);
+    expect(invoice.nextAttemptAt).toEqual(now);
+    expect(invoice.traceContext).toEqual(trace);
+    expect(invoice.resultEvent()).toBeNull();
   });
 
   it('needs a sequence before building the XML, and keeps it', () => {
@@ -83,7 +87,8 @@ describe('Invoice', () => {
 
     expect(invoice.issue).toBeNull();
     expect(invoice.attempts).toBe(0);
-    expect(invoice.nextAttemptAt).toBeNull();
+    // Due again: the worker goes on with the next step
+    expect(invoice.nextAttemptAt).toEqual(invoice.updatedAt);
     expect(invoice.needsAttention).toBe(false);
   });
 
@@ -94,7 +99,7 @@ describe('Invoice', () => {
     invoice.reject(['DEVUELTA', 'CLAVE REPETIDA']);
 
     expect(invoice.isActive).toBe(false);
-    expect(invoice.pullEvents().at(-1)).toMatchObject({
+    expect(invoice.resultEvent()).toMatchObject({
       type: 'InvoiceRejected',
       reason: 'DEVUELTA >> CLAVE REPETIDA',
     });
@@ -102,6 +107,45 @@ describe('Invoice', () => {
     expect(() =>
       invoice.recordIssue({ code: 'SRI_UNAVAILABLE', message: 'x', at: new Date() }),
     ).toThrow();
+  });
+});
+
+describe('the result for faclab-core', () => {
+  it('is the authorization, due until it is published', () => {
+    const invoice = preparedInvoice();
+    invoice.sign('<factura firmada/>');
+    invoice.markAsSent([]);
+    expect(() => invoice.markResultPublished()).toThrow(/no result yet/);
+
+    invoice.authorize(
+      { number: ACCESS_CODE, authorizedAt: new Date(), xmlKey: 'tenants/a/x.xml' },
+      ['AUTORIZADO'],
+    );
+
+    const authorizedAt = invoice.statusHistory.at(-1)!.statusDate;
+    expect(invoice.resultEvent()).toEqual({
+      type: 'InvoiceAuthorized',
+      tenantId: TENANT_A,
+      invoiceId: 'inv-1',
+      saleId: '42',
+      status: InvoiceStatus.AUTHORIZED,
+      occurredAt: authorizedAt,
+    });
+    expect(invoice.nextAttemptAt).toEqual(authorizedAt);
+    expect(invoice.resultPublishedAt).toBeNull();
+
+    const publishedAt = new Date();
+    invoice.markResultPublished(publishedAt);
+
+    expect(invoice.resultPublishedAt).toEqual(publishedAt);
+    expect(invoice.nextAttemptAt).toBeNull();
+  });
+
+  it('carries no reason when the SRI sent no messages with the rejection', () => {
+    const invoice = preparedInvoice();
+    invoice.reject([]);
+
+    expect(invoice.resultEvent()).toMatchObject({ type: 'InvoiceRejected', reason: null });
   });
 });
 

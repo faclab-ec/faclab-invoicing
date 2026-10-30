@@ -8,7 +8,7 @@ export enum InvoiceStatus {
   REJECTED = 'rejected',
 }
 
-interface BaseInvoiceEvent {
+interface BaseResultEvent {
   // The company of the invoice: travels as the `faclab-tenant-id` header, not in the body
   tenantId: string;
   invoiceId: string;
@@ -17,45 +17,19 @@ interface BaseInvoiceEvent {
   occurredAt: Date;
 }
 
-export interface InvoiceReceived extends BaseInvoiceEvent {
-  type: 'InvoiceReceived';
-}
-
-export interface InvoiceCreated extends BaseInvoiceEvent {
-  type: 'InvoiceCreated';
-}
-
-export interface InvoiceSigned extends BaseInvoiceEvent {
-  type: 'InvoiceSigned';
-}
-
-export interface InvoiceSent extends BaseInvoiceEvent {
-  type: 'InvoiceSent';
-}
-
-export interface InvoiceAuthorized extends BaseInvoiceEvent {
+export interface InvoiceAuthorized extends BaseResultEvent {
   type: 'InvoiceAuthorized';
 }
 
-export interface InvoiceRejected extends BaseInvoiceEvent {
+export interface InvoiceRejected extends BaseResultEvent {
   type: 'InvoiceRejected';
   // The SRI's messages, joined with ' >> '; faclab-core shows them in the sale
   reason: string | null;
 }
 
-export type InvoiceDomainEvent =
-  | InvoiceReceived
-  | InvoiceCreated
-  | InvoiceSigned
-  | InvoiceSent
-  | InvoiceAuthorized
-  | InvoiceRejected;
-
-export const STATUS_EVENT_TYPE: Record<InvoiceStatus, InvoiceDomainEvent['type']> = {
-  [InvoiceStatus.PENDING]: 'InvoiceReceived',
-  [InvoiceStatus.CREATED]: 'InvoiceCreated',
-  [InvoiceStatus.SIGNED]: 'InvoiceSigned',
-  [InvoiceStatus.SENT]: 'InvoiceSent',
-  [InvoiceStatus.AUTHORIZED]: 'InvoiceAuthorized',
-  [InvoiceStatus.REJECTED]: 'InvoiceRejected',
-};
+/**
+ * What faclab-core learns from an invoice, on the `invoices` topic: the SRI's answer. The steps in
+ * between go through the queue in the database, not through Kafka (S4.2); v1 still lists their
+ * event types, which nothing publishes anymore.
+ */
+export type InvoiceResultEvent = InvoiceAuthorized | InvoiceRejected;

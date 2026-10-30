@@ -10,12 +10,15 @@ import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
+import { serviceNameFor } from './shared/telemetry/service-name';
+
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4317';
 
 // Same resource attributes as faclab-core (docs/architecture/OBSERVABILITY.md §3)
 const sdk = new NodeSDK({
   resource: resourceFromAttributes({
-    [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'faclab-invoicing',
+    // faclab-invoicing-worker for the worker process
+    [ATTR_SERVICE_NAME]: serviceNameFor(process.argv, process.env.OTEL_SERVICE_NAME || undefined),
     'service.namespace': 'faclab',
     // Set at build time (tag or commit SHA)
     [ATTR_SERVICE_VERSION]: process.env.SERVICE_VERSION || 'dev',
@@ -33,8 +36,8 @@ const sdk = new NodeSDK({
 
   instrumentations: [
     new HttpInstrumentation(),
-    // Only queries inside a request or a Kafka message: the recovery job's polling would
-    // otherwise start a trace every minute
+    // Only queries inside a request, a Kafka message or an invoice job: the worker's polling would
+    // otherwise start a trace every second
     new PgInstrumentation({ requireParentSpan: true }),
     new PinoInstrumentation(),
   ],

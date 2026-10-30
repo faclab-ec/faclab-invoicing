@@ -1,7 +1,5 @@
 import { NonRetryableError } from '#/shared/errors/non-retryable.error';
 
-import { InvoiceDomainEvent } from '../../domain/events';
-import { MessageProducer } from '../../domain/ports';
 import { SaleConfirmedMessage } from '../../infra/messaging/schemas';
 import { ReceivedSale, ReceiveSaleCommand } from '../commands/receive-sale';
 
@@ -59,20 +57,15 @@ export function toReceivedSale(
   };
 }
 
+/** Stores the sale for invoicing; the offset is committed once it is saved */
 export class SaleConfirmedHandler {
   constructor(
     private receiveSaleCommand: ReceiveSaleCommand,
-    private messageProducer: MessageProducer<InvoiceDomainEvent>,
     // The default issuer of v1 messages (development only)
     private v1TenantId: string | null = null,
   ) {}
 
   async handle(message: SaleConfirmedMessage): Promise<void> {
-    const invoice = await this.receiveSaleCommand.execute(toReceivedSale(message, this.v1TenantId));
-    if (!invoice) return;
-    // InvoiceReceived starts the flow; if it's lost, the recovery job picks it up
-    for (const event of invoice.pullEvents()) {
-      await this.messageProducer.sendMessage(event);
-    }
+    await this.receiveSaleCommand.execute(toReceivedSale(message, this.v1TenantId));
   }
 }

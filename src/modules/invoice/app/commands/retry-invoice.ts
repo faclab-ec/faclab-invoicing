@@ -1,18 +1,30 @@
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { ConflictError, NotFoundError } from '#/shared/errors/app-error';
-import { logger } from '#/shared/logger';
 
 import { Invoice } from '../../domain/invoice';
+import { InvoiceQueue } from '../../domain/queue';
 import { InvoiceRepository } from '../../domain/repository';
-import { InvoiceEventHandler } from '../handlers/invoice-event.handler';
+import { InvoiceProcessor } from '../services/invoice-processor';
 import { InvoiceRecoveryService } from '../services/invoice-recovery';
 
-/** Runs the next step of one of the company's invoices now, ignoring its retry schedule */
+export interface RetryLease {
+  // Who holds the invoice while the step runs (this process)
+  holder: string;
+  leaseMs: number;
+}
+
+/**
+ * Runs the next step of one of the company's invoices now, ignoring its retry schedule. It holds
+ * the invoice in the queue meanwhile, so no worker runs the same step at the same time; the worker
+ * goes on with the next ones.
+ */
 export class RetryInvoiceCommand {
   constructor(
     private readonly invoiceRepository: InvoiceRepository,
+    private readonly queue: InvoiceQueue,
     private readonly readiness: IssuerReadinessService,
-    private readonly eventHandler: InvoiceEventHandler,
+    private readonly processor: InvoiceProcessor,
+    private readonly lease: RetryLease,
   ) {}
 
   async execute(tenantId: string, id: string): Promise<Invoice> {
@@ -25,28 +37,30 @@ export class RetryInvoiceCommand {
       );
     }
 
-    // Check the issuer again instead of trusting the cached answer
-    this.readiness.invalidate(tenantId);
-    return (await this.eventHandler.process(id)) ?? invoice;
+    const { holder, leaseMs } = this.lease;
+    if (!(await this.queue.claim(id, holder, leaseMs))) {
+      throw new ConflictError('INVOICE_IN_PROGRESS', `Invoice ${id} is being processed right now`);
+    }
+    try {
+      // Check the issuer again instead of trusting the cached answer
+      this.readiness.invalidate(tenantId);
+      return (await this.processor.run(id, { maxSteps: 1 })) ?? invoice;
+    } finally {
+      await this.queue.release(id, holder);
+    }
   }
 }
 
-/** Retries every invoice of the company that needs attention, in the background */
+/** Puts back in the queue every invoice of the company that needs attention */
 export class RetryInvoicesCommand {
   constructor(
-    private readonly invoiceRepository: InvoiceRepository,
     private readonly readiness: IssuerReadinessService,
     private readonly recovery: InvoiceRecoveryService,
   ) {}
 
   /** How many invoices were queued */
   async execute(tenantId: string): Promise<number> {
-    const { needingAttention } = await this.invoiceRepository.countInFlight(tenantId);
-
     this.readiness.invalidate(tenantId);
-    this.recovery
-      .run({ all: true, tenantId })
-      .catch((error) => logger.error({ err: error }, 'Retrying invoices failed'));
-    return needingAttention;
+    return this.recovery.run({ all: true, tenantId });
   }
 }

@@ -37,21 +37,25 @@ const main = async () => {
     );
   }
 
-  const { consumer, producer, httpServer, recoveryScheduler, pool } = await createContainer(config);
-  await consumer.start();
-  recoveryScheduler.start();
+  const container = createContainer(config);
+  const httpServer = await container.createHttpServer();
+  // RUN_BACKGROUND=false leaves the consumer and the worker to `worker.ts`
+  const background = config.runBackground ? container.createBackground() : null;
+  await background?.start();
   await httpServer.listen({ port: config.http.port, host: config.http.host });
-  logger.info({ env: config.environment, port: config.http.port }, 'Application started');
+  logger.info(
+    { env: config.environment, port: config.http.port, runBackground: config.runBackground },
+    'Application started',
+  );
 
   const shutdown = async () => {
     logger.info('Shutting down...');
     try {
-      recoveryScheduler.stop();
-      await consumer.stop();
-      await producer.disconnect();
       await httpServer.close();
+      // Waits for the invoices in progress
+      await background?.stop();
       // Last: the steps above may still be saving invoices
-      await pool.end();
+      await container.pool.end();
     } catch (error) {
       logger.error({ error }, 'Error during shutdown');
     }

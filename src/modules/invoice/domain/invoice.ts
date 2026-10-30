@@ -1,6 +1,6 @@
 import { AccessCode } from './access-code';
 import { generateNumericCode } from './access-code-generator';
-import { InvoiceDomainEvent, InvoiceStatus, STATUS_EVENT_TYPE } from './events';
+import { InvoiceResultEvent, InvoiceStatus } from './events';
 import { InvoiceIssue, nextAttemptAt } from './issue';
 import { IssuingPoint, SaleData } from './sale';
 
@@ -13,6 +13,10 @@ export class InvoiceStatusHistory {
     public description?: string,
   ) {}
 }
+
+// W3C trace context (traceparent, tracestate) of the message that brought the sale: the worker
+// continues its trace
+export type TraceContext = Record<string, string>;
 
 export interface InvoiceProps {
   id: string;
@@ -33,6 +37,9 @@ export interface InvoiceProps {
   issue: InvoiceIssue | null;
   attempts: number;
   nextAttemptAt: Date | null;
+  // When faclab-core was told the result (`invoices`); null until then, and before final
+  resultPublishedAt: Date | null;
+  traceContext: TraceContext | null;
   createdAt: Date;
   updatedAt: Date;
   version: number;
@@ -49,8 +56,6 @@ export interface InvoiceAuthorization {
 const FINAL_STATUSES = [InvoiceStatus.AUTHORIZED, InvoiceStatus.REJECTED];
 
 export class Invoice {
-  private _domainEvents: InvoiceDomainEvent[] = [];
-
   readonly id: string;
   readonly saleId: string;
   // Company, establishment and emission point that issue it, as the sale says
@@ -58,6 +63,7 @@ export class Invoice {
   // Kept so the XML can be built whenever the issuer is ready
   readonly sale: SaleData | null;
   readonly requestedAt: Date | null;
+  readonly traceContext: TraceContext | null;
   readonly statusHistory: InvoiceStatusHistory[];
   readonly createdAt: Date;
   // Optimistic lock: the repository only saves over the version it read
@@ -73,6 +79,7 @@ export class Invoice {
   private _issue: InvoiceIssue | null;
   private _attempts: number;
   private _nextAttemptAt: Date | null;
+  private _resultPublishedAt: Date | null;
   private _updatedAt: Date;
 
   constructor(props: InvoiceProps) {
@@ -81,6 +88,7 @@ export class Invoice {
     this.point = props.point;
     this.sale = props.sale;
     this.requestedAt = props.requestedAt;
+    this.traceContext = props.traceContext;
     this.statusHistory = props.statusHistory;
     this.createdAt = props.createdAt;
     this.version = props.version;
@@ -94,6 +102,7 @@ export class Invoice {
     this._issue = props.issue;
     this._attempts = props.attempts;
     this._nextAttemptAt = props.nextAttemptAt;
+    this._resultPublishedAt = props.resultPublishedAt;
     this._updatedAt = props.updatedAt;
   }
 
@@ -140,8 +149,16 @@ export class Invoice {
     return this._attempts;
   }
 
+  /**
+   * When the worker takes it next: its next step, or telling faclab-core the result. Null while it
+   * waits for its issuer or a manual retry, and once done
+   */
   get nextAttemptAt(): Date | null {
     return this._nextAttemptAt;
+  }
+
+  get resultPublishedAt(): Date | null {
+    return this._resultPublishedAt;
   }
 
   get updatedAt(): Date {
@@ -168,6 +185,7 @@ export class Invoice {
     sale: SaleData,
     now: Date = new Date(),
     requestedAt: Date | null = null,
+    traceContext: TraceContext | null = null,
   ): Invoice {
     const invoice = new Invoice({
       id,
@@ -186,6 +204,8 @@ export class Invoice {
       issue: null,
       attempts: 0,
       nextAttemptAt: null,
+      resultPublishedAt: null,
+      traceContext,
       createdAt: now,
       updatedAt: now,
       version: 0,
@@ -269,10 +289,29 @@ export class Invoice {
     this._updatedAt = issue.at;
   }
 
-  pullEvents(): InvoiceDomainEvent[] {
-    const events = [...this._domainEvents];
-    this._domainEvents = [];
-    return events;
+  /** The SRI's answer, for faclab-core: null until the invoice is authorized or rejected */
+  resultEvent(): InvoiceResultEvent | null {
+    if (!this.isFinal) return null;
+    const last = this.statusHistory[this.statusHistory.length - 1];
+    const base = {
+      tenantId: this.tenantId,
+      invoiceId: this.id,
+      saleId: this.saleId,
+      status: this._status,
+      occurredAt: last.statusDate,
+    };
+    if (this._status === InvoiceStatus.AUTHORIZED) return { ...base, type: 'InvoiceAuthorized' };
+    // A rejection carries the SRI's messages (invoices v1 `reason`)
+    return { ...base, type: 'InvoiceRejected', reason: last.description || null };
+  }
+
+  /** faclab-core has the result: nothing is left to do with the invoice */
+  markResultPublished(at: Date = new Date()): void {
+    if (!this.isFinal) {
+      throw new Error(`Invoice ${this.id} has no result yet (status ${this._status})`);
+    }
+    this._resultPublishedAt = at;
+    this._nextAttemptAt = null;
   }
 
   private assertStatus(expected: InvoiceStatus, action: string): void {
@@ -281,22 +320,13 @@ export class Invoice {
     }
   }
 
+  // Due right away: the worker runs the next step, or publishes the result once final
   private addStatusHistory(status: InvoiceStatus, date: Date, description?: string): void {
     this._status = status;
     this._issue = null;
     this._attempts = 0;
-    this._nextAttemptAt = null;
+    this._nextAttemptAt = date;
     this._updatedAt = date;
     this.statusHistory.push(new InvoiceStatusHistory(status, date, description));
-    this._domainEvents.push({
-      type: STATUS_EVENT_TYPE[status],
-      tenantId: this.tenantId,
-      invoiceId: this.id,
-      saleId: this.saleId,
-      status,
-      occurredAt: date,
-      // A rejection carries the SRI's messages (invoices v1 `reason`)
-      ...(status === InvoiceStatus.REJECTED ? { reason: description || null } : {}),
-    } as InvoiceDomainEvent);
   }
 }

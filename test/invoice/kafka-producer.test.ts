@@ -17,9 +17,9 @@ describe('KafkaProducer of the invoices topic', () => {
       invoiceTenant,
     );
     const invoice = Invoice.receive('inv-1', makePoint({ tenantId: TENANT_B }), makeSale());
-    const [event] = invoice.pullEvents();
+    invoice.reject(['NO AUTORIZADO']);
 
-    await producer.sendMessage(event);
+    await producer.sendMessage(invoice.resultEvent()!);
 
     const [record] = (send.mock.calls[0] as unknown as [KafkaJS.ProducerRecord])[0].messages;
     expect(record.key).toBe(TENANT_B);

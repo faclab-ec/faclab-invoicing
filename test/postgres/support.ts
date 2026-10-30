@@ -51,3 +51,8 @@ export function usePostgres(): () => Pool {
 
   return () => pool!;
 }
+
+/** Another pool on the same schema, like a second process of the service; the caller ends it */
+export function anotherPool(pool: Pool): Pool {
+  return new Pool({ ...pool.options });
+}

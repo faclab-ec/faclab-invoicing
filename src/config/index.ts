@@ -26,9 +26,20 @@ export interface AppConfig {
     // Base64 of a 32-byte key; encrypts the certificate passwords at rest
     passwordKey: string;
   };
+  // How often the worker puts back in the queue the invoices whose issuer became ready
   invoiceRecovery: {
     intervalMs: number;
   };
+  // The worker that takes invoices from the queue (S4.2)
+  invoiceQueue: {
+    // Invoices processed at the same time by each worker
+    concurrency: number;
+    pollIntervalMs: number;
+    // How long a worker holds an invoice before another may take it: longer than any SRI call
+    lockTimeoutMs: number;
+  };
+  // Whether the API process also runs the consumer and the worker (false: only `worker.ts` does)
+  runBackground: boolean;
   kafka: {
     brokers: string[];
     groupId: string;
@@ -85,6 +96,10 @@ const ENV_VARS = [
   'LOG_LEVEL',
   'SRI_TIMEOUT_MS',
   'INVOICE_RETRY_INTERVAL_MS',
+  'INVOICE_WORKER_CONCURRENCY',
+  'INVOICE_POLL_INTERVAL_MS',
+  'INVOICE_LOCK_TIMEOUT_MS',
+  'RUN_BACKGROUND',
   'SERVICE_VERSION',
   'SALES_V1_TENANT_ID',
   'OBJECT_STORAGE_ENDPOINT',
@@ -106,6 +121,11 @@ const DEFAULTS: EnvDefaults = {
   JWT_ISSUER: 'faclab-core',
   SRI_TIMEOUT_MS: '30000',
   INVOICE_RETRY_INTERVAL_MS: '60000',
+  INVOICE_WORKER_CONCURRENCY: '4',
+  INVOICE_POLL_INTERVAL_MS: '1000',
+  INVOICE_LOCK_TIMEOUT_MS: '120000',
+  // As in faclab-core: the API runs everything unless the deployment has a worker of its own
+  RUN_BACKGROUND: 'true',
   // Set at build time (tag or commit SHA); instrumentation.ts reads it too
   SERVICE_VERSION: 'dev',
   OBJECT_STORAGE_FORCE_PATH_STYLE: 'true',
@@ -140,6 +160,11 @@ const commaList = (value: string) =>
 
 const positiveInt = z.coerce.number().int().positive();
 
+const booleanFlag = z.enum(['true', 'false']).transform((value) => value === 'true');
+
+// A lease shorter than this could run out while its worker still waits for the SRI
+const MIN_LOCK_TIMEOUT_SRI_CALLS = 2;
+
 const isHttpUrl = (value: string) => {
   try {
     return ['http:', 'https:'].includes(new URL(value).protocol);
@@ -158,65 +183,77 @@ const isPostgresUrl = (value: string) => {
 
 function schemaFor(environment: AppEnvironment) {
   const production = environment === 'production';
-  return z.object({
-    KAFKA_BROKERS: z
-      .string()
-      .transform(commaList)
-      .pipe(z.array(z.string()).nonempty('must list at least one broker')),
-    DATABASE_URL: z
-      .string()
-      .refine(isPostgresUrl, 'must be a postgres:// or postgresql:// connection string'),
-    CORS_ORIGINS: z
-      .string()
-      .transform(commaList)
-      .pipe(z.array(z.string()).nonempty('must list at least one origin'))
-      .refine((origins) => !production || !origins.includes('*'), "can't be * outside local"),
-    JWT_SECRET: production
-      ? z
-          .string()
-          .min(
-            MIN_JWT_SECRET_LENGTH,
-            `must be faclab-core's secret (at least ${MIN_JWT_SECRET_LENGTH} characters)`,
-          )
-      : z.string(),
-    JWT_ISSUER: z.string(),
-    // Losing or changing it makes every stored certificate unreadable
-    CERTIFICATE_PASSWORD_KEY: z
-      .string()
-      .refine(
-        (value) => Buffer.from(value, 'base64').length === 32,
-        'must be 32 random bytes in base64',
-      ),
-    HTTP_PORT: z.coerce.number().int().min(1).max(65535),
-    LOG_LEVEL: z.enum(LOG_LEVELS),
-    SRI_TIMEOUT_MS: positiveInt,
-    INVOICE_RETRY_INTERVAL_MS: positiveInt,
-    SERVICE_VERSION: z.string(),
-    // sales.confirmed v1 names no company: only a development setup invoices it, with this one
-    SALES_V1_TENANT_ID: z
-      .string()
-      .uuid()
-      .optional()
-      .refine((value) => !production || value === undefined, "can't be set in production"),
-    // Empty: AWS S3 itself
-    OBJECT_STORAGE_ENDPOINT: z
-      .string()
-      .refine(isHttpUrl, 'must be an http:// or https:// URL')
-      .optional(),
-    OBJECT_STORAGE_REGION: z.string().min(1),
-    OBJECT_STORAGE_BUCKET: z.string().min(1),
-    OBJECT_STORAGE_ACCESS_KEY_ID: z.string().min(1),
-    OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
-    OBJECT_STORAGE_FORCE_PATH_STYLE: z
-      .enum(['true', 'false'])
-      .transform((value) => value === 'true'),
-    INVOICE_EMISSION_DATE: z.enum(EMISSION_DATE_RULES),
-    FINAL_CONSUMER_MAX_TOTAL: z.coerce.number().positive(),
-    INVOICING_PROVIDER_RUC: z
-      .string()
-      .regex(/^\d{13}$/, 'must be a RUC of 13 digits')
-      .optional(),
-  });
+  return z
+    .object({
+      KAFKA_BROKERS: z
+        .string()
+        .transform(commaList)
+        .pipe(z.array(z.string()).nonempty('must list at least one broker')),
+      DATABASE_URL: z
+        .string()
+        .refine(isPostgresUrl, 'must be a postgres:// or postgresql:// connection string'),
+      CORS_ORIGINS: z
+        .string()
+        .transform(commaList)
+        .pipe(z.array(z.string()).nonempty('must list at least one origin'))
+        .refine((origins) => !production || !origins.includes('*'), "can't be * outside local"),
+      JWT_SECRET: production
+        ? z
+            .string()
+            .min(
+              MIN_JWT_SECRET_LENGTH,
+              `must be faclab-core's secret (at least ${MIN_JWT_SECRET_LENGTH} characters)`,
+            )
+        : z.string(),
+      JWT_ISSUER: z.string(),
+      // Losing or changing it makes every stored certificate unreadable
+      CERTIFICATE_PASSWORD_KEY: z
+        .string()
+        .refine(
+          (value) => Buffer.from(value, 'base64').length === 32,
+          'must be 32 random bytes in base64',
+        ),
+      HTTP_PORT: z.coerce.number().int().min(1).max(65535),
+      LOG_LEVEL: z.enum(LOG_LEVELS),
+      SRI_TIMEOUT_MS: positiveInt,
+      INVOICE_RETRY_INTERVAL_MS: positiveInt,
+      // Each slot holds a database connection while it saves: keep it under the pool's 10
+      INVOICE_WORKER_CONCURRENCY: positiveInt.max(8),
+      INVOICE_POLL_INTERVAL_MS: positiveInt,
+      INVOICE_LOCK_TIMEOUT_MS: positiveInt,
+      RUN_BACKGROUND: booleanFlag,
+      SERVICE_VERSION: z.string(),
+      // sales.confirmed v1 names no company: only a development setup invoices it, with this one
+      SALES_V1_TENANT_ID: z
+        .string()
+        .uuid()
+        .optional()
+        .refine((value) => !production || value === undefined, "can't be set in production"),
+      // Empty: AWS S3 itself
+      OBJECT_STORAGE_ENDPOINT: z
+        .string()
+        .refine(isHttpUrl, 'must be an http:// or https:// URL')
+        .optional(),
+      OBJECT_STORAGE_REGION: z.string().min(1),
+      OBJECT_STORAGE_BUCKET: z.string().min(1),
+      OBJECT_STORAGE_ACCESS_KEY_ID: z.string().min(1),
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
+      OBJECT_STORAGE_FORCE_PATH_STYLE: booleanFlag,
+      INVOICE_EMISSION_DATE: z.enum(EMISSION_DATE_RULES),
+      FINAL_CONSUMER_MAX_TOTAL: z.coerce.number().positive(),
+      INVOICING_PROVIDER_RUC: z
+        .string()
+        .regex(/^\d{13}$/, 'must be a RUC of 13 digits')
+        .optional(),
+    })
+    .refine(
+      (values) =>
+        values.INVOICE_LOCK_TIMEOUT_MS >= MIN_LOCK_TIMEOUT_SRI_CALLS * values.SRI_TIMEOUT_MS,
+      {
+        message: `must be at least ${MIN_LOCK_TIMEOUT_SRI_CALLS} times SRI_TIMEOUT_MS`,
+        path: ['INVOICE_LOCK_TIMEOUT_MS'],
+      },
+    );
 }
 
 // Messages name the variable but never echo its value, which may be a secret
@@ -282,6 +319,12 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
     invoiceRecovery: {
       intervalMs: values.INVOICE_RETRY_INTERVAL_MS,
     },
+    invoiceQueue: {
+      concurrency: values.INVOICE_WORKER_CONCURRENCY,
+      pollIntervalMs: values.INVOICE_POLL_INTERVAL_MS,
+      lockTimeoutMs: values.INVOICE_LOCK_TIMEOUT_MS,
+    },
+    runBackground: values.RUN_BACKGROUND,
     kafka: {
       brokers: values.KAFKA_BROKERS,
       groupId: 'faclab-invoicing',

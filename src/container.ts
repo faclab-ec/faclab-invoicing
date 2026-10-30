@@ -1,4 +1,7 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
+import { FastifyInstance } from 'fastify';
+import { hostname } from 'os';
+import { Pool } from 'pg';
 
 import { AppConfig } from '#/config';
 import {
@@ -34,7 +37,6 @@ import {
 } from '#/modules/invoice/app/commands/retry-invoice';
 import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
-import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
 import { SaleConfirmedHandler } from '#/modules/invoice/app/handlers/sale-confirmed.handler';
 import {
   FindInvoicesBySaleIdQuery,
@@ -43,7 +45,9 @@ import {
   GetInvoicingStatusQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
+import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { S3DocumentStorage } from '#/modules/invoice/infra/adapters/s3-document-storage.adapter';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
@@ -55,12 +59,11 @@ import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.rout
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
-import {
-  InvoiceMessageSchema,
-  SaleConfirmedMessageSchema,
-} from '#/modules/invoice/infra/messaging/schemas';
+import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
+import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
+import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
 import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
 import { createPool } from '#/shared/infra/database';
@@ -68,32 +71,31 @@ import { DlqProducer } from '#/shared/infra/dlq-producer';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
+import { WorkerHealth } from '#/shared/infra/worker-health';
 import { logger } from '#/shared/logger';
+import { captureTraceContext } from '#/shared/telemetry/trace-context';
 
-export async function createContainer(config: AppConfig) {
-  // Infra clients
-  const kafka = new KafkaJS.Kafka({
-    kafkaJS: {
-      brokers: config.kafka.brokers,
-      clientId: 'faclab-invoicing',
-      logLevel: KafkaJS.logLevel.INFO,
-    },
-  });
-  const consumer = kafka.consumer({
-    kafkaJS: {
-      groupId: config.kafka.groupId,
-      autoCommit: false,
-    },
-  });
-  const producer = kafka.producer({
-    kafkaJS: {
-      acks: -1,
-    },
-    'enable.idempotence': true,
-    'max.in.flight.requests.per.connection': 5,
-  });
+/** What runs in the background: the consumer of sales.confirmed, the worker and the recovery */
+export interface Background {
+  // The worker's cycles: the worker process answers /health with it
+  health: WorkerHealth;
+  start(): Promise<void>;
+  /** In order: no new sales, the invoices in progress finish, then Kafka */
+  stop(): Promise<void>;
+}
 
+export interface Container {
+  pool: Pool;
+  createHttpServer(): Promise<FastifyInstance>;
+  /** Connects to Kafka only when started: the API without RUN_BACKGROUND never does */
+  createBackground(): Background;
+}
+
+export function createContainer(config: AppConfig): Container {
   const pool = createPool(config.database.url);
+  // This process in the queue's locks; each holder adds what it is (a worker slot, the API)
+  const processHolder = `${hostname()}:${process.pid}`;
+  const { concurrency, pollIntervalMs, lockTimeoutMs } = config.invoiceQueue;
 
   // Each invoice goes to the SRI environment of its issuer
   const sriClients = new SriClients(
@@ -104,6 +106,7 @@ export async function createContainer(config: AppConfig) {
 
   // Repositories
   const invoiceRepository = new PgInvoiceRepository(pool);
+  const invoiceQueue = new PgInvoiceQueue(pool);
   const certificateRepository = new PgCertificateRepository(pool);
   const companyConfigRepository = new PgCompanyConfigRepository(pool);
   const sequenceRepository = new PgSequenceRepository(pool);
@@ -128,14 +131,6 @@ export async function createContainer(config: AppConfig) {
   const schemaValidator = new XsdInvoiceSchemaValidator();
   const documentStorage = new S3DocumentStorage(config.objectStorage);
 
-  // Producers
-  const invoiceProducer = new KafkaProducer(
-    producer,
-    KAFKA_TOPICS.INVOICES,
-    toInvoiceMessage,
-    invoiceTenant,
-  );
-
   // Commands
   const prepareInvoiceCommand = new PrepareInvoiceCommand(
     issuerReadiness,
@@ -159,30 +154,17 @@ export async function createContainer(config: AppConfig) {
     [InvoiceStatus.SENT, authorizeInvoiceCommand],
   ]);
 
-  const receiveSaleCommand = new ReceiveSaleCommand(invoiceRepository);
-
-  // Handlers
-  const invoiceEventHandler = new InvoiceEventHandler(
+  // Steps run from the API (manual retry): the worker publishes their result
+  const apiProcessor = new InvoiceProcessor(
     invoiceRepository,
+    invoiceQueue,
     commandMap,
-    invoiceProducer,
-  );
-  const saleConfirmedHandler = new SaleConfirmedHandler(
-    receiveSaleCommand,
-    invoiceProducer,
-    config.kafka.salesV1TenantId,
+    issuerReadiness,
+    null,
   );
 
-  // Recovery: invoices waiting for the issuer, failed or stuck
-  const invoiceRecovery = new InvoiceRecoveryService(
-    invoiceRepository,
-    issuerReadiness,
-    invoiceEventHandler,
-  );
-  const recoveryScheduler = new RecoveryScheduler(
-    invoiceRecovery,
-    config.invoiceRecovery.intervalMs,
-  );
+  // Recovery: invoices waiting for the issuer, back in the queue once it is ready
+  const invoiceRecovery = new InvoiceRecoveryService(invoiceQueue, issuerReadiness);
   // A company's config or certificate change may unblock its pending invoices: check right away
   const issuerListener: IssuerChangeListener = {
     issuerChanged: (tenantId) => {
@@ -193,104 +175,169 @@ export async function createContainer(config: AppConfig) {
     },
   };
 
-  // DLQ
-  const dlqProducer = new DlqProducer(producer, KAFKA_TOPICS.DLQ, config.kafka.groupId);
+  async function buildHttpServer(): Promise<FastifyInstance> {
+    const httpServer = await createHttpServer({
+      port: config.http.port,
+      host: config.http.host,
+      corsOrigins: config.http.corsOrigins,
+      serviceName: config.serviceName,
+      serviceVersion: config.serviceVersion,
+    });
 
-  // Consumer
-  const kafkaConsumer = new InvoiceKafkaConsumer(
-    consumer,
-    [KAFKA_TOPICS.INVOICES, KAFKA_TOPICS.SALES_CONFIRMED],
-    {
-      [KAFKA_TOPICS.INVOICES]: {
-        handler: invoiceEventHandler,
-        validator: InvoiceMessageSchema,
+    const authorize = createAuthorize(config.auth);
+
+    // Certificate module
+    registerCertificateRoutes(
+      httpServer,
+      {
+        upload: new UploadCertificateCommand(
+          p12Parser,
+          certificateRepository,
+          companyConfigRepository,
+          secretCipher,
+          issuerListener,
+        ),
+        get: new GetCertificateCommand(certificateRepository),
+        list: new ListCertificatesCommand(certificateRepository),
+        delete: new DeleteCertificateCommand(
+          certificateRepository,
+          companyConfigRepository,
+          issuerListener,
+        ),
       },
-      [KAFKA_TOPICS.SALES_CONFIRMED]: {
-        handler: saleConfirmedHandler,
-        validator: SaleConfirmedMessageSchema,
+      authorize,
+    );
+
+    // Company config module
+    registerCompanyConfigRoutes(
+      httpServer,
+      {
+        save: new SaveCompanyConfigCommand(
+          companyConfigRepository,
+          certificateRepository,
+          issuerListener,
+        ),
+        get: new GetCompanyConfigQuery(companyConfigRepository),
+        listSequences: new ListSequencesQuery(sequenceRepository),
+        setNextSequence: new SetNextSequenceCommand(sequenceRepository),
       },
-    },
-    dlqProducer,
-  );
+      authorize,
+    );
 
-  // Certificate module
-  const uploadCertificateCommand = new UploadCertificateCommand(
-    p12Parser,
-    certificateRepository,
-    companyConfigRepository,
-    secretCipher,
-    issuerListener,
-  );
-  const getCertificateCommand = new GetCertificateCommand(certificateRepository);
-  const listCertificatesCommand = new ListCertificatesCommand(certificateRepository);
-  const deleteCertificateCommand = new DeleteCertificateCommand(
-    certificateRepository,
-    companyConfigRepository,
-    issuerListener,
-  );
+    registerInvoiceRoutes(
+      httpServer,
+      {
+        get: new GetInvoiceQuery(invoiceRepository),
+        authorizedXml: new GetAuthorizedXmlQuery(invoiceRepository, documentStorage),
+        list: new ListInvoicesQuery(invoiceRepository, config.timezone),
+        findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
+        status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),
+        retry: new RetryInvoiceCommand(
+          invoiceRepository,
+          invoiceQueue,
+          issuerReadiness,
+          apiProcessor,
+          { holder: `${processHolder}:api`, leaseMs: lockTimeoutMs },
+        ),
+        retryAll: new RetryInvoicesCommand(issuerReadiness, invoiceRecovery),
+      },
+      authorize,
+    );
 
-  // HTTP Server
-  const httpServer = await createHttpServer({
-    port: config.http.port,
-    host: config.http.host,
-    corsOrigins: config.http.corsOrigins,
-    serviceName: config.serviceName,
-    serviceVersion: config.serviceVersion,
-  });
+    return httpServer;
+  }
 
-  const authorize = createAuthorize(config.auth);
+  function buildBackground(): Background {
+    const kafka = new KafkaJS.Kafka({
+      kafkaJS: {
+        brokers: config.kafka.brokers,
+        clientId: 'faclab-invoicing',
+        logLevel: KafkaJS.logLevel.INFO,
+      },
+    });
+    const consumer = kafka.consumer({
+      kafkaJS: {
+        groupId: config.kafka.groupId,
+        autoCommit: false,
+      },
+    });
+    const producer = kafka.producer({
+      kafkaJS: {
+        acks: -1,
+      },
+      'enable.idempotence': true,
+      'max.in.flight.requests.per.connection': 5,
+    });
 
-  registerCertificateRoutes(
-    httpServer,
-    {
-      upload: uploadCertificateCommand,
-      get: getCertificateCommand,
-      list: listCertificatesCommand,
-      delete: deleteCertificateCommand,
-    },
-    authorize,
-  );
+    // Results for faclab-core: the only messages on `invoices`
+    const resultProducer = new KafkaProducer<InvoiceResultEvent>(
+      producer,
+      KAFKA_TOPICS.INVOICES,
+      toInvoiceMessage,
+      invoiceTenant,
+    );
+    const dlqProducer = new DlqProducer(producer, KAFKA_TOPICS.DLQ, config.kafka.groupId);
 
-  // Company config module
-  const saveCompanyConfigCommand = new SaveCompanyConfigCommand(
-    companyConfigRepository,
-    certificateRepository,
-    issuerListener,
-  );
-  const getCompanyConfigQuery = new GetCompanyConfigQuery(companyConfigRepository);
+    // Only stores the sale: the worker invoices it
+    const saleConfirmedHandler = new SaleConfirmedHandler(
+      new ReceiveSaleCommand(invoiceRepository, captureTraceContext),
+      config.kafka.salesV1TenantId,
+    );
+    const kafkaConsumer = new InvoiceKafkaConsumer(
+      consumer,
+      [KAFKA_TOPICS.SALES_CONFIRMED],
+      {
+        [KAFKA_TOPICS.SALES_CONFIRMED]: {
+          handler: saleConfirmedHandler,
+          validator: SaleConfirmedMessageSchema,
+        },
+      },
+      dlqProducer,
+    );
 
-  registerCompanyConfigRoutes(
-    httpServer,
-    {
-      save: saveCompanyConfigCommand,
-      get: getCompanyConfigQuery,
-      listSequences: new ListSequencesQuery(sequenceRepository),
-      setNextSequence: new SetNextSequenceCommand(sequenceRepository),
-    },
-    authorize,
-  );
+    const processor = new InvoiceProcessor(
+      invoiceRepository,
+      invoiceQueue,
+      commandMap,
+      issuerReadiness,
+      resultProducer,
+      config.invoiceRecovery.intervalMs,
+    );
+    // A slot busy with one invoice beats again within its lease
+    const health = new WorkerHealth(lockTimeoutMs + 2 * pollIntervalMs);
+    const worker = new InvoiceWorker(
+      invoiceQueue,
+      processor,
+      {
+        concurrency,
+        pollIntervalMs,
+        leaseMs: lockTimeoutMs,
+        errorBackoffMs: config.invoiceRecovery.intervalMs,
+        holder: processHolder,
+      },
+      health,
+    );
+    const recoveryScheduler = new RecoveryScheduler(
+      invoiceRecovery,
+      config.invoiceRecovery.intervalMs,
+    );
 
-  registerInvoiceRoutes(
-    httpServer,
-    {
-      get: new GetInvoiceQuery(invoiceRepository),
-      authorizedXml: new GetAuthorizedXmlQuery(invoiceRepository, documentStorage),
-      list: new ListInvoicesQuery(invoiceRepository, config.timezone),
-      findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
-      status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),
-      retry: new RetryInvoiceCommand(invoiceRepository, issuerReadiness, invoiceEventHandler),
-      retryAll: new RetryInvoicesCommand(invoiceRepository, issuerReadiness, invoiceRecovery),
-    },
-    authorize,
-  );
+    return {
+      health,
+      async start() {
+        await resultProducer.connect();
+        await kafkaConsumer.start();
+        worker.start();
+        recoveryScheduler.start();
+      },
+      async stop() {
+        await kafkaConsumer.stop();
+        await worker.stop();
+        recoveryScheduler.stop();
+        await resultProducer.disconnect();
+      },
+    };
+  }
 
-  await invoiceProducer.connect();
-
-  return {
-    consumer: kafkaConsumer,
-    producer: invoiceProducer,
-    httpServer,
-    recoveryScheduler,
-    pool,
-  };
+  return { pool, createHttpServer: buildHttpServer, createBackground: buildBackground };
 }
