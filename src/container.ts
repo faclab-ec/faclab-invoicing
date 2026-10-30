@@ -36,6 +36,7 @@ import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authoriz
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
+import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
@@ -49,6 +50,7 @@ import {
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   GetRideQuery,
+  ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceDeliveryProcessor } from '#/modules/invoice/app/services/invoice-delivery-processor';
@@ -296,6 +298,13 @@ export function createContainer(config: AppConfig): Container {
           { holder: `${processHolder}:api`, leaseMs: lockTimeoutMs },
         ),
         retryAll: new RetryInvoicesCommand(issuerReadiness, invoiceRecovery),
+        resendEmail: new ResendInvoiceEmailCommand(
+          invoiceRepository,
+          deliveryRepository,
+          config.invoiceEmail.enabled,
+          captureTraceContext,
+        ),
+        deliveries: new ListInvoiceDeliveriesQuery(invoiceRepository, deliveryRepository),
       },
       authorize,
     );

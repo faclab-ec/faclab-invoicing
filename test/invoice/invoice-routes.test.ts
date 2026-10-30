@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { issuerLogoKey } from '#/modules/company-config/domain/logo';
+import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
@@ -11,6 +12,7 @@ import {
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   GetRideQuery,
+  ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { RideService } from '#/modules/invoice/app/services/ride-service';
@@ -38,6 +40,7 @@ async function server(
   repo: InMemoryInvoiceRepository,
   storage: InMemoryDocumentStorage = new InMemoryDocumentStorage(),
   configs: InMemoryCompanyConfigRepository = new InMemoryCompanyConfigRepository(),
+  emailEnabled = true,
 ) {
   const rides = new RideService(
     storage,
@@ -63,6 +66,8 @@ async function server(
       status: vi.fn() as unknown as GetInvoicingStatusQuery,
       retry: vi.fn() as unknown as RetryInvoiceCommand,
       retryAll: vi.fn() as unknown as RetryInvoicesCommand,
+      resendEmail: new ResendInvoiceEmailCommand(repo, repo.deliveries, emailEnabled),
+      deliveries: new ListInvoiceDeliveriesQuery(repo, repo.deliveries),
     },
     authorizeAs(),
   );
@@ -279,5 +284,99 @@ describe('GET /api/invoices/:id/ride', () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json().errors[0].code).toBe('STORAGE_UNAVAILABLE');
+  });
+});
+
+describe('POST /api/invoices/:id/email and GET /api/invoices/:id/emails', () => {
+  let app: Awaited<ReturnType<typeof server>> | undefined;
+  afterEach(async () => app?.close());
+
+  const AUTHORIZED = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2a';
+  const PENDING = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2b';
+  const NO_EMAIL = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2c';
+  const BUYER = {
+    id: 1,
+    name: 'Construcciones Andinas',
+    tax_id: '1790012345001',
+    tax_type: 'RUC' as const,
+    email: 'compras@andinas.ec',
+    phone: null,
+    address: null,
+  };
+
+  async function withInvoices(emailEnabled = true) {
+    const repo = new InMemoryInvoiceRepository();
+    const storage = new InMemoryDocumentStorage();
+    await repo.createInvoice(
+      await makeAuthorizedInvoice(AUTHORIZED, makePoint(), storage, makeSale({ customer: BUYER })),
+    );
+    await repo.createInvoice(
+      Invoice.receive(PENDING, makePoint(), makeSale({ sale_id: 2, customer: BUYER })),
+    );
+    await repo.createInvoice(
+      await makeAuthorizedInvoice(NO_EMAIL, makePoint(), storage, makeSale({ sale_id: 3 })),
+    );
+    app = await server(repo, storage, new InMemoryCompanyConfigRepository(), emailEnabled);
+    return { api: app, repo };
+  }
+
+  const resend = (api: NonNullable<typeof app>, id: string, payload?: object) =>
+    api.inject({ method: 'POST', url: `/api/invoices/${id}/email`, payload });
+
+  it("queues a resend to the buyer's email of the sale, and never to another address", async () => {
+    const { api, repo } = await withInvoices();
+    const response = await resend(api, AUTHORIZED, { to: 'otro@ejemplo.com' });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().data).toMatchObject({
+      invoiceId: AUTHORIZED,
+      kind: 'resend',
+      recipient: 'compras@andinas.ec',
+      status: 'pending',
+      requestedBy: 'admin',
+    });
+    expect([...repo.deliveries.records.values()].map((d) => d.recipient)).toEqual([
+      'compras@andinas.ec',
+    ]);
+  });
+
+  it('answers the pending delivery instead of queuing another', async () => {
+    const { api } = await withInvoices();
+    const first = (await resend(api, AUTHORIZED)).json().data;
+    const second = (await resend(api, AUTHORIZED)).json().data;
+
+    expect(second.id).toBe(first.id);
+    const log = (await api.inject(`/api/invoices/${AUTHORIZED}/emails`)).json().data;
+    expect(log.map((delivery: { id: string }) => delivery.id)).toEqual([first.id]);
+  });
+
+  it.each([
+    ['not authorized', PENDING, true, 'INVOICE_NOT_AUTHORIZED'],
+    ['without a buyer email', NO_EMAIL, true, 'BUYER_EMAIL_MISSING'],
+    ['while sending is off', AUTHORIZED, false, 'EMAIL_DISABLED'],
+  ])('refuses an invoice %s', async (_case, id, enabled, code) => {
+    const { api, repo } = await withInvoices(enabled);
+    const response = await resend(api, id);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().errors[0].code).toBe(code);
+    expect(repo.deliveries.records.size).toBe(0);
+  });
+
+  it('answers 404 for an unknown invoice', async () => {
+    const { api } = await withInvoices();
+    const unknown = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2d';
+
+    expect((await resend(api, unknown)).statusCode).toBe(404);
+    expect((await api.inject(`/api/invoices/${unknown}/emails`)).statusCode).toBe(404);
+  });
+
+  it('shows where the invoice goes in its summary', async () => {
+    const { api } = await withInvoices();
+
+    expect((await api.inject(`/api/invoices/${AUTHORIZED}`)).json().data.buyerEmail).toBe(
+      'compras@andinas.ec',
+    );
+    expect((await api.inject(`/api/invoices/${NO_EMAIL}`)).json().data.buyerEmail).toBeNull();
   });
 });

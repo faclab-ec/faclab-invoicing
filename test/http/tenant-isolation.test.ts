@@ -24,6 +24,7 @@ import {
 import { issuerLogoKey } from '#/modules/company-config/domain/logo';
 import { INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
+import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
@@ -34,6 +35,7 @@ import {
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
   GetRideQuery,
+  ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
@@ -86,7 +88,18 @@ describe('API isolation between companies', () => {
   beforeAll(async () => {
     const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
     await invoices.createInvoice(Invoice.receive(INVOICE_A, makePoint(), makeSale()));
-    await invoices.createInvoice(await makeAuthorizedInvoice(INVOICE_B, pointB, storage));
+    const buyer = {
+      id: 1,
+      name: 'Construcciones Andinas',
+      tax_id: '1790012345001',
+      tax_type: 'RUC' as const,
+      email: 'compras@andinas.ec',
+      phone: null,
+      address: null,
+    };
+    await invoices.createInvoice(
+      await makeAuthorizedInvoice(INVOICE_B, pointB, storage, makeSale({ customer: buyer })),
+    );
     await certificates.save(makeCertificate({ id: CERT_A }));
     await certificates.save(makeCertificate({ id: CERT_B, tenantId: TENANT_B, taxIds: [RUC_B] }));
     await configs.save(makeConfig({ signingCertId: CERT_A }));
@@ -136,6 +149,8 @@ describe('API isolation between companies', () => {
           leaseMs: 60_000,
         }),
         retryAll: new RetryInvoicesCommand(readiness, recovery),
+        resendEmail: new ResendInvoiceEmailCommand(invoices, invoices.deliveries, true),
+        deliveries: new ListInvoiceDeliveriesQuery(invoices, invoices.deliveries),
       },
       authorize,
     );
@@ -203,6 +218,25 @@ describe('API isolation between companies', () => {
     const ofB = await get(`/api/invoices/${INVOICE_B}/ride`, TENANT_B);
     expect(ofB.statusCode).toBe(200);
     expect(ofB.headers['content-type']).toBe('application/pdf');
+  });
+
+  it("neither sends nor shows the send log of another company's invoice", async () => {
+    const asA = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${INVOICE_B}/email`,
+      headers: bearer(TENANT_A),
+    });
+    expect(asA.statusCode).toBe(404);
+    expect(invoices.deliveries.records.size).toBe(0);
+    expect((await get(`/api/invoices/${INVOICE_B}/emails`)).statusCode).toBe(404);
+
+    const asB = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${INVOICE_B}/email`,
+      headers: bearer(TENANT_B),
+    });
+    expect(asB.statusCode).toBe(202);
+    expect((await get(`/api/invoices/${INVOICE_B}/emails`, TENANT_B)).json().data).toHaveLength(1);
   });
 
   it("doesn't retry another company's invoice", async () => {
