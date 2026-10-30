@@ -11,7 +11,7 @@ import { SriValidationPort } from '#/modules/invoice/domain/ports';
 import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
-import { DlqProducer } from '#/shared/infra/dlq-producer';
+import { DeadLetterStore } from '#/shared/infra/dead-letters';
 
 import {
   fakeKafkaConsumer,
@@ -129,7 +129,7 @@ describe('InvoiceWorker', () => {
           validator: SaleConfirmedMessageSchema,
         },
       },
-      {} as DlqProducer,
+      {} as DeadLetterStore,
     );
     await consumer.start();
     worker.start();

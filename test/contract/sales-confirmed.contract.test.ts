@@ -202,7 +202,7 @@ describe('sales.confirmed versions', () => {
     expect(SaleConfirmedMessageSchema.safeParse(legacy).success).toBe(true);
   });
 
-  it('rejects a version it does not know, so the message goes to the DLQ', () => {
+  it('rejects a version it does not know, so the message is kept as a dead letter', () => {
     const result = SaleConfirmedMessageSchema.safeParse({
       ...v2['full-customer'],
       schema_version: 3,
@@ -211,7 +211,7 @@ describe('sales.confirmed versions', () => {
     expect(result.success).toBe(false);
   });
 
-  it('sends v1 to the DLQ where there is no default issuer (production)', () => {
+  it('keeps v1 as a dead letter where there is no default issuer (production)', () => {
     const message = SaleConfirmedMessageSchema.parse(v1['full-customer']);
 
     expect(() => toReceivedSale(message, null)).toThrow(NonRetryableError);

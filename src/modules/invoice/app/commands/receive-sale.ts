@@ -3,7 +3,7 @@ import { v5 as uuidv5 } from 'uuid';
 import { logger } from '#/shared/logger';
 
 import { Invoice, TraceContext } from '../../domain/invoice';
-import { InvoiceRepository } from '../../domain/repository';
+import { ConcurrentUpdateError, InvoiceRepository } from '../../domain/repository';
 import { IssuingPoint, SaleData } from '../../domain/sale';
 
 // Fixed namespace: the same `sales.confirmed` event always maps to the same invoice id
@@ -29,7 +29,9 @@ export interface ReceivedSale {
  *
  * Kafka may deliver the same message twice (same event id, same invoice id). A
  * resend from faclab-core brings a new event id: it only creates an invoice if
- * the sale has none, or only rejected ones.
+ * the sale has none, or only rejected ones. If its invoice is already authorized,
+ * the result is published again: faclab-core resends a sale that still waits for
+ * it (S4.3), so the first one may never have reached it.
  */
 export class ReceiveSaleCommand {
   constructor(
@@ -51,6 +53,14 @@ export class ReceiveSaleCommand {
     const invoices = await this.invoiceRepository.findBySaleId(tenantId, saleId);
     const active = invoices.find((invoice) => invoice.isActive);
     if (active) {
+      if (active.publishResultAgain()) {
+        await this.saveIgnoringConcurrent(active);
+        logger.info(
+          { saleId, invoiceId: active.id },
+          'Sale already invoiced, publishing its result again',
+        );
+        return null;
+      }
       logger.warn(
         { saleId, invoiceId: active.id, status: active.status },
         'Sale already has an active invoice, ignoring',
@@ -79,5 +89,14 @@ export class ReceiveSaleCommand {
       'Sale received for invoicing',
     );
     return invoice;
+  }
+
+  // The worker publishing the result meanwhile is enough: faclab-core gets it either way
+  private async saveIgnoringConcurrent(invoice: Invoice): Promise<void> {
+    try {
+      await this.invoiceRepository.updateInvoice(invoice);
+    } catch (error) {
+      if (!(error instanceof ConcurrentUpdateError)) throw error;
+    }
   }
 }

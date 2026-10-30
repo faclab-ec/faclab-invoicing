@@ -5,6 +5,7 @@ import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
 
 import {
   InMemoryInvoiceRepository,
+  makeAuthorizedInvoice,
   makePoint,
   makeReceivedSale,
   makeSale,
@@ -75,5 +76,46 @@ describe('ReceiveSaleCommand', () => {
 
     expect(resend?.id).toBe(invoiceIdForEvent(EVENT_2));
     expect(repo.records.size).toBe(2);
+  });
+
+  it('publishes the result again when a resend finds the invoice authorized', async () => {
+    // faclab-core resends a sale that still waits for its result: the first one never reached it
+    const repo = new InMemoryInvoiceRepository();
+    const authorized = await makeAuthorizedInvoice(invoiceIdForEvent(EVENT_1), makePoint(), null);
+    authorized.markResultPublished(new Date('2026-10-09T15:02:00Z'));
+    await repo.createInvoice(authorized);
+    const now = new Date();
+
+    const resend = await new ReceiveSaleCommand(repo).execute(makeReceivedSale(EVENT_2));
+
+    expect(resend).toBeNull();
+    expect(repo.records.size).toBe(1);
+    const stored = (await repo.getInvoiceById(authorized.id))!;
+    expect(stored.status).toBe(InvoiceStatus.AUTHORIZED);
+    expect(stored.resultPublishedAt).toBeNull();
+    // Due right away: the worker publishes InvoiceAuthorized again
+    expect(stored.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(now.getTime());
+  });
+
+  it('leaves alone an authorized invoice whose result is still to go out', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    const authorized = await makeAuthorizedInvoice(invoiceIdForEvent(EVENT_1), makePoint(), null);
+    await repo.createInvoice(authorized);
+    const version = (await repo.getInvoiceById(authorized.id))!.version;
+
+    await new ReceiveSaleCommand(repo).execute(makeReceivedSale(EVENT_2));
+
+    expect((await repo.getInvoiceById(authorized.id))!.version).toBe(version);
+  });
+
+  it('does not publish again for the same message delivered twice', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    const authorized = await makeAuthorizedInvoice(invoiceIdForEvent(EVENT_1), makePoint(), null);
+    authorized.markResultPublished();
+    await repo.createInvoice(authorized);
+
+    await new ReceiveSaleCommand(repo).execute(makeReceivedSale(EVENT_1));
+
+    expect((await repo.getInvoiceById(authorized.id))!.resultPublishedAt).not.toBeNull();
   });
 });

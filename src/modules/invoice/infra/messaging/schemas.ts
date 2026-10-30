@@ -5,7 +5,8 @@ import { IVA_CODE_KEYS } from '../../domain/sri-catalogs';
 // --- Kafka Message Schemas ---
 // The contracts are the JSON Schemas in contracts/events/, copied from faclab-core (see
 // contracts/README.md): test/contract checks these schemas against their examples. A message
-// without schema_version predates v1 and is read as v1; a version not listed here goes to the DLQ.
+// without schema_version predates v1 and is read as v1; a version not listed here is kept as a dead
+// letter.
 // Only `sales.confirmed` comes in: `invoices` goes out to faclab-core (S4.2).
 
 const SaleConfirmedCustomerSchema = z.object({

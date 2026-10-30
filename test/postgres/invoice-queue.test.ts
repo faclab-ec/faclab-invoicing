@@ -14,7 +14,7 @@ import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/sc
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
-import { DlqProducer } from '#/shared/infra/dlq-producer';
+import { DeadLetterStore } from '#/shared/infra/dead-letters';
 
 import {
   accessCodeOf,
@@ -239,7 +239,7 @@ describePostgres('Invoice queue on PostgreSQL', () => {
           validator: SaleConfirmedMessageSchema,
         },
       },
-      {} as DlqProducer,
+      {} as DeadLetterStore,
     );
     await consumer.start();
 
