@@ -64,3 +64,10 @@ export class ServiceUnavailableError extends AppError {
     super(message);
   }
 }
+
+/** The object storage failed (the documents, the logo): the request can be tried again later */
+export const storageUnavailable = () =>
+  new ServiceUnavailableError(
+    'STORAGE_UNAVAILABLE',
+    'The document storage is not available, try again later',
+  );

@@ -18,6 +18,11 @@ import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
+import {
+  DeleteIssuerLogoCommand,
+  GetIssuerLogoQuery,
+  SetIssuerLogoCommand,
+} from '#/modules/company-config/app/issuer-logo.commands';
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import {
   ListSequencesQuery,
@@ -248,6 +253,9 @@ export function createContainer(config: AppConfig): Container {
         get: new GetCompanyConfigQuery(companyConfigRepository),
         listSequences: new ListSequencesQuery(sequenceRepository),
         setNextSequence: new SetNextSequenceCommand(sequenceRepository),
+        setLogo: new SetIssuerLogoCommand(companyConfigRepository, documentStorage),
+        deleteLogo: new DeleteIssuerLogoCommand(companyConfigRepository, documentStorage),
+        getLogo: new GetIssuerLogoQuery(companyConfigRepository, documentStorage),
       },
       authorize,
     );

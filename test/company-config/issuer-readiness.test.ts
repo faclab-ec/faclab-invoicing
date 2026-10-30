@@ -22,6 +22,8 @@ function service(options: {
   const configRepo = {
     save: vi.fn(),
     find: vi.fn(async (tenantId: string) => (tenantId === TENANT_A ? options.config : null)),
+    setLogo: vi.fn(),
+    clearLogo: vi.fn(),
   };
   const certRepo = {
     findById: vi.fn(async (tenantId: string) =>

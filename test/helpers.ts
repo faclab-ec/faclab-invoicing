@@ -8,6 +8,7 @@ import {
   CompanyConfig,
   EmissionType,
   Environment,
+  IssuerLogo,
   RimpeRegime,
 } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError, ReadinessReport } from '#/modules/company-config/domain/readiness';
@@ -395,18 +396,54 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
   }
 }
 
-/** Same contract as PgCompanyConfigRepository: one profile per company */
+/** Same contract as PgCompanyConfigRepository: one profile per company, which keeps its logo */
 export class InMemoryCompanyConfigRepository implements CompanyConfigRepository {
   readonly configs = new Map<string, CompanyConfig>();
 
   async save(config: CompanyConfig): Promise<CompanyConfig> {
-    this.configs.set(config.tenantId, config);
-    return config;
+    const stored = withLogo(config, this.configs.get(config.tenantId)?.logo ?? null);
+    this.configs.set(config.tenantId, stored);
+    return stored;
   }
 
   async find(tenantId: string): Promise<CompanyConfig | null> {
     return this.configs.get(tenantId) ?? null;
   }
+
+  async setLogo(tenantId: string, logo: IssuerLogo): Promise<CompanyConfig | null> {
+    const config = this.configs.get(tenantId);
+    if (!config) return null;
+    const stored = withLogo(config, logo);
+    this.configs.set(tenantId, stored);
+    return stored;
+  }
+
+  async clearLogo(tenantId: string): Promise<boolean> {
+    const config = this.configs.get(tenantId);
+    if (!config?.logo) return false;
+    this.configs.set(tenantId, withLogo(config, null));
+    return true;
+  }
+}
+
+function withLogo(config: CompanyConfig, logo: IssuerLogo | null): CompanyConfig {
+  return new CompanyConfig(
+    config.tenantId,
+    config.taxId,
+    config.name,
+    config.tradeName,
+    config.mainAddress,
+    config.specialTaxpayerResolution,
+    config.withholdingAgentResolution,
+    config.rimpeRegime,
+    config.accountingRequired,
+    config.environment,
+    config.emissionType,
+    config.signingCertId,
+    config.updatedAt,
+    config.email,
+    logo,
+  );
 }
 
 /** Same contract as PgCertificateRepository: another company's certificate is not found */
@@ -728,6 +765,26 @@ export function readinessStub(issuer: IssuerState | Record<string, IssuerState>)
     invalidate: vi.fn(),
     invalidateIfOlder: vi.fn(),
   } as unknown as IssuerReadinessService;
+}
+
+/** A multipart/form-data body with one file in the field `file`, for `app.inject` */
+export function multipartFile(
+  bytes: Buffer,
+  filename = 'logo.png',
+  contentType = 'image/png',
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = '----faclab-test';
+  return {
+    payload: Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+          `Content-Type: ${contentType}\r\n\r\n`,
+      ),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  };
 }
 
 /** Lets every request through as a user of `tenantId`, like a valid token of that company */

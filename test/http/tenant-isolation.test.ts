@@ -13,9 +13,15 @@ import {
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
 import {
+  DeleteIssuerLogoCommand,
+  GetIssuerLogoQuery,
+  SetIssuerLogoCommand,
+} from '#/modules/company-config/app/issuer-logo.commands';
+import {
   ListSequencesQuery,
   SetNextSequenceCommand,
 } from '#/modules/company-config/app/sequence.commands';
+import { issuerLogoKey } from '#/modules/company-config/domain/logo';
 import { INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import {
@@ -47,12 +53,14 @@ import {
   makeConfig,
   makePoint,
   makeSale,
+  multipartFile,
   readinessStub,
   RUC_A,
   RUC_B,
   TENANT_A,
   TENANT_B,
 } from '../helpers';
+import { LOGO_PNG, makePng } from '../pdf-text';
 import { accessToken, AUTH, bearer } from './tokens';
 
 // Two companies with the same data: an invoice of sale 42, a profile, a certificate and a counter;
@@ -80,6 +88,8 @@ describe('API isolation between companies', () => {
     await certificates.save(makeCertificate({ id: CERT_B, tenantId: TENANT_B, taxIds: [RUC_B] }));
     await configs.save(makeConfig({ signingCertId: CERT_A }));
     await configs.save(makeConfig({ tenantId: TENANT_B, taxId: RUC_B, signingCertId: CERT_B }));
+    await storage.put(issuerLogoKey(TENANT_B), LOGO_PNG, 'image/png');
+    await configs.setLogo(TENANT_B, { key: issuerLogoKey(TENANT_B), contentType: 'image/png' });
     for (const [tenantId, next] of [
       [TENANT_A, 10],
       [TENANT_B, 900],
@@ -129,6 +139,9 @@ describe('API isolation between companies', () => {
         get: new GetCompanyConfigQuery(configs),
         listSequences: new ListSequencesQuery(sequences),
         setNextSequence: new SetNextSequenceCommand(sequences),
+        setLogo: new SetIssuerLogoCommand(configs, storage),
+        deleteLogo: new DeleteIssuerLogoCommand(configs, storage),
+        getLogo: new GetIssuerLogoQuery(configs, storage),
       },
       authorize,
     );
@@ -216,6 +229,31 @@ describe('API isolation between companies', () => {
 
     expect(saved.statusCode).toBe(422);
     expect((await configs.find(TENANT_B))?.signingCertId).toBe(CERT_B);
+  });
+
+  it("reads, replaces and removes only the company's logo", async () => {
+    // A has none: it never gets B's
+    expect((await get('/api/company-config/logo')).statusCode).toBe(404);
+    expect((await get('/api/company-config/logo', TENANT_B)).rawPayload).toEqual(LOGO_PNG);
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/api/company-config/logo',
+      headers: bearer(TENANT_A),
+    });
+    expect(removed.statusCode).toBe(204);
+    expect((await configs.find(TENANT_B))?.logo).not.toBeNull();
+
+    const upload = multipartFile(makePng(10, 10));
+    const uploaded = await app.inject({
+      method: 'PUT',
+      url: '/api/company-config/logo',
+      headers: { ...bearer(TENANT_A), ...upload.headers },
+      payload: upload.payload,
+    });
+    expect(uploaded.statusCode).toBe(200);
+    expect(await storage.getBytes(issuerLogoKey(TENANT_A))).toEqual(makePng(10, 10));
+    expect(await storage.getBytes(issuerLogoKey(TENANT_B))).toEqual(LOGO_PNG);
   });
 
   it("lists, finds and deletes only the company's certificates", async () => {

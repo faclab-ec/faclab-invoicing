@@ -12,6 +12,13 @@ export interface LogoInfo {
   height: number;
 }
 
+/** Where the logos are kept: the object storage of the documents */
+export interface LogoStore {
+  put(key: string, body: Buffer, contentType: string): Promise<void>;
+  getBytes(key: string): Promise<Buffer | null>;
+  delete(key: string): Promise<void>;
+}
+
 /** Where the logo of a company's issuer is kept: one per company, replaced on each upload */
 export function issuerLogoKey(tenantId: string): string {
   return `tenants/${tenantId}/issuer/logo`;

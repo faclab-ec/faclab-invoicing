@@ -14,6 +14,8 @@ export function toResponse(config: CompanyConfig) {
     environment: config.environment,
     emissionType: config.emissionType,
     signingCertId: config.signingCertId,
+    email: config.email,
+    hasLogo: config.logo !== null,
     updatedAt: config.updatedAt.toISOString(),
   };
 }

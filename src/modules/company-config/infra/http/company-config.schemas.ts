@@ -63,6 +63,17 @@ const companyConfigResponseProperties = {
     description:
       'UUID of the PKCS#12 certificate used to sign invoices. Set this to the `id` returned by the certificate upload endpoint. Null if no certificate has been configured.',
   },
+  email: {
+    type: ['string', 'null'],
+    format: 'email',
+    description:
+      "The company's email: the Reply-To of the emails that carry its invoices to the buyers. Null when it has none (buyers can't reply).",
+  },
+  hasLogo: {
+    type: 'boolean',
+    description:
+      'Whether the company uploaded a logo for its RIDEs (PUT /api/company-config/logo).',
+  },
   updatedAt: {
     type: 'string',
     format: 'date-time',
@@ -136,6 +147,13 @@ export const saveCompanyConfigSchema = {
         format: 'uuid',
         description:
           "UUID of the signing certificate. Use the `id` returned by POST /api/certificates. It must be one of the company's certificates and name its RUC.",
+      },
+      email: {
+        type: ['string', 'null'],
+        format: 'email',
+        maxLength: 254,
+        description:
+          'Email of the company (optional): buyers who reply to the email with their invoice write to it. Saving the profile keeps its logo.',
       },
     },
   },
@@ -226,5 +244,70 @@ export const setNextSequenceSchema = {
       ...errorResponseSchema,
       description: '`SEQUENCE_CANNOT_GO_BACK`: a later number was already issued.',
     },
+  },
+} as const;
+
+const logoErrors = {
+  409: {
+    ...errorResponseSchema,
+    description: '`ISSUER_NOT_CONFIGURED`: the company fiscal profile has not been saved yet.',
+  },
+  422: {
+    ...errorResponseSchema,
+    description:
+      '`LOGO_INVALID`: not a PNG (without interlacing) or JPEG of at most 2000 × 2000 pixels; `LOGO_TOO_LARGE`: over 300 KB.',
+  },
+  503: {
+    ...errorResponseSchema,
+    description: '`STORAGE_UNAVAILABLE`: the document storage failed; try again later.',
+  },
+} as const;
+
+export const uploadLogoSchema = {
+  tags: ['Company Config'],
+  summary: "Upload the logo of the company's RIDEs",
+  description:
+    "Replaces the logo drawn on the RIDE (the printable PDF of each invoice) of the caller's company. RIDEs already generated keep the logo they had.",
+  multipartBody: {
+    type: 'object',
+    required: ['file'],
+    properties: {
+      file: {
+        type: 'string',
+        format: 'binary',
+        description: 'PNG (not interlaced) or JPEG, at most 300 KB and 2000 × 2000 pixels.',
+      },
+    },
+  },
+  response: {
+    200: { ...successSchema(companyConfigObjectSchema), description: 'Logo saved.' },
+    400: { ...errorResponseSchema, description: 'No file in the request.' },
+    ...logoErrors,
+  },
+} as const;
+
+export const deleteLogoSchema = {
+  tags: ['Company Config'],
+  summary: "Remove the logo of the company's RIDEs",
+  description: 'RIDEs generated from now on go out without a logo. Answers 204 also without one.',
+  response: {
+    204: { type: 'null', description: 'Logo removed.' },
+  },
+} as const;
+
+export const getLogoSchema = {
+  tags: ['Company Config'],
+  summary: "Download the logo of the company's RIDEs",
+  produces: ['image/png', 'image/jpeg'],
+  response: {
+    200: {
+      description: 'The logo, as it was uploaded.',
+      content: {
+        'image/png': { schema: { type: 'string', format: 'binary' } },
+        'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+      },
+    },
+    404: { ...errorResponseSchema, description: 'The company has no logo.' },
+    503: logoErrors[503],
   },
 } as const;

@@ -1,9 +1,14 @@
-import { CompanyConfig } from './company-config';
+import { CompanyConfig, IssuerLogo } from './company-config';
 import { Sequence, SequenceKey } from './sequence';
 
 export interface CompanyConfigRepository {
+  /** Saves the profile, keeping its logo: answers it as stored */
   save(config: CompanyConfig): Promise<CompanyConfig>;
   find(tenantId: string): Promise<CompanyConfig | null>;
+  /** The profile with this logo; null when the company has no profile */
+  setLogo(tenantId: string, logo: IssuerLogo): Promise<CompanyConfig | null>;
+  /** Forgets the logo: false when the company had none */
+  clearLogo(tenantId: string): Promise<boolean>;
 }
 
 /**
