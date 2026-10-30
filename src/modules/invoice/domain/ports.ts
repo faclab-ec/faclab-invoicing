@@ -1,5 +1,6 @@
 import { Environment } from '#/modules/company-config/domain/company-config';
 
+import { Ride } from './ride';
 import { AuthorizationVoucher, ValidationVoucher } from './voucher';
 
 export interface InvoiceSignerPort {
@@ -40,4 +41,9 @@ export interface DocumentStorage {
   getBytes(key: string): Promise<Buffer | null>;
   /** Removes what is under the key, if anything */
   delete(key: string): Promise<void>;
+}
+
+/** Draws the RIDE as a PDF, with the issuer's logo when it has one */
+export interface RideRenderer {
+  render(ride: Ride, logo: Buffer | null): Promise<Buffer>;
 }

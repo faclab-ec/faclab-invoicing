@@ -7,7 +7,9 @@
     "types": ["node"],
     // Resolved as vitest loads them: node-pg-migrate only publishes its types through `exports`
     "module": "ESNext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    // …under Node: bwip-js only publishes its Node build (and types) under the `node` condition
+    "customConditions": ["node"]
   },
   "include": ["../src", "."]
 }
