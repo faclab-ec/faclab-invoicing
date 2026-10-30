@@ -1,6 +1,6 @@
 # Faclab Invoicing — Electronic Invoice Service
 
-Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL. The consumer only stores each sale; a worker takes the invoices from a queue in PostgreSQL and talks to the SRI, so a slow SRI never holds back new sales.
+Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL. The consumer only stores each sale; a worker takes the invoices from a queue in PostgreSQL and talks to the SRI, so a slow SRI never holds back new sales. Each authorized invoice gets its RIDE (the printable PDF) and goes to the buyer's email with its authorized XML (S4.4).
 
 It is **multi-company**: each company (a faclab-core tenant, one RUC) has its own fiscal profile, certificates, SRI environment and sequences per establishment and emission point. A sale says which company issues it and from where (`sales.confirmed` v2), and the HTTP API only shows the company of the caller's token (`tid`).
 
@@ -9,6 +9,7 @@ It is **multi-company**: each company (a faclab-core tenant, one RUC) has its ow
 - [Architecture Overview](#architecture-overview)
 - [Invoice Lifecycle](#invoice-lifecycle)
 - [SRI Compliance](#sri-compliance)
+- [Delivery to the buyer: RIDE and email](#delivery-to-the-buyer-ride-and-email)
 - [Modules](#modules)
 - [HTTP API](#http-api)
 - [API Response Format](#api-response-format)
@@ -43,7 +44,7 @@ Clean Architecture with CQRS and domain events. Dependencies flow inward: infras
 - **Ports & Adapters:** Domain defines interfaces (ports); infrastructure provides implementations.
 - **Manual DI:** All wiring done in `src/container.ts` — no framework.
 - **Zod validation:** All external inputs (Kafka messages, HTTP bodies) validated at the boundary.
-- **Queue in PostgreSQL:** the `invoices` table is also the work queue of the worker (`next_attempt_at`, a lease in `locked_until`/`locked_by`, `FOR UPDATE SKIP LOCKED`). The `invoices` Kafka topic only carries the results for faclab-core.
+- **Queues in PostgreSQL:** the `invoices` table is also the work queue of the worker (`next_attempt_at`, a lease in `locked_until`/`locked_by`, `FOR UPDATE SKIP LOCKED`), and `invoice_deliveries` the queue of the deliveries to the buyers; both workers are a `QueueWorker` (`src/shared/infra/queue-worker.ts`). The `invoices` Kafka topic only carries the results for faclab-core.
 - **Two processes, one image:** `server.ts` serves the API; `worker.ts` runs the consumer of `sales.confirmed`, the worker and the recovery (ADR-0007 in faclab-core). `RUN_BACKGROUND=true` (the default) runs them in the API process too.
 
 ---
@@ -117,9 +118,44 @@ Checked against the SRI's offline scheme ficha técnica **2.34** (27/07/2026), t
 - **Emission date** (D-4, `INVOICE_EMISSION_DATE`). `sale` (default): when faclab-core asked to invoice the sale, the `occurred_at` of `sales.confirmed` (the confirmation, or the resend). Since 2026-01-01 vouchers must be transmitted when they are issued (Res. NAC-DGERCGC25-00000014 removed the 4 working days; the SRI answers error 65, *fecha de emisión extemporánea*): an invoice that waited may then be rejected, and a resend from faclab-core dates it again. `prepared`: when the XML is built, as before S4.1. Invoices received before S4.1 have no request date and use the second.
 - **Final consumer** (`FINAL_CONSUMER_MAX_TOTAL`, default 50, ficha 9.10): a sale without a customer over the limit is rejected before it takes a number, with the reason in `InvoiceRejected`, so faclab-core shows it. Such invoices can't be annulled nor corrected with a credit note since 2026 (Res. NAC-DGERCGC25-00000014).
 - **Payments**: `pagos` must add up to `importeTotal` (faclab-core sends what each payment applied since S3.3); otherwise `INVOICE_DATA_INVALID`.
-- **Authorized invoice.** When the SRI authorizes, the `autorizacion` document (status, `numeroAutorizacion`, `fechaAutorizacion`, environment and the signed voucher in CDATA) goes to the object storage at `tenants/{tenant_id}/invoices/{year of emission}/{access code}.xml` **before** the invoice is marked: an authorized invoice always has its XML. The invoice keeps the number, the date and the key; `GET /api/invoices/:id/authorized-xml` downloads it. `fechaAutorizacion` is in UTC (the SOAP client parses it). Invoices authorized before S4.1 have none.
+- **Authorized invoice.** When the SRI authorizes, the `autorizacion` document (status, `numeroAutorizacion`, `fechaAutorizacion`, environment and the signed voucher in CDATA) goes to the object storage at `tenants/{tenant_id}/invoices/{year of emission}/{access code}.xml` **before** the invoice is marked: an authorized invoice always has its XML. The invoice keeps the number, the date and the key; `GET /api/invoices/:id/authorized-xml` downloads it. `fechaAutorizacion` is in UTC (the SOAP client parses it). Invoices authorized before S4.1 have none. The invoice is saved as authorized together with its delivery to the buyer, in one transaction (see [Delivery to the buyer](#delivery-to-the-buyer-ride-and-email)).
 
 Not covered yet: the Gran Contribuyente legend (Anexo 24) and the construction materials codes in `codigoAuxiliar` (Anexo 23, S4.6).
+
+---
+
+## Delivery to the buyer: RIDE and email
+
+Every authorized invoice gets its **RIDE** (Representación Impresa del Documento Electrónico) and, when the buyer has an email, an email with the RIDE and the authorized XML (S4.4).
+
+### The RIDE
+
+- **What it prints** (`src/modules/invoice/domain/ride.ts`, `buildRide`): the issuer (razón social, nombre comercial, RUC, dirección matriz and of the establishment, contribuyente especial, obligado a llevar contabilidad, agente de retención, RIMPE legend); `FACTURA No. 001-001-000000123`, the authorization number and date (Ecuador time), environment (PRUEBAS/PRODUCCIÓN), emission and the **access code as a Code 128 barcode**; the buyer and the emission date; the detail (main and auxiliary code, quantity, description, unit price with up to 6 decimals, discount, total); the subtotals by rate (the general 15%, 0%, not taxed and exempt always, other rates when present), subtotal without taxes, discount, IVA by rate, tip and total; the payments with their names of Tabla 24; and the additional information.
+- **Where it comes from:** the signed XML the SRI authorized plus its authorization, never the current profile: the RIDE says exactly what was authorized. Only the **logo** is the company's current one (`PUT /api/company-config/logo`).
+- **How:** [pdfkit](https://pdfkit.org) (`PdfKitRideRenderer`, A4, the detail header repeated on each page, "Página n de m") with its standard Helvetica (WinAnsi: characters outside it print as `?`), and [bwip-js](https://github.com/metafloor/bwip-js) for the barcode. Pure JavaScript: no browser in the image.
+- **Where it is kept:** next to the authorized XML, `tenants/{tenant_id}/invoices/{year}/{access code}.pdf`. Generated once (`RideService.ensure`): by the delivery, or by `GET /api/invoices/:id/ride` for invoices authorized before S4.4.
+- **The logo:** PNG (not interlaced) or JPEG, up to 300 KB and 2000 × 2000 pixels, kept at `tenants/{tenant_id}/issuer/logo`. It is decoded completely when uploaded and before drawing it (`inspectLogo`): pdfkit decodes PNGs with transparency in a callback where a corrupt image would crash the process. One that can't be drawn leaves the RIDE without a logo.
+
+### Deliveries
+
+The authorization creates a delivery (`invoice_deliveries`, kind `authorization`) **in the same transaction** that saves the invoice as authorized: an authorized invoice always has one, and a retried step doesn't create another (`uq_invoice_deliveries_authorization`). `POST /api/invoices/:id/email` creates another one (kind `resend`, `requested_by` from the token); while one is pending (`uq_invoice_deliveries_pending`) it answers that one. The table is the queue of the **delivery worker** (`INVOICE_DELIVERY_CONCURRENCY` slots, a `deliver invoice` span child of the authorization's trace), like the invoices' one. Each delivery:
+
+1. makes sure the RIDE is kept;
+2. ends `disabled` when sending is off (`INVOICE_EMAIL_ENABLED=false`), or `no_recipient` when the buyer has no valid email (the final consumer): only the RIDE;
+3. sends the email and ends `sent` (with the server's answer and the message id), `bounced` (a 5xx to the envelope or the message: not retried) or stays `pending` after a failure (4xx, connection, timeout, a refused login), retried 1, 5, 15 and then every 60 minutes; after 10 attempts, `failed`.
+
+A storage failure doesn't count as an attempt: the worker gives the delivery out again after `INVOICE_RETRY_INTERVAL_MS`. If the process dies after the server accepted the email and before the delivery is saved, the buyer gets it twice (at least once).
+
+### The email
+
+- **Who to:** only the buyer's email of the sale (`customer.email` of `sales.confirmed`), one valid address. A resend has no body and never takes another address.
+- **From:** `"<trade name of the issuer>" <INVOICE_EMAIL_FROM>`, the platform's address (SPF/DKIM only for the platform's domain), and **Reply-To** the issuer's `email` from its fiscal profile, when it has one.
+- **What:** subject `Factura electrónica No. 001-001-000000123 de <issuer>`, a short text and HTML body (number, date, total, access code, authorization) and two attachments, `<access code>.xml` and `<access code>.pdf`. An invoice of the SRI's testing environment goes to the buyer too, with `[PRUEBAS]` before the subject and the note *Comprobante emitido en el ambiente de pruebas del SRI, sin validez tributaria*.
+- **Any SMTP server** (D-3, [nodemailer](https://nodemailer.com)): the provider is chosen where it is deployed (S8.1). In production, without `SMTP_SECURE=true` the connection must upgrade with STARTTLS. Locally, faclab-infra's Mailpit keeps every email at `http://localhost:8025` and delivers none.
+- **Personal data:** the logs carry the delivery and invoice ids and the status, never an address nor the server's text (`email`, `recipient` and `replyTo` are redacted). The send log (`GET /api/invoices/:id/emails`) shows them to the company.
+- **Rollback:** `INVOICE_EMAIL_ENABLED=false` stops every send, also of the deliveries already pending, which end `disabled`; RIDEs are still generated.
+
+Not covered yet: bounces that arrive later (DSN or provider webhooks), limits on resends, delivery metrics, and the RIDE of other documents (credit notes, S4.5).
 
 ---
 
@@ -131,9 +167,9 @@ Core business module. Manages the full invoice lifecycle.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces (`InvoiceQueue` among them), result events |
-| `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `SaleConfirmedHandler`, `InvoiceProcessor`, `InvoiceRecoveryService`, list/get/status queries |
-| `infra/` | `PgInvoiceRepository`, `PgInvoiceQueue`, `InvoiceWorker`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
+| `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, `InvoiceDelivery`, `buildRide`, `buildInvoiceEmail`, port interfaces (`InvoiceQueue`, `DeliveryQueue`, `RideRenderer`, `InvoiceMailer` among them), result events |
+| `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `ResendInvoiceEmailCommand`, `SaleConfirmedHandler`, `InvoiceProcessor`, `InvoiceRecoveryService`, `RideService`, `InvoiceDeliveryProcessor`, list/get/status/RIDE/send log queries |
+| `infra/` | `PgInvoiceRepository`, `PgInvoiceQueue`, `PgInvoiceDeliveryRepository`, `InvoiceWorker`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, `S3DocumentStorage`, `PdfKitRideRenderer`, `NodemailerInvoiceMailer`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
 
 ### `certificate`
 
@@ -155,12 +191,12 @@ Selecting a certificate in the profile checks the same: it must be one of the co
 
 ### `company-config`
 
-The fiscal profile of each company (RUC, names, main address, SRI environment, special taxpayer and withholding agent resolutions, RIMPE regime, accounting) and its invoice sequences. The establishment, its address and the emission point are not in the profile: each sale brings them.
+The fiscal profile of each company (RUC, names, main address, SRI environment, special taxpayer and withholding agent resolutions, RIMPE regime, accounting, the email buyers reply to and the logo of its RIDEs) and its invoice sequences. The establishment, its address and the emission point are not in the profile: each sale brings them.
 
 | Layer | Contents |
 |-------|----------|
 | `domain/` | `CompanyConfig` entity, sequences, readiness types |
-| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `ListSequencesQuery`, `SetNextSequenceCommand`, `IssuerReadinessService` |
+| `app/` | `SaveCompanyConfigCommand`, `GetCompanyConfigQuery`, `SetIssuerLogoCommand`, `DeleteIssuerLogoCommand`, `GetIssuerLogoQuery`, `ListSequencesQuery`, `SetNextSequenceCommand`, `IssuerReadinessService` |
 | `infra/` | `PgCompanyConfigRepository`, `PgSequenceRepository`, HTTP routes |
 
 ---
@@ -178,6 +214,9 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
 | `GET` | `/api/invoices/:id` | Get invoice by ID, with `authorizationNumber` and `authorizedAt` once authorized |
 | `GET` | `/api/invoices/:id/authorized-xml` | The authorized XML as an attachment (`<access code>.xml`); 404 until authorized |
+| `GET` | `/api/invoices/:id/ride` | The RIDE as an attachment (`<access code>.pdf`), generated the first time; 404 until authorized |
+| `POST` | `/api/invoices/:id/email` | Send it to the buyer's email of the sale again (202, the delivery; no body) |
+| `GET` | `/api/invoices/:id/emails` | Its send log, latest first |
 | `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now; the worker goes on with the rest |
 | `POST` | `/api/invoices/retry` | Put back in the queue every invoice that needs attention (202, `queued`: how many) |
 
@@ -195,7 +234,10 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | Method | Path | Description |
 |--------|------|-------------|
 | `PUT` | `/api/company-config` | Create or update the company's fiscal profile (`branchCode`, `salePointCode`, `branchAddress` and `invoiceSequence` are ignored) |
-| `GET` | `/api/company-config` | Get the company's fiscal profile |
+| `GET` | `/api/company-config` | Get the company's fiscal profile, with its `email` and `hasLogo` |
+| `PUT` | `/api/company-config/logo` | Upload the logo of its RIDEs (`multipart/form-data`, field `file`: PNG or JPEG, 300 KB, 2000 × 2000 px) |
+| `GET` | `/api/company-config/logo` | The logo as uploaded; 404 without one |
+| `DELETE` | `/api/company-config/logo` | Remove it (204, also without one) |
 | `GET` | `/api/sequences` | The company's invoice counters, by establishment and emission point |
 | `PUT` | `/api/sequences/:establishment/:emissionPoint` | Where the numbering of an emission point continues (`{ "nextSequence": 42 }`), never backwards |
 
@@ -251,7 +293,12 @@ All endpoints return a consistent JSON envelope.
 | `VALIDATION_ERROR` | 422 | Request body fails schema validation, unreadable or expired certificate, unknown `signingCertId` |
 | `CERTIFICATE_RUC_MISMATCH` | 422 | The certificate names another RUC (upload or selection) |
 | `CERTIFICATE_RUC_UNKNOWN` | 422 | The certificate names no RUC nor cédula |
-| `ISSUER_NOT_CONFIGURED` | 409 | Uploading a certificate before saving the fiscal profile |
+| `ISSUER_NOT_CONFIGURED` | 409 | Uploading a certificate or a logo before saving the fiscal profile |
+| `LOGO_INVALID` / `LOGO_TOO_LARGE` | 422 | A logo that isn't a PNG (not interlaced) or JPEG of at most 2000 × 2000 px, or weighs over 300 KB |
+| `INVOICE_NOT_AUTHORIZED` | 409 | Resending an invoice that isn't authorized |
+| `EMAIL_DISABLED` | 409 | Resending while `INVOICE_EMAIL_ENABLED=false` |
+| `BUYER_EMAIL_MISSING` | 409 | Resending an invoice whose buyer has no valid email |
+| `STORAGE_UNAVAILABLE` | 503 | The object storage failed (RIDE, authorized XML, logo); try again later |
 | `CERTIFICATE_IN_USE` | 409 | Deleting the certificate selected in the company config |
 | `SEQUENCE_CANNOT_GO_BACK` | 409 | Setting a sequence below a number already issued |
 | `INVOICE_NOT_RETRYABLE` | 409 | Retrying an invoice that is already authorized or rejected |
@@ -303,12 +350,13 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 |-------|----------|
 | `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, when faclab-core asked to invoice it (`requested_at`), status, sequence and the access code's `numeric_code` (`ck_invoices_numbered_numeric_code`: together), access code, XML, the SRI's `authorization_number` and `authorized_at` and the `authorized_xml_key` in the object storage, current issue, `version`, and the queue's columns: `next_attempt_at`, the lease (`locked_until`, `locked_by`), `result_published_at` and the `trace_context` of the message that brought the sale. Indexes by company and sale, status and creation date, and `ix_invoices_next_attempt_at` (only rows with something to do) for the worker; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
 | `invoice_events` | Status history of each invoice, in order (append-only) |
-| `issuers` | The fiscal profile of each company (key `tenant_id`) |
+| `issuers` | The fiscal profile of each company (key `tenant_id`), with its `email` and where its logo is (`logo_key`, `logo_content_type`) |
+| `invoice_deliveries` | The deliveries of each authorized invoice to its buyer, and their queue: kind (`authorization`, `resend`), recipient, who asked, status, attempts, `next_attempt_at`, lease, last error, the mail server's answer and message id. One per authorization (`uq_invoice_deliveries_authorization`) and at most one pending per invoice (`uq_invoice_deliveries_pending`). See [Deliveries](#deliveries) |
 | `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
 | `dead_letters` | Kafka messages the consumer gave up on, of every company, until someone processes them again. See [Dead letters](#dead-letters) |
 | `certificates` | Certificates of each company: metadata, the RUCs and cédulas they name (`tax_ids`), the `.p12` and its password, both encrypted. An issuer can only select one of its company (composite foreign key `fk_issuers_signing_cert_tenant`) |
 
-**Object storage** (D-2): the authorized XML of each invoice, in an S3-compatible bucket (`S3DocumentStorage`, AWS SDK v3, path-style), self-hosted on the VPS. Locally, faclab-infra's `object-storage` (Garage) on `localhost:3900`, bucket `faclab-invoicing`. Which service runs on the VPS is decided with its deployment (S8.1); a copy outside the server, with the backups (S8.3).
+**Object storage** (D-2): the authorized XML and the RIDE of each invoice and the logo of each issuer, in an S3-compatible bucket (`S3DocumentStorage`, AWS SDK v3, path-style), self-hosted on the VPS. Locally, faclab-infra's `object-storage` (Garage) on `localhost:3900`, bucket `faclab-invoicing`. Which service runs on the VPS is decided with its deployment (S8.1); a copy outside the server, with the backups (S8.3).
 
 **Isolation between companies** is a filter the application never skips: every repository method the API uses takes the company and puts it in the `WHERE`; the pipeline (consumer, worker, recovery) moves invoices by id and uses each invoice's company. The database has a single role for now: separate owner and application roles, and row-level security like faclab-core's, are pending.
 
@@ -365,6 +413,14 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `INVOICE_EMISSION_DATE` | `sale` | Optional | `sale` or `prepared`: the date an invoice carries (D-4, see [SRI Compliance](#sri-compliance)) |
 | `FINAL_CONSUMER_MAX_TOTAL` | `50` | Optional | Highest total in USD of an invoice to the final consumer |
 | `INVOICING_PROVIDER_RUC` | — | Set it | RUC of whoever runs Faclab, in every invoice as `RUC Proveedor` (Anexo 26) |
+| `INVOICE_EMAIL_ENABLED` | `true` | Optional | `false` stops sending invoices by email (the rollback): deliveries only keep the RIDE and end `disabled` |
+| `SMTP_HOST` | `localhost` (faclab-infra's Mailpit) | **Required** while sending is on | Mail server (D-3: any SMTP provider). A container on `faclab_network` uses `mailpit` |
+| `SMTP_PORT` | `1025` (Mailpit); otherwise `587` | Optional | Its port |
+| `SMTP_SECURE` | `false` | Optional | `true`: TLS from the start (port 465). In production, without it the connection must upgrade with STARTTLS |
+| `SMTP_USER` / `SMTP_PASSWORD` | — | Both or neither | Credentials of the mail server |
+| `SMTP_TIMEOUT_MS` | `20000` | Optional | Timeout of each step with the mail server (connect, greeting, each command); `INVOICE_LOCK_TIMEOUT_MS` must be at least three times it |
+| `INVOICE_EMAIL_FROM` | `facturas@faclab.local` | **Required** while sending is on | The platform's sender address; the issuer's trade name goes as its name |
+| `INVOICE_DELIVERY_CONCURRENCY` | `2` | Optional | Deliveries each worker processes at once (1 to 4); with `INVOICE_WORKER_CONCURRENCY`, at most 8 (the database pool has 10 connections) |
 | `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message is kept as a dead letter |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
@@ -376,9 +432,9 @@ Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ..
 
 | Routes | Permission |
 |--------|------------|
-| `/api/company-config`, `/api/certificates`, `/api/sequences` | `user:manage` |
-| `GET /api/invoices` (and `/api/invoices/:id/authorized-xml`), `GET /api/invoicing/status` | `sale:read` |
-| `POST /api/invoices/retry`, `POST /api/invoices/:id/retry` | `sale:write` |
+| `/api/company-config` (and its logo), `/api/certificates`, `/api/sequences` | `user:manage` |
+| `GET /api/invoices` (and `/:id/authorized-xml`, `/:id/ride`, `/:id/emails`), `GET /api/invoicing/status` | `sale:read` |
+| `POST /api/invoices/retry`, `POST /api/invoices/:id/retry`, `POST /api/invoices/:id/email` | `sale:write` |
 
 Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` / `TENANT_REQUIRED` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
 
@@ -403,10 +459,10 @@ Each issuer has its environment (`environment` in the fiscal profile): it goes i
 `src/instrumentation.ts` starts the OpenTelemetry SDK before anything else (`node -r`) and exports traces, metrics and logs over OTLP gRPC. The standard shared with faclab-core is in faclab-core's `docs/architecture/OBSERVABILITY.md`.
 
 - **Resource**: `service.name` (`OTEL_SERVICE_NAME`, default `faclab-invoicing`; the worker process adds `-worker`, `src/shared/telemetry/service-name.ts`), `service.namespace=faclab`, `service.version` (`SERVICE_VERSION`) and `deployment.environment.name` (`NODE_ENV`).
-- **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. The consumer keeps the context of the message with the invoice (`trace_context`), and each job of the worker is a `process invoice` span (kind CONSUMER) child of it. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `process invoice` (one per job, with the SRI calls) → `send invoices` → faclab-core's `process invoices`.
-- **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML and signatures are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
+- **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. The consumer keeps the context of the message with the invoice (`trace_context`), and each job of the worker is a `process invoice` span (kind CONSUMER) child of it; the delivery of an authorized invoice keeps the authorization step's, and its job is a `deliver invoice` span. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `process invoice` (one per job, with the SRI calls) → `send invoices` → faclab-core's `process invoices`.
+- **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML, signatures and the buyers' email addresses (`email`, `recipient`, `replyTo`) are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
 - **Database**: each query inside a request, a Kafka message or an invoice job gets a span (`@opentelemetry/instrumentation-pg`); the worker's polling and the recovery, outside any span, don't start traces.
-- **Shutdown**: on SIGTERM or SIGINT the API stops taking requests; then the consumer stops, the worker takes no more invoices and waits for those in progress (each step is bounded by `SRI_TIMEOUT_MS`), Kafka and the database pool close, and the telemetry still buffered is flushed (up to 5 s) with `Telemetry flushed` before exiting. The worker process does the same without HTTP.
+- **Shutdown**: on SIGTERM or SIGINT the API stops taking requests; then the consumer stops, the workers take no more invoices nor deliveries and wait for those in progress (each step is bounded by `SRI_TIMEOUT_MS` or `SMTP_TIMEOUT_MS`), Kafka and the database pool close, and the telemetry still buffered is flushed (up to 5 s) with `Telemetry flushed` before exiting. The worker process does the same without HTTP.
 
 To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
 
@@ -417,7 +473,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
 ### Prerequisites
 
 - Node.js 22.9 or later (CI uses 22)
-- Docker, for faclab-infra (Kafka, the invoicing PostgreSQL and the object storage)
+- Docker, for faclab-infra (Kafka, the invoicing PostgreSQL, the object storage and Mailpit)
 
 ### Setup
 
@@ -427,7 +483,7 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
    npm install
    ```
 
-2. **Start faclab-infra** (Kafka; `invoicing-db`, which creates the `faclab_invoicing` and `faclab_invoicing_test` databases; and `object-storage`, which creates the bucket and its development key)
+2. **Start faclab-infra** (Kafka; `invoicing-db`, which creates the `faclab_invoicing` and `faclab_invoicing_test` databases; `object-storage`, which creates the bucket and its development key; and `mailpit`, which keeps the emails to the buyers at `http://localhost:8025`)
 
    ```bash
    cd ../faclab-infra && docker compose up -d
@@ -487,6 +543,8 @@ npm run migrate       # node-pg-migrate (up, down, create); reads DATABASE_URL
 ```bash
 TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing_test npm test
 ```
+
+`test/postgres/invoice-deliveries.test.ts` checks the deliveries: saved with the authorization or not at all, one per authorization, concurrent resends that get the one pending, and no delivery given to two holders. The email itself is tested against a mail server in the process (`smtp-server`, `test/invoice/invoice-delivery.smtp.test.ts`): sent, retried after a 4xx or an unreachable server, bounced on a 5xx, given up after the last attempt; no Docker needed.
 
 `test/storage/` checks `S3DocumentStorage` against a real S3-compatible service: faclab-infra's `object-storage` with `TEST_OBJECT_STORAGE_ENDPOINT=http://localhost:3900` (the key and the bucket default to its development ones; `TEST_OBJECT_STORAGE_*` overrides them). CI doesn't run it.
 
