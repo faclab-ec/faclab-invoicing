@@ -8,6 +8,7 @@
     "start": "node --env-file-if-exists=.env -r ./dist/instrumentation.js dist/server.js",
     "dev:worker": "node --env-file-if-exists=.env node_modules/ts-node-dev/lib/bin.js -T --exit-child -r tsconfig-paths/register -r ./src/instrumentation.ts src/worker.ts",
     "worker": "node --env-file-if-exists=.env -r ./dist/instrumentation.js dist/worker.js",
+    "cli": "node --env-file-if-exists=.env dist/cli.js",
     "lint": "eslint src test",
     "lint:fix": "eslint src test --fix",
     "format": "prettier --write src test",

@@ -305,6 +305,19 @@ export class Invoice {
     return { ...base, type: 'InvoiceRejected', reason: last.description || null };
   }
 
+  /**
+   * faclab-core asked again for an invoice the SRI already authorized (it resent the sale): it may
+   * have lost the result, so the worker publishes it again, right away. True if it changed: an
+   * invoice whose result is still to go out has nothing to add
+   */
+  publishResultAgain(at: Date = new Date()): boolean {
+    if (this._status !== InvoiceStatus.AUTHORIZED || this._resultPublishedAt === null) return false;
+    this._resultPublishedAt = null;
+    this._nextAttemptAt = at;
+    this._updatedAt = at;
+    return true;
+  }
+
   /** faclab-core has the result: nothing is left to do with the invoice */
   markResultPublished(at: Date = new Date()): void {
     if (!this.isFinal) {

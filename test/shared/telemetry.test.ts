@@ -10,7 +10,7 @@ import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
-import { DlqProducer } from '#/shared/infra/dlq-producer';
+import { DeadLetterStore } from '#/shared/infra/dead-letters';
 import { BaseKafkaConsumer } from '#/shared/infra/kafka';
 import { captureTraceContext } from '#/shared/telemetry/trace-context';
 
@@ -88,7 +88,7 @@ describe('BaseKafkaConsumer', () => {
       },
       commitOffsets: async () => {},
     } as unknown as KafkaJS.Consumer;
-    const consumer = new RecordingConsumer(kafka, ['sales.confirmed'], {} as DlqProducer);
+    const consumer = new RecordingConsumer(kafka, ['sales.confirmed'], {} as DeadLetterStore);
     await consumer.start();
 
     const traceId = '4bf92f3577b34da6a3ce929d0e0e4736';

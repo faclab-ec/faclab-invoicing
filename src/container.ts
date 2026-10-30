@@ -57,7 +57,11 @@ import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-valid
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
-import { InvoiceKafkaConsumer } from '#/modules/invoice/infra/messaging/kafka-consumer';
+import {
+  dispatchMessage,
+  InvoiceKafkaConsumer,
+  MessageProcessors,
+} from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
 import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
@@ -67,7 +71,11 @@ import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
 import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
 import { createPool } from '#/shared/infra/database';
-import { DlqProducer } from '#/shared/infra/dlq-producer';
+import {
+  DeadLetterReprocessor,
+  DeadLetterStore,
+  PgDeadLetterStore,
+} from '#/shared/infra/dead-letters';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
@@ -89,6 +97,9 @@ export interface Container {
   createHttpServer(): Promise<FastifyInstance>;
   /** Connects to Kafka only when started: the API without RUN_BACKGROUND never does */
   createBackground(): Background;
+  deadLetters: DeadLetterStore;
+  /** Processes dead letters again with the consumer's handlers, without Kafka (the CLI) */
+  createDeadLetterReprocessor(): DeadLetterReprocessor;
 }
 
 export function createContainer(config: AppConfig): Container {
@@ -162,6 +173,23 @@ export function createContainer(config: AppConfig): Container {
     issuerReadiness,
     null,
   );
+
+  // Messages the consumer gave up on, until someone processes them again
+  const deadLetters = new PgDeadLetterStore(pool, config.kafka.groupId);
+  // What each topic does with a message; the reprocessing of dead letters runs it too
+  function messageProcessors(withTrace: boolean): MessageProcessors {
+    // Only stores the sale: the worker invoices it
+    const saleConfirmedHandler = new SaleConfirmedHandler(
+      new ReceiveSaleCommand(invoiceRepository, withTrace ? captureTraceContext : undefined),
+      config.kafka.salesV1TenantId,
+    );
+    return {
+      [KAFKA_TOPICS.SALES_CONFIRMED]: {
+        handler: saleConfirmedHandler,
+        validator: SaleConfirmedMessageSchema,
+      },
+    };
+  }
 
   // Recovery: invoices waiting for the issuer, back in the queue once it is ready
   const invoiceRecovery = new InvoiceRecoveryService(invoiceQueue, issuerReadiness);
@@ -276,23 +304,11 @@ export function createContainer(config: AppConfig): Container {
       toInvoiceMessage,
       invoiceTenant,
     );
-    const dlqProducer = new DlqProducer(producer, KAFKA_TOPICS.DLQ, config.kafka.groupId);
-
-    // Only stores the sale: the worker invoices it
-    const saleConfirmedHandler = new SaleConfirmedHandler(
-      new ReceiveSaleCommand(invoiceRepository, captureTraceContext),
-      config.kafka.salesV1TenantId,
-    );
     const kafkaConsumer = new InvoiceKafkaConsumer(
       consumer,
       [KAFKA_TOPICS.SALES_CONFIRMED],
-      {
-        [KAFKA_TOPICS.SALES_CONFIRMED]: {
-          handler: saleConfirmedHandler,
-          validator: SaleConfirmedMessageSchema,
-        },
-      },
-      dlqProducer,
+      messageProcessors(true),
+      deadLetters,
     );
 
     const processor = new InvoiceProcessor(
@@ -339,5 +355,18 @@ export function createContainer(config: AppConfig): Container {
     };
   }
 
-  return { pool, createHttpServer: buildHttpServer, createBackground: buildBackground };
+  function buildDeadLetterReprocessor(): DeadLetterReprocessor {
+    const processors = messageProcessors(false);
+    return new DeadLetterReprocessor(deadLetters, (topic, value) =>
+      dispatchMessage(processors, topic, value),
+    );
+  }
+
+  return {
+    pool,
+    createHttpServer: buildHttpServer,
+    createBackground: buildBackground,
+    deadLetters,
+    createDeadLetterReprocessor: buildDeadLetterReprocessor,
+  };
 }

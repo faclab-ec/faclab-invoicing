@@ -71,9 +71,9 @@ Each transition is an isolated Command. The consumer only stores the sale as a `
 ### Nothing is lost: pending invoices, issues and recovery
 
 - **The sale is stored first.** `ReceiveSale` saves a `pending` invoice of its company, with the sale data and where it was made (establishment, its address and emission point), before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the company's issuer is ready, dated by `INVOICE_EMISSION_DATE` (see [SRI Compliance](#sri-compliance)).
-- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` (company and sale) keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
+- **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice in progress; the partial unique index `uq_invoices_active_sale` (company and sale) keeps that true when two resends arrive at the same time. If the sale's invoice is already `authorized` and its result went out, the resend publishes the result again (`result_published_at` cleared, due now): faclab-core only resends a sale that still waits for its result (S4.3), so the first one may never have reached it. Updates check a `version` column (optimistic locking).
 - **The queue** is the `invoices` table (S4.2). `next_attempt_at` says when the worker has something to do with an invoice: its next step, a retry after an issue, or telling faclab-core its result. Each transition sets it to now; a transient issue to its backoff; it is null while the invoice waits for its issuer or a manual retry, and once its result is published. A worker takes due invoices with `FOR UPDATE SKIP LOCKED` and holds each with a lease (`locked_until`, `locked_by`, `INVOICE_LOCK_TIMEOUT_MS`, renewed after each step): two workers, in one process or several, never run the same invoice, so it is never sent twice. If a worker dies, its invoices are taken again once their lease runs out; a restart picks up whatever is due. Each worker runs `INVOICE_WORKER_CONCURRENCY` invoices at once and looks for work every `INVOICE_POLL_INTERVAL_MS`. Nothing in the queue changes the invoice's `version`.
-- **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed `sales.confirmed` messages and storage outages. A job that breaks for another reason (the database) waits `INVOICE_RETRY_INTERVAL_MS` before the queue gives it out again.
+- **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. A `sales.confirmed` message the consumer can't take (malformed, or still failing after its retries, e.g. a database outage) is kept as a [dead letter](#dead-letters). A job that breaks for another reason (the database) waits `INVOICE_RETRY_INTERVAL_MS` before the queue gives it out again.
   - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `ENVIRONMENT_NOT_ALLOWED`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`, `CERTIFICATE_RUC_MISMATCH`) wait until the company's issuer is ready.
   - `ISSUER_RUC_MISMATCH`: the sale names a RUC other than the company's profile. The invoice waits until the profile has that RUC.
   - `SRI_UNAVAILABLE` (SOAP error or timeout, or an authorization without its number or voucher), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`), `STORAGE_UNAVAILABLE` (the authorized XML couldn't be kept: the invoice stays `sent`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
@@ -83,6 +83,20 @@ Each transition is an isolated Command. The consumer only stores the sale as a `
 - **Recovery** (`InvoiceRecoveryService`) puts back in the queue the invoices that wait for something other than a date: those waiting for their issuer (once it is ready, checked again for each company), and with "retry all" also the transient issues not yet due, the invalid invoices and those past the automatic limit. It only sets their `next_attempt_at`; a worker runs them. It runs in the worker at start and every `INVOICE_RETRY_INTERVAL_MS`, in the API right after a company's config or a certificate changes (only that company's invoices), and from `POST /api/invoices/retry` (the caller's company). Each company's issuer is checked on its own: one that can't invoice doesn't hold back another. It holds no lock: two runs at once only repeat an update. The worker checks the issuer of an invoice released this way again instead of trusting an answer it cached before the change.
 - **Manual retry** (`POST /api/invoices/:id/retry`) holds the invoice in the queue, runs one step in the API and lets it go; if a worker is running it at that moment it answers 409 `INVOICE_IN_PROGRESS`. The worker goes on with the next steps and publishes the result.
 - **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`), per company: config saved and valid (13-digit RUC), an SRI environment this deployment reaches (only `NODE_ENV=production` reaches production), a certificate of its RUC selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute per company and refreshed on that company's config or certificate changes.
+
+### Dead letters
+
+The consumer retries a failing message (3 times, with backoff) and then keeps it in the `dead_letters` table (S4.3; before, the `dlq` topic, which nothing read): consumer group, topic, partition and offset, key, headers, the message as it arrived, its company (`faclab-tenant-id`, when it is a valid id), the error, `error_type` (`NON_RETRYABLE` for malformed messages, `MAX_RETRIES_EXHAUSTED`) and the attempts. Only then is the offset committed; if the message can't be kept either (the database is down), the offset isn't committed and the message comes back once the database does. A message delivered again after a failed commit is kept once (`uq_dead_letters_message`). They count in `dlq.message.count`.
+
+Processing one again is a platform task, across companies, with the CLI (`npm run cli`, on the compiled code; in the image, `docker run --rm ... faclab-invoicing npm run cli -- ...`):
+
+```bash
+npm run cli -- dead-letters [--limit N]                        # pending ones, oldest first
+npm run cli -- dead-letter-reprocess --id 12 --by ana          # one
+npm run cli -- dead-letter-reprocess --all --by ana            # every pending one
+```
+
+The message goes through the same handler as in the consumer: a `sales.confirmed` becomes a `pending` invoice and the worker invoices it. It is safe to repeat (the same `event_id` gives the same invoice). `--by` is required and stays on the row (`reprocessed_by`, `reprocessed_at`, `status = reprocessed`) and in the log; a message that fails again stays `pending` with `reprocess_error`, and the command exits with 1. Fix the cause first: a malformed message fails the same way; a v1 one needs `SALES_V1_TENANT_ID`.
 
 ### Numbering
 
@@ -264,7 +278,7 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 
 Until S4.2 the service also consumed `invoices` to move each invoice to its next step; the queue in PostgreSQL does that now, and the topic only tells faclab-core the result: on `InvoiceAuthorized` it marks the sale as `INVOICED`, on `InvoiceRejected` its invoice as rejected. v1 still lists the four intermediate event types, which nothing publishes anymore. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
 
-**Which company, from where.** `sales.confirmed` v2 brings `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it goes to the DLQ.
+**Which company, from where.** `sales.confirmed` v2 brings `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it is kept as a dead letter.
 
 Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invoice_tax`: the line's `descuento`, `precioTotalSinImpuesto`/`baseImponible` and IVA `valor`, already rounded to cents and with the sale-level discount prorated by faclab-core. The XML uses them as they are (the SRI invoice has no sale-level discount), so the bases plus VAT add up to the sale total. Money is summed in cents and written with two decimals.
 
@@ -274,7 +288,7 @@ The messages follow versioned JSON Schemas owned by faclab-core (`faclab-core/co
 
 - `npm run contracts:sync -- <commit|branch|tag>` refreshes it from GitHub (`CORE_REPO=../faclab-core` uses a local clone instead, for a branch not pushed yet). Never edit the copy by hand: CI checks it out from faclab-core at the pinned commit and fails on any difference.
 - `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example (v1 and v2) with zod and builds its invoice XML, checks that v2's XML and access code use the message's establishment, address and emission point, and validates every message this service publishes on `invoices` against its schema (ajv).
-- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A `sales.confirmed` without `schema_version` predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
+- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A `sales.confirmed` without `schema_version` predates v1 and is read as v1; any other version fails validation and is kept as a dead letter.
 - A customer may come without `email`, `phone` or `address` (`null`): the SRI doesn't require them and the XML leaves them out (`infoAdicional` only when there is at least one). A final consumer (`customer: null`) is invoiced as `07` / `9999999999999` / `CONSUMIDOR FINAL`. An item without `sku` has no `codigoAuxiliar`; one without `product_name` (the product no longer exists in faclab-core) is described as `Producto <product_id>`.
 
 When a contract changes, deploy the consumer before the producer.
@@ -291,6 +305,7 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 | `invoice_events` | Status history of each invoice, in order (append-only) |
 | `issuers` | The fiscal profile of each company (key `tenant_id`) |
 | `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
+| `dead_letters` | Kafka messages the consumer gave up on, of every company, until someone processes them again. See [Dead letters](#dead-letters) |
 | `certificates` | Certificates of each company: metadata, the RUCs and cédulas they name (`tax_ids`), the `.p12` and its password, both encrypted. An issuer can only select one of its company (composite foreign key `fk_issuers_signing_cert_tenant`) |
 
 **Object storage** (D-2): the authorized XML of each invoice, in an S3-compatible bucket (`S3DocumentStorage`, AWS SDK v3, path-style), self-hosted on the VPS. Locally, faclab-infra's `object-storage` (Garage) on `localhost:3900`, bucket `faclab-invoicing`. Which service runs on the VPS is decided with its deployment (S8.1); a copy outside the server, with the backups (S8.3).
@@ -350,7 +365,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `INVOICE_EMISSION_DATE` | `sale` | Optional | `sale` or `prepared`: the date an invoice carries (D-4, see [SRI Compliance](#sri-compliance)) |
 | `FINAL_CONSUMER_MAX_TOTAL` | `50` | Optional | Highest total in USD of an invoice to the final consumer |
 | `INVOICING_PROVIDER_RUC` | — | Set it | RUC of whoever runs Faclab, in every invoice as `RUC Proveedor` (Anexo 26) |
-| `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message goes to the DLQ |
+| `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message is kept as a dead letter |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
 | `OTEL_SDK_DISABLED` | — | Optional | `true` turns OpenTelemetry off |
@@ -453,6 +468,7 @@ npm run dev:worker    # the worker with hot reload: consumer, queue and recovery
 npm run build         # tsc → dist/, then tsc-alias rewrites the #/ imports
 npm run start         # Run compiled output (loads .env)
 npm run worker        # Run the compiled worker (loads .env)
+npm run cli           # Platform CLI on the compiled code: dead letters (see Dead letters)
 npm run lint          # ESLint check
 npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
@@ -622,6 +638,7 @@ src/
         ├── database.ts          # pg pool and transactions
         ├── http-server.ts       # Fastify + Swagger setup
         ├── kafka.ts             # BaseKafkaConsumer
+        ├── dead-letters.ts      # dead_letters store and reprocessor
         ├── soap-client.ts       # strong-soap wrapper
         ├── worker-health.ts     # the worker's /health
         └── p12.ts               # P12 parsing utilities

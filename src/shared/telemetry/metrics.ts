@@ -16,7 +16,7 @@ export const kafkaRetryCount = meter.createCounter('kafka.consumer.retry.count',
 });
 
 export const dlqMessageCount = meter.createCounter('dlq.message.count', {
-  description: 'Number of messages sent to DLQ',
+  description: 'Number of Kafka messages kept as dead letters',
 });
 
 export const soapCallDuration = meter.createHistogram('soap.call.duration', {

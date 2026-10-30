@@ -5,7 +5,7 @@ import { BadRequestError, ValidationError } from '../errors/app-error';
 import { NonRetryableError } from '../errors/non-retryable.error';
 import { logger } from '../logger';
 import { kafkaMessageCount, kafkaMessageDuration, kafkaRetryCount } from '../telemetry/metrics';
-import { DlqMessageContext, DlqProducer } from './dlq-producer';
+import { DeadLetterStore, FailedMessage } from './dead-letters';
 
 // Header with the company (faclab-core tenant) of a message, the same name faclab-core uses
 export const TENANT_HEADER = 'faclab-tenant-id';
@@ -42,7 +42,7 @@ export abstract class BaseKafkaConsumer {
   constructor(
     private consumer: KafkaJS.Consumer,
     private topics: string[],
-    private dlqProducer: DlqProducer,
+    private deadLetters: DeadLetterStore,
     retryConfig?: Partial<RetryConfig>,
   ) {
     this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
@@ -100,16 +100,17 @@ export abstract class BaseKafkaConsumer {
               'Kafka message received',
             );
 
-            const dlqContext: DlqMessageContext = {
+            const failed: FailedMessage = {
               topic,
               partition,
               offset: message.offset,
               key: message.key?.toString() ?? null,
+              headers,
               value,
-              timestamp: message.timestamp ?? null,
             };
 
-            await this.processWithRetry(topic, value, dlqContext);
+            // Done or kept as a dead letter: only then is the offset committed
+            await this.processWithRetry(topic, value, failed);
 
             await this.consumer.commitOffsets([
               { topic, partition, offset: (BigInt(message.offset) + 1n).toString() },
@@ -134,7 +135,7 @@ export abstract class BaseKafkaConsumer {
   private async processWithRetry(
     topic: string,
     value: string,
-    dlqContext: DlqMessageContext,
+    failed: FailedMessage,
   ): Promise<void> {
     const { maxRetries, baseDelayMs } = this.retryConfig;
 
@@ -147,10 +148,10 @@ export abstract class BaseKafkaConsumer {
 
         if (!isRetryable(error)) {
           logger.error(
-            { topic, offset: dlqContext.offset, err, attempt },
-            'Non-retryable error, sending to DLQ',
+            { topic, offset: failed.offset, err, attempt },
+            'Non-retryable error, keeping the message as a dead letter',
           );
-          await this.dlqProducer.send(dlqContext, err, 'NON_RETRYABLE', attempt);
+          await this.deadLetters.keep(failed, err, 'NON_RETRYABLE', attempt + 1);
           return;
         }
 
@@ -158,16 +159,17 @@ export abstract class BaseKafkaConsumer {
           kafkaRetryCount.add(1, { topic, attempt: attempt + 1 });
           const backoff = calculateBackoff(attempt, baseDelayMs);
           logger.warn(
-            { topic, offset: dlqContext.offset, err, attempt: attempt + 1, maxRetries, backoff },
+            { topic, offset: failed.offset, err, attempt: attempt + 1, maxRetries, backoff },
             'Retryable error, retrying after backoff',
           );
           await sleep(backoff);
         } else {
           logger.error(
-            { topic, offset: dlqContext.offset, err, retriesAttempted: maxRetries },
-            'Max retries exhausted, sending to DLQ',
+            { topic, offset: failed.offset, err, retriesAttempted: maxRetries },
+            'Max retries exhausted, keeping the message as a dead letter',
           );
-          await this.dlqProducer.send(dlqContext, err, 'MAX_RETRIES_EXHAUSTED', maxRetries);
+          // If it can't be kept (the database is down too), this throws: no commit, it comes back
+          await this.deadLetters.keep(failed, err, 'MAX_RETRIES_EXHAUSTED', attempt + 1);
         }
       }
     }
