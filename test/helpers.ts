@@ -8,6 +8,7 @@ import {
   CompanyConfig,
   EmissionType,
   Environment,
+  RimpeRegime,
 } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError, ReadinessReport } from '#/modules/company-config/domain/readiness';
 import {
@@ -32,6 +33,7 @@ import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice'
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { authorizedXmlKey } from '#/modules/invoice/domain/authorized-xml';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { buildInvoiceXml, InvoiceXmlInput } from '#/modules/invoice/domain/invoice-xml-builder';
 import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
 import {
   DocumentStorage,
@@ -531,6 +533,97 @@ export function makeReceivedSale(
 // An access code of 2026 in testing, for invoices that don't go through PrepareInvoiceCommand
 export const TEST_ACCESS_CODE = '0910202601179214100100110010010000000011234567812';
 
+// When the simulated SRI authorizes, and what it answers
+export const TEST_AUTHORIZATION = {
+  number: TEST_ACCESS_CODE,
+  authorizedAt: new Date('2026-10-09T15:01:02Z'),
+};
+
+/**
+ * The input of an invoice with every part the RIDE prints: the issuer's legends, a customer with
+ * contact data, lines at 15%, 0% and not taxed (one with a discount), two payments and the
+ * provider's RUC. Totals: 80.75 + 8.64 + 5.00 without taxes, 12.11 of IVA, 106.50
+ */
+export function fullInvoiceXmlInput(overrides: Partial<InvoiceXmlInput> = {}): InvoiceXmlInput {
+  return {
+    environment: 1,
+    emissionType: 1,
+    companyName: 'Ferretería ACME S.A.',
+    companyTradeName: 'ACME',
+    companyCode: RUC_A,
+    companyMainAddress: 'Av. 10 de Agosto N25-34, Quito',
+    companyBranchAddress: 'Av. Amazonas N34-120, Quito',
+    companyBranchCode: '001',
+    companySalePointCode: '001',
+    companyAccountingRequired: true,
+    companySpecialTaxpayerResolution: '5368',
+    companyWithholdingAgentResolution: '12345678',
+    companyRimpeRegime: RimpeRegime.ENTREPRENEUR,
+    providerRuc: RUC_B,
+    accessCode: TEST_ACCESS_CODE,
+    sequence: '000000001',
+    voucherTypeCode: '01',
+    date: REQUESTED_AT,
+    customer: {
+      taxIdCode: '04',
+      name: 'Construcciones Andinas Cía. Ltda.',
+      taxId: '1790012345001',
+      email: 'compras@construccionesandinas.ec',
+      phone: '022345678',
+      address: 'Av. 6 de Diciembre N24-253, Quito',
+    },
+    total: 106.5,
+    payments: [
+      { formaPago: '01', amount: 50 },
+      { formaPago: '19', amount: 56.5 },
+    ],
+    items: [
+      {
+        productId: '7',
+        sku: 'CEM-50',
+        description: 'Cemento Portland 50 kg',
+        quantity: 10,
+        unitPrice: 8.5,
+        discount: 4.25,
+        taxableBase: 80.75,
+        taxCode: 4,
+        taxRate: 15,
+        taxAmount: 12.11,
+      },
+      {
+        productId: '8',
+        sku: 'VAR-12',
+        description: 'Varilla corrugada 12 mm',
+        quantity: 2.5,
+        unitPrice: 3.456789,
+        discount: 0,
+        taxableBase: 8.64,
+        taxCode: 0,
+        taxRate: 0,
+        taxAmount: 0,
+      },
+      {
+        productId: '9',
+        sku: null,
+        description: 'Corte de varilla',
+        quantity: 1,
+        unitPrice: 5,
+        discount: 0,
+        taxableBase: 5,
+        taxCode: 6,
+        taxRate: 0,
+        taxAmount: 0,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** fullInvoiceXmlInput's XML, signed like the test signer does */
+export function signedInvoiceXml(overrides: Partial<InvoiceXmlInput> = {}): string {
+  return `${buildInvoiceXml(fullInvoiceXmlInput(overrides))}<!-- signed -->`;
+}
+
 /**
  * An invoice the SRI authorized, with its authorized XML in `storage` (left out when null, like
  * an invoice authorized before S4.1)
@@ -544,14 +637,16 @@ export async function makeAuthorizedInvoice(
   const invoice = Invoice.receive(id, point, sale);
   invoice.assignSequence('000000001');
   const accessCode = AccessCode.create(TEST_ACCESS_CODE);
-  invoice.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
-  invoice.sign('<factura firmada/>');
+  const xml = signedInvoiceXml({
+    companyCode: point.issuerRuc ?? RUC_A,
+    companyBranchCode: point.establishment,
+    companySalePointCode: point.emissionPoint,
+  });
+  invoice.prepare({ accessCode, signatureId: 'cert-1', xml });
+  invoice.sign(xml);
   invoice.markAsSent([]);
   const xmlKey = authorizedXmlKey(point.tenantId, accessCode.emissionYear, accessCode.value);
-  invoice.authorize(
-    { number: accessCode.value, authorizedAt: new Date('2026-10-09T15:01:02Z'), xmlKey },
-    ['AUTORIZADO'],
-  );
+  invoice.authorize({ ...TEST_AUTHORIZATION, xmlKey }, ['AUTORIZADO']);
   if (storage) {
     await storage.put(xmlKey, `<autorizacion><estado>AUTORIZADO</estado></autorizacion>`, 'xml');
   }
