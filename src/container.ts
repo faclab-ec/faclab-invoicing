@@ -170,6 +170,7 @@ export function createContainer(config: AppConfig): Container {
     sriAuthorizationAdapter,
     invoiceRepository,
     documentStorage,
+    captureTraceContext,
   );
 
   // Command dispatch map

@@ -33,6 +33,7 @@ import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice'
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { authorizedXmlKey } from '#/modules/invoice/domain/authorized-xml';
+import { InvoiceDelivery } from '#/modules/invoice/domain/delivery';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { buildInvoiceXml, InvoiceXmlInput } from '#/modules/invoice/domain/invoice-xml-builder';
 import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
@@ -42,10 +43,17 @@ import {
   SriAuthorizationPort,
   SriValidationPort,
 } from '#/modules/invoice/domain/ports';
-import { ClaimedInvoice, InvoiceQueue, WaitingInvoice } from '#/modules/invoice/domain/queue';
+import {
+  ClaimedDelivery,
+  ClaimedInvoice,
+  DeliveryQueue,
+  InvoiceQueue,
+  WaitingInvoice,
+} from '#/modules/invoice/domain/queue';
 import {
   ConcurrentUpdateError,
   InFlightCounts,
+  InvoiceDeliveryRepository,
   InvoiceFilter,
   InvoicePage,
   InvoiceRepository,
@@ -239,8 +247,12 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
   readonly sequences = new Map<string, number>();
   // The queue's leases (locked_by, locked_until), by invoice
   readonly locks = new Map<string, { holder: string; until: number }>();
+  // invoice_deliveries: saveAuthorized writes there too
+  readonly deliveries: InMemoryDeliveryRepository;
 
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly now: () => Date = () => new Date()) {
+    this.deliveries = new InMemoryDeliveryRepository(now);
+  }
 
   async createInvoice(invoice: Invoice): Promise<boolean> {
     if (this.records.has(invoice.id)) return false;
@@ -264,6 +276,13 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     }
     invoice.version += 1;
     this.records.set(invoice.id, toRow(invoice));
+    return invoice;
+  }
+
+  async saveAuthorized(invoice: Invoice, delivery: InvoiceDelivery): Promise<Invoice> {
+    // Like one transaction: no delivery when the invoice can't be saved
+    await this.updateInvoice(invoice);
+    await this.deliveries.insert(delivery);
     return invoice;
   }
 
@@ -393,6 +412,84 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
 
   private async all(): Promise<Invoice[]> {
     return [...this.records.values()].map((row) => fromInvoiceRow(structuredClone(row)));
+  }
+}
+
+const copyOf = (delivery: InvoiceDelivery) => new InvoiceDelivery({ ...delivery });
+
+/** Same contract as PgInvoiceDeliveryRepository (deliveries and their queue), kept in memory */
+export class InMemoryDeliveryRepository implements InvoiceDeliveryRepository, DeliveryQueue {
+  readonly records = new Map<string, InvoiceDelivery>();
+  readonly locks = new Map<string, { holder: string; until: number }>();
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
+
+  /** Like insertDelivery: false when a unique index of invoice_deliveries forbids it */
+  async insert(delivery: InvoiceDelivery): Promise<boolean> {
+    const clash = [...this.records.values()].some(
+      (stored) =>
+        stored.invoiceId === delivery.invoiceId &&
+        ((stored.kind === 'authorization' && delivery.kind === 'authorization') ||
+          (stored.isPending && delivery.isPending)),
+    );
+    if (clash || this.records.has(delivery.id)) return false;
+    this.records.set(delivery.id, copyOf(delivery));
+    return true;
+  }
+
+  async getById(id: string): Promise<InvoiceDelivery | null> {
+    const delivery = this.records.get(id);
+    return delivery ? copyOf(delivery) : null;
+  }
+
+  async update(delivery: InvoiceDelivery): Promise<void> {
+    if (this.records.has(delivery.id)) this.records.set(delivery.id, copyOf(delivery));
+  }
+
+  async createResend(delivery: InvoiceDelivery): Promise<InvoiceDelivery> {
+    if (await this.insert(delivery)) return delivery;
+    const pending = [...this.records.values()].find(
+      (stored) =>
+        stored.tenantId === delivery.tenantId &&
+        stored.invoiceId === delivery.invoiceId &&
+        stored.isPending,
+    );
+    if (!pending) throw new Error('No pending delivery');
+    return copyOf(pending);
+  }
+
+  async findByInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDelivery[]> {
+    return [...this.records.values()]
+      .filter((stored) => stored.tenantId === tenantId && stored.invoiceId === invoiceId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map(copyOf);
+  }
+
+  async claimDue(holder: string, leaseMs: number, limit: number): Promise<ClaimedDelivery[]> {
+    const now = this.now().getTime();
+    const due = [...this.records.values()]
+      .filter((stored) => stored.isPending && stored.nextAttemptAt!.getTime() <= now)
+      .filter((stored) => {
+        const lock = this.locks.get(stored.id);
+        return !lock || lock.until < now;
+      })
+      .sort((a, b) => a.nextAttemptAt!.getTime() - b.nextAttemptAt!.getTime())
+      .slice(0, limit);
+    for (const stored of due) this.locks.set(stored.id, { holder, until: now + leaseMs });
+    return due.map((stored) => ({
+      id: stored.id,
+      invoiceId: stored.invoiceId,
+      traceContext: stored.traceContext,
+    }));
+  }
+
+  async release(id: string, holder: string): Promise<void> {
+    if (this.locks.get(id)?.holder === holder) this.locks.delete(id);
+  }
+
+  async postpone(id: string, at: Date): Promise<void> {
+    const stored = this.records.get(id);
+    if (stored?.isPending) stored.nextAttemptAt = at;
   }
 }
 

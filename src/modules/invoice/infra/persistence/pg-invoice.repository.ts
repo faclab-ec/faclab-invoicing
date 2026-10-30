@@ -5,6 +5,7 @@ import { formatSequence, INVOICE_DOC_TYPE } from '#/modules/company-config/domai
 import { takeNextSequence } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { withTransaction } from '#/shared/infra/database';
 
+import { InvoiceDelivery } from '../../domain/delivery';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
 import {
   ConcurrentUpdateError,
@@ -15,6 +16,7 @@ import {
   PageRequest,
 } from '../../domain/repository';
 import { fromInvoiceRow, InvoiceRow, toInvoiceEventRows, toInvoiceRow } from './invoice.mapper';
+import { insertDelivery } from './pg-invoice-delivery.repository';
 
 export const IN_FLIGHT_STATUSES = [
   InvoiceStatus.PENDING,
@@ -100,42 +102,55 @@ export class PgInvoiceRepository implements InvoiceRepository {
   // The lease (locked_until, locked_by) is the queue's: a step saves without touching it
   async updateInvoice(invoice: Invoice): Promise<Invoice> {
     const expected = invoice.version;
-    const row = toInvoiceRow(invoice);
+    await withTransaction(this.pool, (client) => this.update(client, invoice));
+    invoice.version = expected + 1;
+    return invoice;
+  }
+
+  async saveAuthorized(invoice: Invoice, delivery: InvoiceDelivery): Promise<Invoice> {
+    const expected = invoice.version;
     await withTransaction(this.pool, async (client) => {
-      const result = await client.query(
-        `UPDATE invoices SET
-           status = $3, access_code = $4, sequence = $5, signature_id = $6, xml = $7,
-           issue_code = $8, issue_message = $9, issue_at = $10, attempts = $11,
-           next_attempt_at = $12, updated_at = $13, numeric_code = $14,
-           authorization_number = $15, authorized_at = $16, authorized_xml_key = $17,
-           result_published_at = $18, version = $2 + 1
-         WHERE id = $1 AND version = $2`,
-        [
-          row.id,
-          expected,
-          row.status,
-          row.access_code,
-          row.sequence,
-          row.signature_id,
-          row.xml,
-          row.issue_code,
-          row.issue_message,
-          row.issue_at,
-          row.attempts,
-          row.next_attempt_at,
-          row.updated_at,
-          row.numeric_code,
-          row.authorization_number,
-          row.authorized_at,
-          row.authorized_xml_key,
-          row.result_published_at,
-        ],
-      );
-      if (result.rowCount === 0) throw new ConcurrentUpdateError(invoice.id);
-      await this.insertEvents(client, invoice);
+      await this.update(client, invoice);
+      await insertDelivery(client, delivery);
     });
     invoice.version = expected + 1;
     return invoice;
+  }
+
+  private async update(client: PoolClient, invoice: Invoice): Promise<void> {
+    const expected = invoice.version;
+    const row = toInvoiceRow(invoice);
+    const result = await client.query(
+      `UPDATE invoices SET
+         status = $3, access_code = $4, sequence = $5, signature_id = $6, xml = $7,
+         issue_code = $8, issue_message = $9, issue_at = $10, attempts = $11,
+         next_attempt_at = $12, updated_at = $13, numeric_code = $14,
+         authorization_number = $15, authorized_at = $16, authorized_xml_key = $17,
+         result_published_at = $18, version = $2 + 1
+       WHERE id = $1 AND version = $2`,
+      [
+        row.id,
+        expected,
+        row.status,
+        row.access_code,
+        row.sequence,
+        row.signature_id,
+        row.xml,
+        row.issue_code,
+        row.issue_message,
+        row.issue_at,
+        row.attempts,
+        row.next_attempt_at,
+        row.updated_at,
+        row.numeric_code,
+        row.authorization_number,
+        row.authorized_at,
+        row.authorized_xml_key,
+        row.result_published_at,
+      ],
+    );
+    if (result.rowCount === 0) throw new ConcurrentUpdateError(invoice.id);
+    await this.insertEvents(client, invoice);
   }
 
   async assignSequence(invoice: Invoice): Promise<Invoice> {

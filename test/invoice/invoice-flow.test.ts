@@ -8,9 +8,11 @@ import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
+import { InvoiceDelivery } from '#/modules/invoice/domain/delivery';
 import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { InvoiceSchemaValidator, SriAuthorizationPort } from '#/modules/invoice/domain/ports';
+import { ConcurrentUpdateError } from '#/modules/invoice/domain/repository';
 import {
   AuthorizationVoucher,
   AuthorizationVoucherStatus,
@@ -487,6 +489,76 @@ describe('AuthorizeInvoiceCommand through the processor', () => {
     // Nothing left to do with it
     expect(invoice.resultPublishedAt).not.toBeNull();
     expect(invoice.nextAttemptAt).toBeNull();
+  });
+
+  it('starts the delivery to the buyer with the authorization, with the trace of the step', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    const sale = makeSale({
+      customer: {
+        id: 1,
+        name: 'Construcciones Andinas',
+        tax_id: '1790012345001',
+        tax_type: 'RUC',
+        email: ' compras@andinas.ec ',
+        phone: null,
+        address: null,
+      },
+    });
+    const invoice = await storedPending(repo, sale);
+    await prepareCommand(readinessStub(READY), repo).execute(invoice);
+    invoice.sign('<factura firmada/>');
+    invoice.markAsSent([]);
+    await repo.updateInvoice(invoice);
+    const trace = { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' };
+    const command = new AuthorizeInvoiceCommand(
+      authorizer(AuthorizationVoucherStatus.AUTHORIZED),
+      repo,
+      new InMemoryDocumentStorage(),
+      () => trace,
+    );
+
+    await command.execute((await repo.getInvoiceById('inv-1'))!);
+
+    const deliveries = [...repo.deliveries.records.values()];
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      tenantId: TENANT_A,
+      invoiceId: 'inv-1',
+      kind: 'authorization',
+      recipient: 'compras@andinas.ec',
+      requestedBy: null,
+      status: 'pending',
+      traceContext: trace,
+    });
+    // An authorization saved again (a retried step) doesn't start another one
+    const authorized = (await repo.getInvoiceById('inv-1'))!;
+    await repo.saveAuthorized(authorized, InvoiceDelivery.forAuthorization(authorized));
+    expect(repo.deliveries.records.size).toBe(1);
+  });
+
+  it('starts no delivery when the authorization could not be saved, nor for a rejection', async () => {
+    const repo = new InMemoryInvoiceRepository();
+    await storedSent(repo);
+    const stale = (await repo.getInvoiceById('inv-1'))!;
+    // Someone else saved it meanwhile
+    await repo.updateInvoice((await repo.getInvoiceById('inv-1'))!);
+    const authorize = new AuthorizeInvoiceCommand(
+      authorizer(AuthorizationVoucherStatus.AUTHORIZED),
+      repo,
+      new InMemoryDocumentStorage(),
+    );
+
+    await expect(authorize.execute(stale)).rejects.toBeInstanceOf(ConcurrentUpdateError);
+    expect(repo.deliveries.records.size).toBe(0);
+
+    const reject = new AuthorizeInvoiceCommand(
+      authorizer(AuthorizationVoucherStatus.REJECTED),
+      repo,
+      new InMemoryDocumentStorage(),
+    );
+    await reject.execute((await repo.getInvoiceById('inv-1'))!);
+    expect((await repo.getInvoiceById('inv-1'))!.status).toBe(InvoiceStatus.REJECTED);
+    expect(repo.deliveries.records.size).toBe(0);
   });
 
   it('stays sent and is retried when the authorized XML could not be kept', async () => {

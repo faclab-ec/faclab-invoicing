@@ -1,3 +1,5 @@
+import { JobQueue } from '#/shared/infra/queue-worker';
+
 import { TraceContext } from './invoice';
 import { InvoiceIssueCode } from './issue';
 
@@ -40,3 +42,13 @@ export interface InvoiceQueue {
   /** Makes these invoices due at `at`, unless they are final or due earlier: how many it changed */
   requeue(ids: string[], at: Date): Promise<number>;
 }
+
+/** A delivery a worker took from the queue */
+export interface ClaimedDelivery {
+  id: string;
+  invoiceId: string;
+  traceContext: TraceContext | null;
+}
+
+/** `invoice_deliveries` as a work queue: the pending ones, due at their `nextAttemptAt` */
+export type DeliveryQueue = JobQueue<ClaimedDelivery>;

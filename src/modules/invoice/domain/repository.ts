@@ -1,3 +1,4 @@
+import { InvoiceDelivery } from './delivery';
 import { Invoice, InvoiceStatus } from './invoice';
 
 /** Someone else saved the invoice after it was read: the change was not applied */
@@ -53,6 +54,12 @@ export interface InvoiceRepository {
    * the number is given back.
    */
   assignSequence(invoice: Invoice): Promise<Invoice>;
+  /**
+   * Saves the invoice the SRI just authorized and creates its delivery, in one transaction: an
+   * authorized invoice always has one. Like updateInvoice; a delivery the invoice already has for
+   * its authorization (a retried step) isn't created again.
+   */
+  saveAuthorized(invoice: Invoice, delivery: InvoiceDelivery): Promise<Invoice>;
 
   // Pipeline: any company
   getInvoiceById(id: string): Promise<Invoice | null>;
@@ -63,4 +70,20 @@ export interface InvoiceRepository {
   findPage(tenantId: string, filter: InvoiceFilter, page: PageRequest): Promise<InvoicePage>;
   findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]>;
   countInFlight(tenantId: string): Promise<InFlightCounts>;
+}
+
+/**
+ * The deliveries of the invoices (the send log). The worker moves them by id; the API reads and
+ * creates them through the methods that take a `tenantId`.
+ */
+export interface InvoiceDeliveryRepository {
+  // Pipeline: any company
+  getById(id: string): Promise<InvoiceDelivery | null>;
+  update(delivery: InvoiceDelivery): Promise<void>;
+
+  // API: one company
+  /** Creates it, unless the invoice already has a pending delivery: then answers that one */
+  createResend(delivery: InvoiceDelivery): Promise<InvoiceDelivery>;
+  /** The invoice's deliveries, latest first */
+  findByInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDelivery[]>;
 }
