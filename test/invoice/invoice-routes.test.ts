@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { issuerLogoKey } from '#/modules/company-config/domain/logo';
 import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
@@ -9,26 +10,41 @@ import {
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import { RideService } from '#/modules/invoice/app/services/ride-service';
+import { rideKey } from '#/modules/invoice/domain/authorized-xml';
 import { Invoice } from '#/modules/invoice/domain/invoice';
+import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
 import { createHttpServer } from '#/shared/infra/http-server';
 
 import {
   authorizeAs,
+  InMemoryCompanyConfigRepository,
   InMemoryDocumentStorage,
   InMemoryInvoiceRepository,
   makeAuthorizedInvoice,
+  makeConfig,
   makePoint,
   makeSale,
+  TENANT_A,
   TEST_ACCESS_CODE,
 } from '../helpers';
+import { LOGO_PNG, pdfImageCount, pdfText } from '../pdf-text';
 
 async function server(
   repo: InMemoryInvoiceRepository,
   storage: InMemoryDocumentStorage = new InMemoryDocumentStorage(),
+  configs: InMemoryCompanyConfigRepository = new InMemoryCompanyConfigRepository(),
 ) {
+  const rides = new RideService(
+    storage,
+    configs,
+    new PdfKitRideRenderer({ compress: false }),
+    'America/Guayaquil',
+  );
   const app = await createHttpServer({
     port: 0,
     host: '127.0.0.1',
@@ -41,6 +57,7 @@ async function server(
     {
       get: new GetInvoiceQuery(repo),
       authorizedXml: new GetAuthorizedXmlQuery(repo, storage),
+      ride: new GetRideQuery(repo, rides),
       list: new ListInvoicesQuery(repo, 'America/Guayaquil'),
       findBySaleId: new FindInvoicesBySaleIdQuery(repo),
       status: vi.fn() as unknown as GetInvoicingStatusQuery,
@@ -172,5 +189,95 @@ describe('GET /api/invoices/:id/authorized-xml', () => {
       authorizationNumber: TEST_ACCESS_CODE,
       authorizedAt: '2026-10-09T15:01:02.000Z',
     });
+  });
+});
+
+describe('GET /api/invoices/:id/ride', () => {
+  let app: Awaited<ReturnType<typeof server>> | undefined;
+  afterEach(async () => app?.close());
+
+  const AUTHORIZED = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2a';
+  const PENDING = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2b';
+  const BEFORE_S41 = '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2c';
+  const RIDE_KEY = rideKey(TENANT_A, '2026', TEST_ACCESS_CODE);
+
+  async function withInvoices(configs = new InMemoryCompanyConfigRepository()) {
+    const repo = new InMemoryInvoiceRepository();
+    const storage = new InMemoryDocumentStorage();
+    await repo.createInvoice(await makeAuthorizedInvoice(AUTHORIZED, makePoint(), storage));
+    await repo.createInvoice(Invoice.receive(PENDING, makePoint(), makeSale({ sale_id: 2 })));
+    await repo.createInvoice(
+      await makeAuthorizedInvoice(BEFORE_S41, makePoint(), null, makeSale({ sale_id: 3 })),
+    );
+    Object.assign(repo.records.get(BEFORE_S41)!, {
+      authorization_number: null,
+      authorized_at: null,
+      authorized_xml_key: null,
+    });
+    app = await server(repo, storage, configs);
+    return { api: app, storage };
+  }
+
+  it('answers the RIDE as a PDF named after the access code, and keeps it', async () => {
+    const { api, storage } = await withInvoices();
+    const response = await api.inject(`/api/invoices/${AUTHORIZED}/ride`);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('application/pdf');
+    expect(response.headers['content-disposition']).toBe(
+      `attachment; filename="${TEST_ACCESS_CODE}.pdf"`,
+    );
+    const text = pdfText(response.rawPayload);
+    expect(text).toContain('NÚMERO DE AUTORIZACIÓN');
+    expect(text).toContain(TEST_ACCESS_CODE);
+    expect(storage.objects.get(RIDE_KEY)).toEqual({
+      body: response.rawPayload,
+      contentType: 'application/pdf',
+    });
+  });
+
+  it('answers the RIDE it kept, without drawing it again', async () => {
+    const { api, storage } = await withInvoices();
+    await storage.put(RIDE_KEY, Buffer.from('%PDF-kept'), 'application/pdf');
+
+    const response = await api.inject(`/api/invoices/${AUTHORIZED}/ride`);
+
+    expect(response.rawPayload.toString()).toBe('%PDF-kept');
+  });
+
+  it("draws the company's logo", async () => {
+    const configs = new InMemoryCompanyConfigRepository();
+    await configs.save(makeConfig());
+    const withoutLogo = await withInvoices(configs);
+    const plain = pdfImageCount(
+      (await withoutLogo.api.inject(`/api/invoices/${AUTHORIZED}/ride`)).rawPayload,
+    );
+    await app!.close();
+
+    await configs.setLogo(TENANT_A, { key: issuerLogoKey(TENANT_A), contentType: 'image/png' });
+    const withLogo = await withInvoices(configs);
+    await withLogo.storage.put(issuerLogoKey(TENANT_A), LOGO_PNG, 'image/png');
+    const response = await withLogo.api.inject(`/api/invoices/${AUTHORIZED}/ride`);
+
+    expect(pdfImageCount(response.rawPayload)).toBeGreaterThan(plain);
+  });
+
+  it.each([
+    ['not authorized yet', PENDING],
+    ['authorized before S4.1', BEFORE_S41],
+    ['unknown', '7c0e1f2a-3b4c-4d5e-8f6a-7b8c9d0e1f2d'],
+  ])('answers 404 for an invoice %s', async (_case, id) => {
+    const { api } = await withInvoices();
+
+    expect((await api.inject(`/api/invoices/${id}/ride`)).statusCode).toBe(404);
+  });
+
+  it('answers 503 when the storage is down', async () => {
+    const { api, storage } = await withInvoices();
+    storage.failing = true;
+    const response = await api.inject(`/api/invoices/${AUTHORIZED}/ride`);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().errors[0].code).toBe('STORAGE_UNAVAILABLE');
   });
 });

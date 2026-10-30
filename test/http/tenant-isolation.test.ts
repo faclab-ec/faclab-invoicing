@@ -33,11 +33,14 @@ import {
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
+import { RideService } from '#/modules/invoice/app/services/ride-service';
 import { Invoice } from '#/modules/invoice/domain/invoice';
+import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
@@ -116,6 +119,10 @@ describe('API isolation between companies', () => {
       {
         get: new GetInvoiceQuery(invoices),
         authorizedXml: new GetAuthorizedXmlQuery(invoices, storage),
+        ride: new GetRideQuery(
+          invoices,
+          new RideService(storage, configs, new PdfKitRideRenderer(), 'America/Guayaquil'),
+        ),
         list: new ListInvoicesQuery(invoices, 'America/Guayaquil'),
         findBySaleId: new FindInvoicesBySaleIdQuery(invoices),
         status: new GetInvoicingStatusQuery(
@@ -185,6 +192,17 @@ describe('API isolation between companies', () => {
   it("downloads only the company's authorized XML", async () => {
     expect((await get(`/api/invoices/${INVOICE_B}/authorized-xml`)).statusCode).toBe(404);
     expect((await get(`/api/invoices/${INVOICE_B}/authorized-xml`, TENANT_B)).statusCode).toBe(200);
+  });
+
+  it("downloads only the company's RIDE", async () => {
+    const ofA = await get(`/api/invoices/${INVOICE_B}/ride`);
+    expect(ofA.statusCode).toBe(404);
+    // Nothing was generated for B on A's request
+    expect([...storage.objects.keys()].some((key) => key.endsWith('.pdf'))).toBe(false);
+
+    const ofB = await get(`/api/invoices/${INVOICE_B}/ride`, TENANT_B);
+    expect(ofB.statusCode).toBe(200);
+    expect(ofB.headers['content-type']).toBe('application/pdf');
   });
 
   it("doesn't retry another company's invoice", async () => {

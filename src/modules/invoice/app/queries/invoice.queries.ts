@@ -6,6 +6,7 @@ import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
 import { DocumentStorage } from '../../domain/ports';
 import { InvoicePage, InvoiceRepository } from '../../domain/repository';
+import { RideFile, RideService } from '../services/ride-service';
 
 // Every query reads the invoices of one company: the one of the token
 
@@ -38,6 +39,20 @@ export class GetAuthorizedXmlQuery {
     const xml = await this.documentStorage.get(key);
     if (xml === null) return null;
     return { fileName: `${invoice.requireAccessCode().value}.xml`, xml };
+  }
+}
+
+/** The RIDE (PDF) of an invoice of the company, generated the first time it is asked for */
+export class GetRideQuery {
+  constructor(
+    private readonly invoiceRepository: InvoiceRepository,
+    private readonly rides: RideService,
+  ) {}
+
+  /** Null when the invoice isn't found, isn't authorized or was authorized before S4.1 */
+  async execute(tenantId: string, id: string): Promise<RideFile | null> {
+    const invoice = await this.invoiceRepository.findForTenant(tenantId, id);
+    return invoice ? this.rides.ensure(invoice) : null;
   }
 }
 

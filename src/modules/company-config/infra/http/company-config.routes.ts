@@ -1,12 +1,8 @@
 import { FastifyInstance } from 'fastify';
 
-import {
-  AppError,
-  BadRequestError,
-  NotFoundError,
-  storageUnavailable,
-} from '#/shared/errors/app-error';
+import { AppError, BadRequestError, NotFoundError } from '#/shared/errors/app-error';
 import { Authorize, tenantOf } from '#/shared/infra/http/auth';
+import { withStorage } from '#/shared/infra/http/storage';
 import { logger } from '#/shared/logger';
 
 import {
@@ -41,17 +37,6 @@ export interface CompanyConfigHandlers {
   setLogo: SetIssuerLogoCommand;
   deleteLogo: DeleteIssuerLogoCommand;
   getLogo: GetIssuerLogoQuery;
-}
-
-/** What the object storage throws becomes 503: the domain's own errors keep their code */
-async function withStorage<T>(work: () => Promise<T>): Promise<T> {
-  try {
-    return await work();
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    logger.error({ err: error }, 'The document storage failed');
-    throw storageUnavailable();
-  }
 }
 
 export function registerCompanyConfigRoutes(

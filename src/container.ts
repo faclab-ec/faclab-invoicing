@@ -48,12 +48,15 @@ import {
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
+import { RideService } from '#/modules/invoice/app/services/ride-service';
 import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { S3DocumentStorage } from '#/modules/invoice/infra/adapters/s3-document-storage.adapter';
 import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
@@ -146,6 +149,13 @@ export function createContainer(config: AppConfig): Container {
   const sriAuthorizationAdapter = new SriAuthorizationAdapter(sriClients);
   const schemaValidator = new XsdInvoiceSchemaValidator();
   const documentStorage = new S3DocumentStorage(config.objectStorage);
+  // The RIDE: the API (download) and the worker (delivery) generate it the same way
+  const rideService = new RideService(
+    documentStorage,
+    companyConfigRepository,
+    new PdfKitRideRenderer(),
+    config.timezone,
+  );
 
   // Commands
   const prepareInvoiceCommand = new PrepareInvoiceCommand(
@@ -265,6 +275,7 @@ export function createContainer(config: AppConfig): Container {
       {
         get: new GetInvoiceQuery(invoiceRepository),
         authorizedXml: new GetAuthorizedXmlQuery(invoiceRepository, documentStorage),
+        ride: new GetRideQuery(invoiceRepository, rideService),
         list: new ListInvoicesQuery(invoiceRepository, config.timezone),
         findBySaleId: new FindInvoicesBySaleIdQuery(invoiceRepository),
         status: new GetInvoicingStatusQuery(issuerReadiness, invoiceRepository),

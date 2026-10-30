@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 
 import { NotFoundError } from '#/shared/errors/app-error';
 import { Authorize, tenantOf } from '#/shared/infra/http/auth';
+import { withStorage } from '#/shared/infra/http/storage';
 
 import { RetryInvoiceCommand, RetryInvoicesCommand } from '../../app/commands/retry-invoice';
 import {
@@ -9,6 +10,7 @@ import {
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
   ListInvoicesOptions,
   ListInvoicesQuery,
 } from '../../app/queries/invoice.queries';
@@ -17,6 +19,7 @@ import {
   findBySaleIdSchema,
   getAuthorizedXmlSchema,
   getInvoiceSchema,
+  getRideSchema,
   invoicingStatusSchema,
   listInvoicesSchema,
   retryInvoiceSchema,
@@ -26,6 +29,7 @@ import {
 export interface InvoiceHandlers {
   get: GetInvoiceQuery;
   authorizedXml: GetAuthorizedXmlQuery;
+  ride: GetRideQuery;
   list: ListInvoicesQuery;
   findBySaleId: FindInvoicesBySaleIdQuery;
   status: GetInvoicingStatusQuery;
@@ -109,7 +113,9 @@ export function registerInvoiceRoutes(
     '/api/invoices/:id/authorized-xml',
     { schema: getAuthorizedXmlSchema, preHandler: canRead },
     async (request, reply) => {
-      const authorized = await handlers.authorizedXml.execute(tenantOf(request), request.params.id);
+      const authorized = await withStorage(() =>
+        handlers.authorizedXml.execute(tenantOf(request), request.params.id),
+      );
       if (!authorized) {
         throw new NotFoundError('Authorized XML not found');
       }
@@ -117,6 +123,24 @@ export function registerInvoiceRoutes(
         .header('Content-Type', 'application/xml; charset=utf-8')
         .header('Content-Disposition', `attachment; filename="${authorized.fileName}"`)
         .send(authorized.xml);
+    },
+  );
+
+  // GET /api/invoices/:id/ride — its RIDE, the printable PDF
+  app.get<{ Params: { id: string } }>(
+    '/api/invoices/:id/ride',
+    { schema: getRideSchema, preHandler: canRead },
+    async (request, reply) => {
+      const ride = await withStorage(() =>
+        handlers.ride.execute(tenantOf(request), request.params.id),
+      );
+      if (!ride) {
+        throw new NotFoundError('RIDE not found');
+      }
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `attachment; filename="${ride.fileName}"`)
+        .send(ride.pdf);
     },
   );
 

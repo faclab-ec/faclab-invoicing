@@ -215,6 +215,33 @@ export const getAuthorizedXmlSchema = {
   },
 } as const;
 
+export const getRideSchema = {
+  tags: ['Invoices'],
+  summary: 'Download the RIDE (PDF)',
+  description:
+    "The RIDE (Representación Impresa del Documento Electrónico) of an authorized invoice: the printable PDF the buyer receives with the authorized XML, with the access code as a barcode and the issuer's logo. Generated from the authorized XML and kept next to it; an invoice authorized before S4.4 gets it the first time it is asked for. Answers `application/pdf` as an attachment named after the access code.",
+  params: {
+    type: 'object',
+    properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
+    required: ['id'],
+  },
+  produces: ['application/pdf'],
+  response: {
+    200: {
+      description: 'The RIDE.',
+      content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+    },
+    404: {
+      ...errorResponseSchema,
+      description: 'No invoice with the given ID, not authorized yet, or authorized before S4.1.',
+    },
+    503: {
+      ...errorResponseSchema,
+      description: '`STORAGE_UNAVAILABLE`: the document storage failed; try again later.',
+    },
+  },
+} as const;
+
 export const retryInvoiceSchema = {
   tags: ['Invoices'],
   summary: 'Retry an invoice',
