@@ -94,7 +94,7 @@ const invoiceSummaryProperties = {
     type: ['string', 'null'],
     format: 'date-time',
     description:
-      'When it will be retried automatically. Null if it waits for the issuer or reached the automatic limit.',
+      'When the worker takes it next: its next step, or a retry after an issue. Null if it waits for the issuer, reached the automatic limit or is done.',
   },
   createdAt: { type: 'string', format: 'date-time' },
   updatedAt: { type: 'string', format: 'date-time' },
@@ -219,7 +219,7 @@ export const retryInvoiceSchema = {
   tags: ['Invoices'],
   summary: 'Retry an invoice',
   description:
-    'Runs the next step of an unfinished invoice now (build the XML, sign, send or ask for the authorization), ignoring its retry schedule. Returns the invoice after that step; if it fails, `issue` says why.',
+    'Runs the next step of an unfinished invoice now (build the XML, sign, send or ask for the authorization), ignoring its retry schedule. Returns the invoice after that step; if it fails, `issue` says why. The worker goes on with the next steps and tells faclab-core the result.',
   params: {
     type: 'object',
     properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
@@ -230,7 +230,8 @@ export const retryInvoiceSchema = {
     404: { ...errorResponseSchema, description: 'No invoice found with the given ID.' },
     409: {
       ...errorResponseSchema,
-      description: '`INVOICE_NOT_RETRYABLE`: the invoice is already authorized or rejected.',
+      description:
+        '`INVOICE_NOT_RETRYABLE`: the invoice is already authorized or rejected. `INVOICE_IN_PROGRESS`: a worker is running one of its steps right now.',
     },
   },
 } as const;
@@ -239,11 +240,11 @@ export const retryInvoicesSchema = {
   tags: ['Invoices'],
   summary: 'Retry every invoice that needs attention',
   description:
-    'Queues every unfinished invoice that is pending or whose last attempt failed, and processes them in the background. Invoices waiting for the issuer are skipped while it is not ready.',
+    'Puts back in the queue every unfinished invoice whose last attempt failed, also those waiting for their next attempt or past the automatic limit; the worker processes them. Invoices waiting for the issuer are skipped while it is not ready.',
   response: {
     202: successSchema({
       type: 'object',
-      properties: { queued: { type: 'number', description: 'Invoices that need attention.' } },
+      properties: { queued: { type: 'number', description: 'Invoices put back in the queue.' } },
     }),
   },
 } as const;

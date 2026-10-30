@@ -2,7 +2,10 @@ import { logger } from '#/shared/logger';
 
 import { InvoiceRecoveryService } from '../app/services/invoice-recovery';
 
-/** Runs the invoice recovery on start and then every `intervalMs` */
+/**
+ * Runs the invoice recovery on start and then every `intervalMs`, in the worker: the safety net for
+ * invoices waiting for an issuer that became ready without this process hearing of it
+ */
 export class RecoveryScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
 

@@ -3,32 +3,24 @@ import { expect, it, vi } from 'vitest';
 
 import { PgCertificateRepository } from '#/modules/certificate/infra/persistence/pg-certificate.repository';
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
-import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
-import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
-import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
-import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
-import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
 import { SaleConfirmedHandler } from '#/modules/invoice/app/handlers/sale-confirmed.handler';
-import { InvoiceDomainEvent } from '#/modules/invoice/domain/events';
+import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
+import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
-import {
-  AuthorizationVoucher,
-  AuthorizationVoucherStatus,
-  ValidationVoucher,
-  ValidationVoucherStatus,
-} from '#/modules/invoice/domain/voucher';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
+import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
+import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
 
 import {
   InMemoryDocumentStorage,
+  invoiceSteps,
   makeCertificate,
   makeConfig,
   makePoint,
   makeReceivedSale,
   makeSale,
   makeSaleMessage,
-  prepareCommand,
   readinessStub,
   REQUESTED_AT,
   RUC_A,
@@ -77,54 +69,27 @@ describePostgres('Invoice flow on PostgreSQL', () => {
     const readiness = readinessStub(ready);
     const storage = new InMemoryDocumentStorage();
 
-    const published: InvoiceDomainEvent[] = [];
+    const published: InvoiceResultEvent[] = [];
     const producer = {
-      sendMessage: vi.fn(async (event: InvoiceDomainEvent) => void published.push(event)),
+      sendMessage: vi.fn(async (event: InvoiceResultEvent) => void published.push(event)),
     };
-    // The SRI, simulated: receives and authorizes
-    const commands = new Map<InvoiceStatus, InvoiceCommand>([
-      [InvoiceStatus.PENDING, prepareCommand(readiness, invoices)],
-      [
-        InvoiceStatus.CREATED,
-        new SignInvoiceCommand({ signInvoice: async (xml) => `${xml}<!-- signed -->` }, invoices),
-      ],
-      [
-        InvoiceStatus.SIGNED,
-        new SendInvoiceCommand(
-          {
-            validateXml: async () =>
-              new ValidationVoucher(ValidationVoucherStatus.ACCEPTED, null, ['RECIBIDA']),
-          },
-          invoices,
-        ),
-      ],
-      [
-        InvoiceStatus.SENT,
-        new AuthorizeInvoiceCommand(
-          {
-            authorizeXml: async (code) =>
-              new AuthorizationVoucher(
-                AuthorizationVoucherStatus.AUTHORIZED,
-                code,
-                new Date('2026-10-09T15:01:02Z'),
-                ['AUTORIZADO'],
-                {
-                  number: code,
-                  date: '2026-10-09T10:01:02-05:00',
-                  environment: 'PRODUCCIÓN',
-                  voucherXml: '<factura firmada/>',
-                },
-              ),
-          },
-          invoices,
-          storage,
-        ),
-      ],
-    ]);
-    const invoiceHandler = new InvoiceEventHandler(invoices, commands, producer);
-    const saleHandler = new SaleConfirmedHandler(new ReceiveSaleCommand(invoices), producer);
+    const processor = new InvoiceProcessor(
+      invoices,
+      new PgInvoiceQueue(pool()),
+      invoiceSteps(invoices, readiness, { storage }),
+      readiness,
+      producer,
+    );
+    const worker = new InvoiceWorker(new PgInvoiceQueue(pool()), processor, {
+      concurrency: 2,
+      pollIntervalMs: 10,
+      leaseMs: 60_000,
+      errorBackoffMs: 60_000,
+      holder: 'worker-1',
+    });
+    const saleHandler = new SaleConfirmedHandler(new ReceiveSaleCommand(invoices));
 
-    // The same sale id in both companies, received at once
+    // The same sale id in both companies, received at once; the worker takes them from the queue
     await Promise.all(
       issuers.map(({ tenantId, taxId }) =>
         saleHandler.handle(
@@ -132,19 +97,17 @@ describePostgres('Invoice flow on PostgreSQL', () => {
         ),
       ),
     );
-    // Each event goes back through the `invoices` topic and moves its invoice one step
-    for (let next = 0; next < published.length; next++) {
-      await invoiceHandler.handle(published[next]);
-    }
+    worker.start();
+    await vi.waitFor(() => expect(published).toHaveLength(2), { timeout: 10_000 });
+    await worker.stop();
 
-    const types = published.filter((event) => event.tenantId === TENANT_A).map((e) => e.type);
-    expect(types).toEqual([
-      'InvoiceReceived',
-      'InvoiceCreated',
-      'InvoiceSigned',
-      'InvoiceSent',
-      'InvoiceAuthorized',
-    ]);
+    // faclab-core hears only of the result, once per company
+    expect(published.map((e) => [e.tenantId, e.type]).sort()).toEqual(
+      [
+        [TENANT_A, 'InvoiceAuthorized'],
+        [TENANT_B, 'InvoiceAuthorized'],
+      ].sort(),
+    );
     const [ofB] = await invoices.findBySaleId(TENANT_B, '42');
     expect(ofB.status).toBe(InvoiceStatus.AUTHORIZED);
     expect(ofB.sequence).toBe('000000001');

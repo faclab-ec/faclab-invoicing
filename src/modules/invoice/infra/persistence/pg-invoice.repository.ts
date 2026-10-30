@@ -16,7 +16,7 @@ import {
 } from '../../domain/repository';
 import { fromInvoiceRow, InvoiceRow, toInvoiceEventRows, toInvoiceRow } from './invoice.mapper';
 
-const IN_FLIGHT_STATUSES = [
+export const IN_FLIGHT_STATUSES = [
   InvoiceStatus.PENDING,
   InvoiceStatus.CREATED,
   InvoiceStatus.SIGNED,
@@ -52,10 +52,10 @@ export class PgInvoiceRepository implements InvoiceRepository {
            establishment_address, status, sale, access_code, sequence, signature_id, xml,
            issue_code, issue_message, issue_at, attempts, next_attempt_at, created_at,
            updated_at, version, requested_at, numeric_code, authorization_number, authorized_at,
-           authorized_xml_key
+           authorized_xml_key, result_published_at, trace_context
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21, $22, $23, $24, $25, $26
+           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
          )
          ON CONFLICT DO NOTHING`,
         [
@@ -85,6 +85,8 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.authorization_number,
           row.authorized_at,
           row.authorized_xml_key,
+          row.result_published_at,
+          row.trace_context,
         ],
       );
       if (result.rowCount === 0) return false;
@@ -95,6 +97,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
     return created;
   }
 
+  // The lease (locked_until, locked_by) is the queue's: a step saves without touching it
   async updateInvoice(invoice: Invoice): Promise<Invoice> {
     const expected = invoice.version;
     const row = toInvoiceRow(invoice);
@@ -105,7 +108,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
            issue_code = $8, issue_message = $9, issue_at = $10, attempts = $11,
            next_attempt_at = $12, updated_at = $13, numeric_code = $14,
            authorization_number = $15, authorized_at = $16, authorized_xml_key = $17,
-           version = $2 + 1
+           result_published_at = $18, version = $2 + 1
          WHERE id = $1 AND version = $2`,
         [
           row.id,
@@ -125,6 +128,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.authorization_number,
           row.authorized_at,
           row.authorized_xml_key,
+          row.result_published_at,
         ],
       );
       if (result.rowCount === 0) throw new ConcurrentUpdateError(invoice.id);
@@ -216,14 +220,6 @@ export class PgInvoiceRepository implements InvoiceRepository {
       withIssues: Number(row.withIssues),
       needingAttention: Number(row.needingAttention),
     };
-  }
-
-  async findInFlight(): Promise<Invoice[]> {
-    const result = await this.pool.query<InvoiceRow>(
-      `${SELECT_INVOICES} WHERE i.status = ANY($1) ORDER BY i.created_at, i.id`,
-      [IN_FLIGHT_STATUSES],
-    );
-    return result.rows.map(fromInvoiceRow);
   }
 
   // The history only grows: the entries already stored stay as they are

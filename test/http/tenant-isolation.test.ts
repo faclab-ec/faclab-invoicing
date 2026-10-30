@@ -22,7 +22,6 @@ import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
 } from '#/modules/invoice/app/commands/retry-invoice';
-import { InvoiceEventHandler } from '#/modules/invoice/app/handlers/invoice-event.handler';
 import {
   FindInvoicesBySaleIdQuery,
   GetAuthorizedXmlQuery,
@@ -30,6 +29,7 @@ import {
   GetInvoicingStatusQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
@@ -70,7 +70,7 @@ describe('API isolation between companies', () => {
   const sequences = new InMemorySequenceRepository();
   const storage = new InMemoryDocumentStorage();
   const listener = { issuerChanged: vi.fn() };
-  const process = vi.fn();
+  const run = vi.fn();
 
   beforeAll(async () => {
     const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
@@ -91,7 +91,7 @@ describe('API isolation between companies', () => {
     }
 
     const readiness = readinessStub(new Error('not used') as never);
-    const handler = { process } as unknown as InvoiceEventHandler;
+    const processor = { run } as unknown as InvoiceProcessor;
     const recovery = { run: vi.fn(async () => 0) } as unknown as InvoiceRecoveryService;
     app = await createHttpServer({
       port: 0,
@@ -114,8 +114,11 @@ describe('API isolation between companies', () => {
           }),
           invoices,
         ),
-        retry: new RetryInvoiceCommand(invoices, readiness, handler),
-        retryAll: new RetryInvoicesCommand(invoices, readiness, recovery),
+        retry: new RetryInvoiceCommand(invoices, invoices, readiness, processor, {
+          holder: 'api',
+          leaseMs: 60_000,
+        }),
+        retryAll: new RetryInvoicesCommand(readiness, recovery),
       },
       authorize,
     );
@@ -179,7 +182,7 @@ describe('API isolation between companies', () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(process).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("reports only the company's issuer and invoices", async () => {

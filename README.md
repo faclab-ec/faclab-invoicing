@@ -1,6 +1,6 @@
 # Faclab Invoicing — Electronic Invoice Service
 
-Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL.
+Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL. The consumer only stores each sale; a worker takes the invoices from a queue in PostgreSQL and talks to the SRI, so a slow SRI never holds back new sales.
 
 It is **multi-company**: each company (a faclab-core tenant, one RUC) has its own fiscal profile, certificates, SRI environment and sequences per establishment and emission point. A sale says which company issues it and from where (`sales.confirmed` v2), and the HTTP API only shows the company of the caller's token (`tid`).
 
@@ -43,7 +43,8 @@ Clean Architecture with CQRS and domain events. Dependencies flow inward: infras
 - **Ports & Adapters:** Domain defines interfaces (ports); infrastructure provides implementations.
 - **Manual DI:** All wiring done in `src/container.ts` — no framework.
 - **Zod validation:** All external inputs (Kafka messages, HTTP bodies) validated at the boundary.
-- **Self-messaging:** The `invoices` Kafka topic drives the invoice state machine by re-publishing domain events after each state transition.
+- **Queue in PostgreSQL:** the `invoices` table is also the work queue of the worker (`next_attempt_at`, a lease in `locked_until`/`locked_by`, `FOR UPDATE SKIP LOCKED`). The `invoices` Kafka topic only carries the results for faclab-core.
+- **Two processes, one image:** `server.ts` serves the API; `worker.ts` runs the consumer of `sales.confirmed`, the worker and the recovery (ADR-0007 in faclab-core). `RUN_BACKGROUND=true` (the default) runs them in the API process too.
 
 ---
 
@@ -52,35 +53,35 @@ Clean Architecture with CQRS and domain events. Dependencies flow inward: infras
 Triggered by a `SaleConfirmed` event on the `sales.confirmed` Kafka topic:
 
 ```
-sales.confirmed ──► ReceiveSale ──► PENDING
-                                         │
-                    ◄────── invoices ◄───┘
-                      PrepareInvoice ──► CREATED   (waits while the issuer isn't ready)
-                                         │
-                    ◄────── invoices ◄───┘
-                         SignInvoice ──► SIGNED
-                                         │
-                    ◄────── invoices ◄───┘
-                         SendInvoice ──► SENT (or REJECTED)
-                                         │
-                    ◄────── invoices ◄───┘
-                      AuthorizeInvoice ──► AUTHORIZED (or REJECTED)
-                                           authorized XML kept in the object storage
+sales.confirmed ──► consumer: ReceiveSale ──► PENDING, due now ──► offset committed
+                                                   │
+                      ┌──── queue (invoices table) ┘
+                      ▼
+          worker: PrepareInvoice ──► CREATED   (waits while the issuer isn't ready)
+                     SignInvoice ──► SIGNED
+                     SendInvoice ──► SENT (or REJECTED)
+                AuthorizeInvoice ──► AUTHORIZED (or REJECTED)
+                                     authorized XML kept in the object storage
+                                          │
+                      invoices ◄──────────┘  InvoiceAuthorized / InvoiceRejected, for faclab-core
 ```
 
-Each transition is an isolated Command. `InvoiceEventHandler` reads from the `invoices` topic and dispatches to the right command based on the invoice's current status.
+Each transition is an isolated Command. The consumer only stores the sale as a `pending` invoice, due right away, and commits its offset. A worker takes it from the queue and `InvoiceProcessor` runs the command of its stored status, one step after another, until the invoice is authorized or rejected, a step fails or its lease is lost; then it publishes the result on `invoices` and marks it (`result_published_at`).
 
 ### Nothing is lost: pending invoices, issues and recovery
 
 - **The sale is stored first.** `ReceiveSale` saves a `pending` invoice of its company, with the sale data and where it was made (establishment, its address and emission point), before looking at the config, so a sale confirmed while the fiscal config or the certificate are missing waits instead of failing. `PrepareInvoice` assigns the sequence (once) and builds the XML when the company's issuer is ready, dated by `INVOICE_EMISSION_DATE` (see [SRI Compliance](#sri-compliance)).
 - **Idempotent.** The invoice id is a UUID v5 of the message's `event_id`: the same message twice creates one invoice. A resend from faclab-core (new `event_id`) is ignored while the sale has an invoice that isn't `rejected`; the partial unique index `uq_invoices_active_sale` (company and sale) keeps that true when two resends arrive at the same time. Updates check a `version` column (optimistic locking).
-- **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed messages and storage outages.
+- **The queue** is the `invoices` table (S4.2). `next_attempt_at` says when the worker has something to do with an invoice: its next step, a retry after an issue, or telling faclab-core its result. Each transition sets it to now; a transient issue to its backoff; it is null while the invoice waits for its issuer or a manual retry, and once its result is published. A worker takes due invoices with `FOR UPDATE SKIP LOCKED` and holds each with a lease (`locked_until`, `locked_by`, `INVOICE_LOCK_TIMEOUT_MS`, renewed after each step): two workers, in one process or several, never run the same invoice, so it is never sent twice. If a worker dies, its invoices are taken again once their lease runs out; a restart picks up whatever is due. Each worker runs `INVOICE_WORKER_CONCURRENCY` invoices at once and looks for work every `INVOICE_POLL_INTERVAL_MS`. Nothing in the queue changes the invoice's `version`.
+- **A failed step is recorded, not thrown.** The invoice keeps its status and gets an `issue` (`code`, `message`, `at`), `attempts` and `nextAttemptAt`; the next transition clears it. The `dlq` topic is left for malformed `sales.confirmed` messages and storage outages. A job that breaks for another reason (the database) waits `INVOICE_RETRY_INTERVAL_MS` before the queue gives it out again.
   - Issuer problems (`CONFIG_MISSING`, `CONFIG_INVALID`, `ENVIRONMENT_NOT_ALLOWED`, `CERTIFICATE_NOT_SELECTED`, `CERTIFICATE_NOT_FOUND`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_UNREADABLE`, `CERTIFICATE_RUC_MISMATCH`) wait until the company's issuer is ready.
   - `ISSUER_RUC_MISMATCH`: the sale names a RUC other than the company's profile. The invoice waits until the profile has that RUC.
   - `SRI_UNAVAILABLE` (SOAP error or timeout, or an authorization without its number or voucher), `SRI_PROCESSING` (no authorization yet, or `EN PROCESO`), `STORAGE_UNAVAILABLE` (the authorized XML couldn't be kept: the invoice stays `sent`) and `UNEXPECTED_ERROR` are retried after 1, 5, 15 and then every 60 minutes, up to 10 attempts; after that only by hand.
   - `XML_SCHEMA_INVALID` (the XML doesn't pass the SRI's XSD; the message lists the first errors) and `INVOICE_DATA_INVALID` (its payments don't add up to the total) mean the invoice itself is wrong: they are never retried automatically, only by hand (`POST /api/invoices/:id/retry` or "retry all") once the cause is fixed. The invoice keeps its number.
   - A reception `DEVUELTA` whose only messages are 43 (access code already registered) or 70 (access code being processed) means the SRI already has the voucher: the invoice moves on to authorization.
-- **Recovery** (`InvoiceRecoveryService`) runs at start, every `INVOICE_RETRY_INTERVAL_MS`, right after a company's config or a certificate changes (only that company's invoices), and from `POST /api/invoices/retry` (the caller's company). It takes invoices waiting for their issuer (once it is ready), transient issues that are due, and invoices without an issue that haven't moved for 5 minutes (lost event). Each company's issuer is checked on its own: one that can't invoice doesn't hold back another. It assumes a single instance of the service.
+- **Results for faclab-core.** Once authorized or rejected, the worker publishes `InvoiceAuthorized` or `InvoiceRejected` on `invoices` and sets `result_published_at`. If Kafka fails, the invoice stays due and is published again after `INVOICE_RETRY_INTERVAL_MS`; a repeat is harmless (faclab-core ignores it).
+- **Recovery** (`InvoiceRecoveryService`) puts back in the queue the invoices that wait for something other than a date: those waiting for their issuer (once it is ready, checked again for each company), and with "retry all" also the transient issues not yet due, the invalid invoices and those past the automatic limit. It only sets their `next_attempt_at`; a worker runs them. It runs in the worker at start and every `INVOICE_RETRY_INTERVAL_MS`, in the API right after a company's config or a certificate changes (only that company's invoices), and from `POST /api/invoices/retry` (the caller's company). Each company's issuer is checked on its own: one that can't invoice doesn't hold back another. It holds no lock: two runs at once only repeat an update. The worker checks the issuer of an invoice released this way again instead of trusting an answer it cached before the change.
+- **Manual retry** (`POST /api/invoices/:id/retry`) holds the invoice in the queue, runs one step in the API and lets it go; if a worker is running it at that moment it answers 409 `INVOICE_IN_PROGRESS`. The worker goes on with the next steps and publishes the result.
 - **Readiness** (`IssuerReadinessService`, `GET /api/invoicing/status`), per company: config saved and valid (13-digit RUC), an SRI environment this deployment reaches (only `NODE_ENV=production` reaches production), a certificate of its RUC selected, present, not expired and readable with its stored password. Warnings: certificate expiring within 30 days, SRI test environment. Cached for a minute per company and refreshed on that company's config or certificate changes.
 
 ### Numbering
@@ -116,9 +117,9 @@ Core business module. Manages the full invoice lifecycle.
 
 | Layer | Contents |
 |-------|----------|
-| `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces, domain events |
-| `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `InvoiceEventHandler`, `SaleConfirmedHandler`, `InvoiceRecoveryService`, list/get/status queries |
-| `infra/` | `PgInvoiceRepository`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
+| `domain/` | `Invoice` entity, `AccessCode` VO, `InvoiceIssue`, `ValidationVoucher`, `AuthorizationVoucher`, port interfaces (`InvoiceQueue` among them), result events |
+| `app/` | `ReceiveSaleCommand`, `PrepareInvoiceCommand`, `SignInvoiceCommand`, `SendInvoiceCommand`, `AuthorizeInvoiceCommand`, `RetryInvoiceCommand`, `SaleConfirmedHandler`, `InvoiceProcessor`, `InvoiceRecoveryService`, list/get/status queries |
+| `infra/` | `PgInvoiceRepository`, `PgInvoiceQueue`, `InvoiceWorker`, `SignerAdapter`, `SriValidationAdapter`, `SriAuthorizationAdapter`, `XadesSigner`, `P12Reader`, Kafka consumer/producer, `RecoveryScheduler`, HTTP routes |
 
 ### `certificate`
 
@@ -163,8 +164,8 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
 | `GET` | `/api/invoices/:id` | Get invoice by ID, with `authorizationNumber` and `authorizedAt` once authorized |
 | `GET` | `/api/invoices/:id/authorized-xml` | The authorized XML as an attachment (`<access code>.xml`); 404 until authorized |
-| `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now |
-| `POST` | `/api/invoices/retry` | Retry every invoice that needs attention, in the background (202) |
+| `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now; the worker goes on with the rest |
+| `POST` | `/api/invoices/retry` | Put back in the queue every invoice that needs attention (202, `queued`: how many) |
 
 ### Certificates
 
@@ -188,7 +189,7 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Service health check |
+| `GET` | `/health` | Service health check. The worker answers it too, on its own `HTTP_PORT`: 503 `stalled` once its slots stop finishing cycles |
 
 ---
 
@@ -240,6 +241,7 @@ All endpoints return a consistent JSON envelope.
 | `CERTIFICATE_IN_USE` | 409 | Deleting the certificate selected in the company config |
 | `SEQUENCE_CANNOT_GO_BACK` | 409 | Setting a sequence below a number already issued |
 | `INVOICE_NOT_RETRYABLE` | 409 | Retrying an invoice that is already authorized or rejected |
+| `INVOICE_IN_PROGRESS` | 409 | Retrying an invoice while a worker runs one of its steps |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
 ### Request ID propagation
@@ -258,9 +260,9 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 | Topic | Direction | Schema |
 |-------|-----------|--------|
 | `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v2.schema.json` (and v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
-| `invoices` | Inbound + Outbound | Contract `contracts/events/invoices/v1.schema.json`; domain events (`InvoiceReceived`, `InvoiceCreated`, `InvoiceSigned`, `InvoiceSent`, `InvoiceAuthorized`, `InvoiceRejected`) sent through `toInvoiceMessage` and read with `InvoiceMessageSchema`. `InvoiceRejected` carries the SRI's messages in `reason`, which faclab-core shows in the sale |
+| `invoices` | Outbound | Contract `contracts/events/invoices/v1.schema.json`; only the results, `InvoiceAuthorized` and `InvoiceRejected`, sent through `toInvoiceMessage`. `InvoiceRejected` carries the SRI's messages in `reason`, which faclab-core shows in the sale |
 
-The service acts as both producer and consumer on the `invoices` topic to implement the state machine. faclab-core also reads `invoices` with its own consumer group: on `InvoiceAuthorized` it marks the sale as `INVOICED`. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
+Until S4.2 the service also consumed `invoices` to move each invoice to its next step; the queue in PostgreSQL does that now, and the topic only tells faclab-core the result: on `InvoiceAuthorized` it marks the sale as `INVOICED`, on `InvoiceRejected` its invoice as rejected. v1 still lists the four intermediate event types, which nothing publishes anymore. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
 
 **Which company, from where.** `sales.confirmed` v2 brings `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it goes to the DLQ.
 
@@ -272,7 +274,7 @@ The messages follow versioned JSON Schemas owned by faclab-core (`faclab-core/co
 
 - `npm run contracts:sync -- <commit|branch|tag>` refreshes it from GitHub (`CORE_REPO=../faclab-core` uses a local clone instead, for a branch not pushed yet). Never edit the copy by hand: CI checks it out from faclab-core at the pinned commit and fails on any difference.
 - `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example (v1 and v2) with zod and builds its invoice XML, checks that v2's XML and access code use the message's establishment, address and emission point, and validates every message this service publishes on `invoices` against its schema (ajv).
-- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A message without `schema_version` predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
+- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A `sales.confirmed` without `schema_version` predates v1 and is read as v1; any other version fails validation and goes to the DLQ.
 - A customer may come without `email`, `phone` or `address` (`null`): the SRI doesn't require them and the XML leaves them out (`infoAdicional` only when there is at least one). A final consumer (`customer: null`) is invoiced as `07` / `9999999999999` / `CONSUMIDOR FINAL`. An item without `sku` has no `codigoAuxiliar`; one without `product_name` (the product no longer exists in faclab-core) is described as `Producto <product_id>`.
 
 When a contract changes, deploy the consumer before the producer.
@@ -285,7 +287,7 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 
 | Table | Contents |
 |-------|----------|
-| `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, when faclab-core asked to invoice it (`requested_at`), status, sequence and the access code's `numeric_code` (`ck_invoices_numbered_numeric_code`: together), access code, XML, the SRI's `authorization_number` and `authorized_at` and the `authorized_xml_key` in the object storage, current issue, `version`. Indexes by company and sale, status and creation date; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
+| `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, when faclab-core asked to invoice it (`requested_at`), status, sequence and the access code's `numeric_code` (`ck_invoices_numbered_numeric_code`: together), access code, XML, the SRI's `authorization_number` and `authorized_at` and the `authorized_xml_key` in the object storage, current issue, `version`, and the queue's columns: `next_attempt_at`, the lease (`locked_until`, `locked_by`), `result_published_at` and the `trace_context` of the message that brought the sale. Indexes by company and sale, status and creation date, and `ix_invoices_next_attempt_at` (only rows with something to do) for the worker; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
 | `invoice_events` | Status history of each invoice, in order (append-only) |
 | `issuers` | The fiscal profile of each company (key `tenant_id`) |
 | `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
@@ -293,7 +295,7 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 
 **Object storage** (D-2): the authorized XML of each invoice, in an S3-compatible bucket (`S3DocumentStorage`, AWS SDK v3, path-style), self-hosted on the VPS. Locally, faclab-infra's `object-storage` (Garage) on `localhost:3900`, bucket `faclab-invoicing`. Which service runs on the VPS is decided with its deployment (S8.1); a copy outside the server, with the backups (S8.3).
 
-**Isolation between companies** is a filter the application never skips: every repository method the API uses takes the company and puts it in the `WHERE`; the pipeline (Kafka, recovery) moves invoices by id and uses each invoice's company. The database has a single role for now: separate owner and application roles, and row-level security like faclab-core's, are pending.
+**Isolation between companies** is a filter the application never skips: every repository method the API uses takes the company and puts it in the `WHERE`; the pipeline (consumer, worker, recovery) moves invoices by id and uses each invoice's company. The database has a single role for now: separate owner and application roles, and row-level security like faclab-core's, are pending.
 
 **Migrations** are plain SQL files in `migrations/`, applied with [node-pg-migrate](https://salsita.github.io/node-pg-migrate/) (table `pgmigrations`, advisory lock, up and down). They run as a separate step before starting a new version, like faclab-core's `make upgrade`:
 
@@ -320,7 +322,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
   - DATABASE_URL is required
   ```
 
-`npm run dev` and `npm start` load `.env` when it exists (`node --env-file-if-exists`); variables already set in the environment win. `.env.example` lists them all.
+`npm run dev`, `npm start` and the worker's scripts load `.env` when it exists (`node --env-file-if-exists`); variables already set in the environment win. `.env.example` lists them all.
 
 ### Environment Variables
 
@@ -332,10 +334,14 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `JWT_SECRET` | `dev-only-change-me`, same as faclab-core | **Required**, 32+ characters | faclab-core's `JWT_SECRET` |
 | `CERTIFICATE_PASSWORD_KEY` | Fixed dev key | **Required** | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts the certificate files and passwords. Losing or changing it makes stored certificates unreadable: upload them again |
 | `JWT_ISSUER` | `faclab-core` | Optional | faclab-core's `JWT_ISSUER` |
-| `HTTP_PORT` | `3173` | Optional | HTTP server port |
+| `HTTP_PORT` | `3173` | Optional | HTTP server port; the worker serves its `/health` on it (locally, give the worker another one: `HTTP_PORT=3174 npm run dev:worker`) |
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
-| `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the recovery runs |
+| `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the worker's recovery runs; also how long a result that couldn't be published, or a job that broke, waits |
+| `RUN_BACKGROUND` | `true` | Optional | `true`: the API process also runs the consumer, the worker and the recovery. `false`: only `worker.ts` does (a deployment with a worker of its own) |
+| `INVOICE_WORKER_CONCURRENCY` | `4` | Optional | Invoices each worker processes at once (1 to 8) |
+| `INVOICE_POLL_INTERVAL_MS` | `1000` | Optional | How often an idle worker slot looks for due invoices |
+| `INVOICE_LOCK_TIMEOUT_MS` | `120000` | Optional | How long a worker holds an invoice before another may take it (renewed after each step); at least twice `SRI_TIMEOUT_MS` |
 | `OBJECT_STORAGE_ENDPOINT` | `http://localhost:3900` (faclab-infra) | Optional | S3-compatible service; empty means AWS S3 itself. A container on `faclab_network` uses `http://object-storage:3900` |
 | `OBJECT_STORAGE_REGION` | `garage` | **Required** | Region of the service (Garage: its `s3_region`) |
 | `OBJECT_STORAGE_BUCKET` | `faclab-invoicing` | **Required** | Bucket of the authorized invoices |
@@ -381,11 +387,11 @@ Each issuer has its environment (`environment` in the fiscal profile): it goes i
 
 `src/instrumentation.ts` starts the OpenTelemetry SDK before anything else (`node -r`) and exports traces, metrics and logs over OTLP gRPC. The standard shared with faclab-core is in faclab-core's `docs/architecture/OBSERVABILITY.md`.
 
-- **Resource**: `service.name` (`OTEL_SERVICE_NAME`, default `faclab-invoicing`), `service.namespace=faclab`, `service.version` (`SERVICE_VERSION`) and `deployment.environment.name` (`NODE_ENV`).
-- **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `send invoices` → faclab-core's `process invoices`.
+- **Resource**: `service.name` (`OTEL_SERVICE_NAME`, default `faclab-invoicing`; the worker process adds `-worker`, `src/shared/telemetry/service-name.ts`), `service.namespace=faclab`, `service.version` (`SERVICE_VERSION`) and `deployment.environment.name` (`NODE_ENV`).
+- **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. The consumer keeps the context of the message with the invoice (`trace_context`), and each job of the worker is a `process invoice` span (kind CONSUMER) child of it. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `process invoice` (one per job, with the SRI calls) → `send invoices` → faclab-core's `process invoices`.
 - **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML and signatures are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
-- **Database**: each query inside a request or a Kafka message gets a span (`@opentelemetry/instrumentation-pg`); the recovery job's polling, outside any span, doesn't start traces.
-- **Shutdown**: on SIGTERM or SIGINT the service closes Kafka, HTTP and the database pool, then flushes the telemetry still buffered (up to 5 s) and logs `Telemetry flushed` before exiting.
+- **Database**: each query inside a request, a Kafka message or an invoice job gets a span (`@opentelemetry/instrumentation-pg`); the worker's polling and the recovery, outside any span, don't start traces.
+- **Shutdown**: on SIGTERM or SIGINT the API stops taking requests; then the consumer stops, the worker takes no more invoices and waits for those in progress (each step is bounded by `SRI_TIMEOUT_MS`), Kafka and the database pool close, and the telemetry still buffered is flushed (up to 5 s) with `Telemetry flushed` before exiting. The worker process does the same without HTTP.
 
 To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
 
@@ -432,14 +438,21 @@ To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at
    npm run dev
    ```
 
-   The service starts on `http://localhost:3173`.
+   The service starts on `http://localhost:3173`, with the consumer and the worker in the same process (`RUN_BACKGROUND=true`). To run them apart, as in production:
+
+   ```bash
+   RUN_BACKGROUND=false npm run dev
+   HTTP_PORT=3174 npm run dev:worker   # in another terminal; more of them don't take the same invoice
+   ```
 
 ### Available Scripts
 
 ```bash
 npm run dev           # ts-node-dev with hot reload (loads .env)
+npm run dev:worker    # the worker with hot reload: consumer, queue and recovery (loads .env)
 npm run build         # tsc → dist/, then tsc-alias rewrites the #/ imports
 npm run start         # Run compiled output (loads .env)
+npm run worker        # Run the compiled worker (loads .env)
 npm run lint          # ESLint check
 npm run lint:fix      # ESLint auto-fix
 npm run format        # Prettier format
@@ -453,7 +466,7 @@ npm run migrate       # node-pg-migrate (up, down, create); reads DATABASE_URL
 
 ### Tests against PostgreSQL
 
-`test/postgres/` checks the repositories, the single active invoice per sale (concurrent resends), the invoice sequence and the full flow on a real database. They are skipped unless `TEST_DATABASE_URL` points at a database whose name ends in `_test` (faclab-infra creates `faclab_invoicing_test`). Each file migrates a schema of its own and drops it at the end; each test starts with empty tables.
+`test/postgres/` checks the repositories, the single active invoice per sale (concurrent resends), the invoice sequence and the full flow on a real database, and the queue (`invoice-queue.test.ts`): no invoice given to two holders, leases, a consumer that keeps storing sales while the SRI takes 30 s, two workers that never send the same invoice twice, and a restarted worker that takes up the invoices left half done. They are skipped unless `TEST_DATABASE_URL` points at a database whose name ends in `_test` (faclab-infra creates `faclab_invoicing_test`). Each file migrates a schema of its own and drops it at the end; each test starts with empty tables.
 
 ```bash
 TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing_test npm test
@@ -520,7 +533,8 @@ Each company sets up its issuer with a token of its own (`tid`) and the `user:ma
 - Stages `build` (`npm ci` and `npm run build`), `deps` (production dependencies only) and `production`.
 - Runs as `app` (uid 10001), with the code owned by root.
 - `NODE_ENV=production`, port `3173`, and a `HEALTHCHECK` on `/health` with Node's `fetch`.
-- Starts with `node -r ./dist/instrumentation.js dist/server.js`. It doesn't migrate the database: run `npm run migrate up` with the same image first.
+- Starts the API with `node -r ./dist/instrumentation.js dist/server.js`. It doesn't migrate the database: run `npm run migrate up` with the same image first.
+- The worker is the same image with another command, `node -r ./dist/instrumentation.js dist/worker.js`, and the API with `RUN_BACKGROUND=false`. The `HEALTHCHECK` serves both: the worker answers `/health` on its `HTTP_PORT`. Give the worker a stop grace period longer than `SRI_TIMEOUT_MS` (Docker's default is 10 s), so the invoices in progress finish; if it is killed anyway, they are taken again once their lease runs out. The production stack declares it (S8.1).
 - `SERVICE_VERSION` comes from the build: `--build-arg SERVICE_VERSION=$(git rev-parse --short HEAD)` (CI passes the commit SHA); without it the image reports `dev`.
 
 `.dockerignore` keeps `.env`, `.git`, tests and docs out of the image.
@@ -553,8 +567,9 @@ To run it next to a local faclab-core, use the local defaults instead, including
 migrations/                      # SQL migrations (node-pg-migrate)
 resources/xsd/                   # SRI's invoice XSD 1.1.0 and the W3C signature schema
 src/
-├── server.ts                    # Entry point
-├── container.ts                 # Composition root (manual DI)
+├── server.ts                    # Entry point of the API (and of the background with RUN_BACKGROUND)
+├── worker.ts                    # Entry point of the worker: consumer, queue and recovery
+├── container.ts                 # Composition root (manual DI): HTTP server and background
 ├── config/
 │   ├── index.ts                 # AppConfig and its zod validation (parseConfig)
 │   ├── local.ts                 # Local defaults
@@ -571,18 +586,21 @@ src/
 │   │   │   ├── issue.ts
 │   │   │   ├── sri-catalogs.ts
 │   │   │   ├── voucher.ts
-│   │   │   ├── events.ts
+│   │   │   ├── events.ts        # result events for faclab-core
+│   │   │   ├── queue.ts         # InvoiceQueue port
 │   │   │   └── ports.ts
 │   │   ├── app/
-│   │   │   ├── commands/        # create, sign, send, authorize
-│   │   │   ├── handlers/        # invoice-event, sale-confirmed
+│   │   │   ├── commands/        # receive, prepare, sign, send, authorize, retry
+│   │   │   ├── handlers/        # sale-confirmed
+│   │   │   ├── services/        # invoice-processor, invoice-recovery
 │   │   │   └── queries/         # get, list
 │   │   └── infra/
 │   │       ├── adapters/        # signer, sri-clients, sri-validation, sri-authorization,
 │   │       │                    # xsd-validator, s3-document-storage
 │   │       ├── http/            # routes, schemas, mappers
 │   │       ├── messaging/       # kafka consumer, producer, schemas, topics
-│   │       ├── persistence/     # PostgreSQL repo, row mapper
+│   │       ├── persistence/     # PostgreSQL repo and queue, row mapper
+│   │       ├── queue/           # invoice-worker
 │   │       └── signing/         # xades-signer, p12-reader
 │   ├── certificate/
 │   │   ├── domain/
@@ -599,10 +617,12 @@ src/
 │           └── persistence/
 └── shared/
     ├── logger.ts
+    ├── telemetry/               # metrics, trace-context, service-name
     └── infra/
         ├── database.ts          # pg pool and transactions
         ├── http-server.ts       # Fastify + Swagger setup
         ├── kafka.ts             # BaseKafkaConsumer
         ├── soap-client.ts       # strong-soap wrapper
+        ├── worker-health.ts     # the worker's /health
         └── p12.ts               # P12 parsing utilities
 ```

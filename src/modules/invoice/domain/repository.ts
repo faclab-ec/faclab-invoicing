@@ -40,7 +40,7 @@ export interface InFlightCounts {
 
 /**
  * The API reads through the methods that take a `tenantId`: an invoice of another company is not
- * found. The pipeline (Kafka, recovery) moves invoices of every company by id.
+ * found. The pipeline (consumer, worker) moves invoices of every company by id.
  */
 export interface InvoiceRepository {
   /** False when an invoice with the same id exists or the sale already has an active one */
@@ -56,8 +56,6 @@ export interface InvoiceRepository {
 
   // Pipeline: any company
   getInvoiceById(id: string): Promise<Invoice | null>;
-  /** Invoices not yet authorized or rejected, oldest first */
-  findInFlight(): Promise<Invoice[]>;
 
   // API: one company
   findForTenant(tenantId: string, id: string): Promise<Invoice | null>;

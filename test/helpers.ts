@@ -1,3 +1,4 @@
+import { KafkaJS } from '@confluentinc/kafka-javascript';
 import { vi } from 'vitest';
 
 import { Certificate } from '#/modules/certificate/domain/certificate';
@@ -19,16 +20,26 @@ import {
   Sequence,
   SequenceKey,
 } from '#/modules/company-config/domain/sequence';
+import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
+import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import {
   PrepareInvoiceCommand,
   PrepareInvoiceOptions,
 } from '#/modules/invoice/app/commands/prepare-invoice';
 import { ReceivedSale } from '#/modules/invoice/app/commands/receive-sale';
+import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
+import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { authorizedXmlKey } from '#/modules/invoice/domain/authorized-xml';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
-import { DocumentStorage, InvoiceSchemaValidator } from '#/modules/invoice/domain/ports';
+import {
+  DocumentStorage,
+  InvoiceSchemaValidator,
+  SriAuthorizationPort,
+  SriValidationPort,
+} from '#/modules/invoice/domain/ports';
+import { ClaimedInvoice, InvoiceQueue, WaitingInvoice } from '#/modules/invoice/domain/queue';
 import {
   ConcurrentUpdateError,
   InFlightCounts,
@@ -38,6 +49,12 @@ import {
   PageRequest,
 } from '#/modules/invoice/domain/repository';
 import { IssuingPoint, SaleData } from '#/modules/invoice/domain/sale';
+import {
+  AuthorizationVoucher,
+  AuthorizationVoucherStatus,
+  ValidationVoucher,
+  ValidationVoucherStatus,
+} from '#/modules/invoice/domain/voucher';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { SaleConfirmedV2Message } from '#/modules/invoice/infra/messaging/schemas';
 import {
@@ -79,6 +96,86 @@ export function prepareCommand(
   });
 }
 
+/** The SRI, simulated: receives every invoice and authorizes it */
+export const simulatedSri: SriValidationPort & SriAuthorizationPort = {
+  validateXml: async () =>
+    new ValidationVoucher(ValidationVoucherStatus.ACCEPTED, null, ['RECIBIDA']),
+  authorizeXml: async (code) =>
+    new AuthorizationVoucher(
+      AuthorizationVoucherStatus.AUTHORIZED,
+      code,
+      new Date('2026-10-09T15:01:02Z'),
+      ['AUTORIZADO'],
+      {
+        number: code,
+        date: '2026-10-09T10:01:02-05:00',
+        environment: 'PRUEBAS',
+        voucherXml: '<factura firmada/>',
+      },
+    ),
+};
+
+/** Every step of an invoice, against the simulated SRI unless `sri` replaces part of it */
+export function invoiceSteps(
+  repo: InvoiceRepository,
+  readiness: IssuerReadinessService,
+  {
+    sri = {},
+    storage = new InMemoryDocumentStorage(),
+  }: {
+    sri?: Partial<SriValidationPort & SriAuthorizationPort>;
+    storage?: DocumentStorage;
+  } = {},
+): Map<InvoiceStatus, InvoiceCommand> {
+  const { validateXml, authorizeXml } = { ...simulatedSri, ...sri };
+  return new Map<InvoiceStatus, InvoiceCommand>([
+    [InvoiceStatus.PENDING, prepareCommand(readiness, repo)],
+    [
+      InvoiceStatus.CREATED,
+      new SignInvoiceCommand({ signInvoice: async (xml) => `${xml}<!-- signed -->` }, repo),
+    ],
+    [InvoiceStatus.SIGNED, new SendInvoiceCommand({ validateXml }, repo)],
+    [InvoiceStatus.SENT, new AuthorizeInvoiceCommand({ authorizeXml }, repo, storage)],
+  ]);
+}
+
+/** The access code in an invoice XML */
+export const accessCodeOf = (xml: string) => /<claveAcceso>(\d{49})<\/claveAcceso>/.exec(xml)![1];
+
+/**
+ * A Kafka consumer that delivers what the test hands it, one message at a time like a partition,
+ * and records the offsets committed
+ */
+export function fakeKafkaConsumer() {
+  let eachMessage: KafkaJS.EachMessageHandler | undefined;
+  const committed: string[] = [];
+  let offset = 0;
+  const consumer = {
+    connect: async () => {},
+    subscribe: async () => {},
+    run: async (config: KafkaJS.ConsumerRunConfig) => {
+      eachMessage = config.eachMessage;
+    },
+    commitOffsets: async (offsets: KafkaJS.TopicPartitionOffset[]) => {
+      committed.push(...offsets.map((o) => o.offset));
+    },
+    disconnect: async () => {},
+  } as unknown as KafkaJS.Consumer;
+  const deliver = (topic: string, value: unknown, headers: Record<string, string> = {}) =>
+    eachMessage!({
+      topic,
+      partition: 0,
+      message: {
+        key: null,
+        value: Buffer.from(JSON.stringify(value)),
+        headers: Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, Buffer.from(v)])),
+        offset: String(offset++),
+        timestamp: '0',
+      },
+    } as unknown as KafkaJS.EachMessagePayload);
+  return { consumer, deliver, committed };
+}
+
 /** Object storage kept in memory; `failing` makes every upload fail like an unreachable service */
 export class InMemoryDocumentStorage implements DocumentStorage {
   readonly objects = new Map<string, { body: string; contentType: string }>();
@@ -107,11 +204,25 @@ function toRow(invoice: Invoice): InvoiceRow {
   };
 }
 
-/** Same contract as PgInvoiceRepository, kept in memory through the row mapper */
-export class InMemoryInvoiceRepository implements InvoiceRepository {
+const IN_FLIGHT = [
+  InvoiceStatus.PENDING,
+  InvoiceStatus.CREATED,
+  InvoiceStatus.SIGNED,
+  InvoiceStatus.SENT,
+];
+
+/**
+ * Same contract as PgInvoiceRepository and PgInvoiceQueue (the same table), kept in memory through
+ * the row mapper
+ */
+export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueue {
   readonly records = new Map<string, InvoiceRow>();
   // Last number issued by company, establishment and emission point
   readonly sequences = new Map<string, number>();
+  // The queue's leases (locked_by, locked_until), by invoice
+  readonly locks = new Map<string, { holder: string; until: number }>();
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
 
   async createInvoice(invoice: Invoice): Promise<boolean> {
     if (this.records.has(invoice.id)) return false;
@@ -185,17 +296,81 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     );
   }
 
-  async findInFlight(): Promise<Invoice[]> {
-    return (await this.all()).filter((invoice) => !invoice.isFinal);
-  }
-
   async countInFlight(tenantId: string): Promise<InFlightCounts> {
-    const inFlight = (await this.findInFlight()).filter((invoice) => invoice.tenantId === tenantId);
+    const inFlight = (await this.all()).filter(
+      (invoice) => !invoice.isFinal && invoice.tenantId === tenantId,
+    );
     return {
       total: inFlight.length,
       withIssues: inFlight.filter((invoice) => invoice.issue !== null).length,
       needingAttention: inFlight.filter((invoice) => invoice.needsAttention).length,
     };
+  }
+
+  async claimDue(holder: string, leaseMs: number, limit: number): Promise<ClaimedInvoice[]> {
+    const now = this.now().getTime();
+    const due = [...this.records.values()]
+      .filter((row) => row.next_attempt_at !== null && row.next_attempt_at.getTime() <= now)
+      .filter((row) => this.isFree(row.id, now))
+      .sort((a, b) => a.next_attempt_at!.getTime() - b.next_attempt_at!.getTime())
+      .slice(0, limit);
+    for (const row of due) this.locks.set(row.id, { holder, until: now + leaseMs });
+    return due.map((row) => ({ id: row.id, traceContext: row.trace_context }));
+  }
+
+  async claim(id: string, holder: string, leaseMs: number): Promise<boolean> {
+    const now = this.now().getTime();
+    if (!this.records.has(id) || !this.isFree(id, now)) return false;
+    this.locks.set(id, { holder, until: now + leaseMs });
+    return true;
+  }
+
+  async renew(id: string, holder: string, leaseMs: number): Promise<boolean> {
+    if (this.locks.get(id)?.holder !== holder) return false;
+    this.locks.set(id, { holder, until: this.now().getTime() + leaseMs });
+    return true;
+  }
+
+  async release(id: string, holder: string): Promise<void> {
+    if (this.locks.get(id)?.holder === holder) this.locks.delete(id);
+  }
+
+  async postpone(id: string, at: Date): Promise<void> {
+    const row = this.records.get(id);
+    if (row) row.next_attempt_at = at;
+  }
+
+  async findWaiting(tenantId?: string): Promise<WaitingInvoice[]> {
+    const now = this.now().getTime();
+    return [...this.records.values()]
+      .filter((row) => IN_FLIGHT.includes(row.status as InvoiceStatus))
+      .filter((row) => row.next_attempt_at === null || row.next_attempt_at.getTime() > now)
+      .filter((row) => tenantId === undefined || row.tenant_id === tenantId)
+      .sort((a, b) => a.created_at.getTime() - b.created_at.getTime())
+      .map((row) => ({
+        id: row.id,
+        tenantId: row.tenant_id,
+        issuerRuc: row.issuer_ruc,
+        issueCode: row.issue_code as WaitingInvoice['issueCode'],
+        nextAttemptAt: row.next_attempt_at,
+      }));
+  }
+
+  async requeue(ids: string[], at: Date): Promise<number> {
+    let changed = 0;
+    for (const id of ids) {
+      const row = this.records.get(id);
+      if (!row || !IN_FLIGHT.includes(row.status as InvoiceStatus)) continue;
+      if (row.next_attempt_at !== null && row.next_attempt_at <= at) continue;
+      row.next_attempt_at = at;
+      changed += 1;
+    }
+    return changed;
+  }
+
+  private isFree(id: string, now: number): boolean {
+    const lock = this.locks.get(id);
+    return !lock || lock.until < now;
   }
 
   private async all(): Promise<Invoice[]> {
@@ -441,6 +616,7 @@ export function readinessStub(issuer: IssuerState | Record<string, IssuerState>)
       return state;
     }),
     invalidate: vi.fn(),
+    invalidateIfOlder: vi.fn(),
   } as unknown as IssuerReadinessService;
 }
 

@@ -138,19 +138,24 @@ describePostgres('PgInvoiceRepository', () => {
     ]);
   });
 
-  it('finds the invoices still in flight', async () => {
-    const pending = receive(7, at('2026-10-20T10:00:00Z'));
-    const created = receive(8, at('2026-10-20T11:00:00Z'));
-    const rejected = receive(9, at('2026-10-20T12:00:00Z'));
-    for (const invoice of [pending, created, rejected]) await repo().createInvoice(invoice);
-    prepare(created, '000000001');
-    await repo().updateInvoice(created);
-    rejected.reject(['NO AUTORIZADO']);
-    await repo().updateInvoice(rejected);
+  it('keeps the trace of the sale, when it is due and when its result was published', async () => {
+    const trace = { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' };
+    const receivedAt = at('2026-10-20T10:00:00Z');
+    const invoice = Invoice.receive(randomUUID(), makePoint(), makeSale(), receivedAt, null, trace);
+    await repo().createInvoice(invoice);
 
-    const inFlight = await repo().findInFlight();
+    let stored = (await repo().getInvoiceById(invoice.id))!;
+    expect(stored.traceContext).toEqual(trace);
+    expect(stored.nextAttemptAt).toEqual(receivedAt);
+    expect(stored.resultPublishedAt).toBeNull();
 
-    expect(inFlight.map((invoice) => invoice.id)).toEqual([pending.id, created.id]);
+    stored.reject(['NO AUTORIZADO']);
+    stored.markResultPublished(at('2026-10-20T10:05:00Z'));
+    await repo().updateInvoice(stored);
+
+    stored = (await repo().getInvoiceById(invoice.id))!;
+    expect(stored.resultPublishedAt).toEqual(at('2026-10-20T10:05:00Z'));
+    expect(stored.nextAttemptAt).toBeNull();
   });
 
   it('pages the invoices, latest first, with the total', async () => {
@@ -223,9 +228,7 @@ describePostgres('PgInvoiceRepository', () => {
         needingAttention: 1,
       });
       // The pipeline moves every company's invoices
-      expect((await repo().findInFlight()).map((i) => i.id).sort()).toEqual(
-        [ofA.id, ofB.id].sort(),
-      );
+      expect((await repo().getInvoiceById(ofB.id))?.tenantId).toBe(TENANT_B);
     });
   });
 

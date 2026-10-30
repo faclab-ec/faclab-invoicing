@@ -2,10 +2,9 @@ import Ajv2020 from 'ajv/dist/2020';
 import { describe, expect, it } from 'vitest';
 
 import { AccessCode } from '#/modules/invoice/domain/access-code';
-import { InvoiceDomainEvent } from '#/modules/invoice/domain/events';
+import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
-import { InvoiceMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
 
 import { makePoint, makeSale, TENANT_A } from '../helpers';
 import { loadExamples, loadSchema } from './contracts';
@@ -13,8 +12,8 @@ import { loadExamples, loadSchema } from './contracts';
 const validate = new Ajv2020({ allErrors: true }).compile(loadSchema('invoices'));
 const examples = loadExamples('invoices');
 
-/** Every transition an invoice publishes, from received to authorized or rejected */
-function publishedEvents(): InvoiceDomainEvent[] {
+/** What an invoice publishes: its result, authorized or rejected (S4.2: not the steps between) */
+function publishedEvents(): InvoiceResultEvent[] {
   const accessCode = AccessCode.create('1'.repeat(49));
   const authorized = Invoice.receive(
     '9c5cc2d1-cb98-5f3b-bcc0-51abf102c37a',
@@ -34,7 +33,7 @@ function publishedEvents(): InvoiceDomainEvent[] {
   rejected.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
   rejected.sign('<factura firmada/>');
   rejected.reject(['ERROR SECUENCIAL REGISTRADO']);
-  return [...authorized.pullEvents(), ...rejected.pullEvents()];
+  return [authorized.resultEvent()!, rejected.resultEvent()!];
 }
 
 describe('invoices v1 contract', () => {
@@ -54,26 +53,11 @@ describe('invoices v1 contract', () => {
     expect(reasons.filter((reason) => reason !== undefined)).toEqual([
       'ERROR SECUENCIAL REGISTRADO',
     ]);
-    expect(new Set(events.map((event) => event.type))).toEqual(
-      new Set([
-        'InvoiceReceived',
-        'InvoiceCreated',
-        'InvoiceSigned',
-        'InvoiceSent',
-        'InvoiceAuthorized',
-        'InvoiceRejected',
-      ]),
-    );
+    expect(events.map((event) => event.type)).toEqual(['InvoiceAuthorized', 'InvoiceRejected']);
   });
 
-  it.each(Object.keys(examples))('%s is accepted by the consumer', (name) => {
+  // faclab-core reads them (its consumer has its own contract tests)
+  it.each(Object.keys(examples))('%s matches the contract', (name) => {
     expect(validate(examples[name]) ? [] : validate.errors).toEqual([]);
-    expect(InvoiceMessageSchema.safeParse(examples[name]).success).toBe(true);
-  });
-
-  it('reads a message from before v1 as v1', () => {
-    const { schema_version: _, ...legacy } = examples['invoice-authorized'];
-
-    expect(InvoiceMessageSchema.safeParse(legacy).success).toBe(true);
   });
 });
