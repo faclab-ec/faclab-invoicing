@@ -31,9 +31,13 @@ export interface InvoiceSchemaValidator {
   validate(xml: string): Promise<SchemaValidationResult>;
 }
 
-/** Object storage for the documents kept for each company (the authorized XML) */
+/** Object storage for the documents kept for each company (authorized XML, RIDE, issuer logo) */
 export interface DocumentStorage {
-  put(key: string, body: string, contentType: string): Promise<void>;
-  /** Null when there is nothing under the key */
+  put(key: string, body: string | Buffer, contentType: string): Promise<void>;
+  /** As text (the XML); null when there is nothing under the key */
   get(key: string): Promise<string | null>;
+  /** As bytes (the RIDE, the logo); null when there is nothing under the key */
+  getBytes(key: string): Promise<Buffer | null>;
+  /** Removes what is under the key, if anything */
+  delete(key: string): Promise<void>;
 }

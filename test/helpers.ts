@@ -178,18 +178,33 @@ export function fakeKafkaConsumer() {
 
 /** Object storage kept in memory; `failing` makes every upload fail like an unreachable service */
 export class InMemoryDocumentStorage implements DocumentStorage {
-  readonly objects = new Map<string, { body: string; contentType: string }>();
+  readonly objects = new Map<string, { body: string | Buffer; contentType: string }>();
   failing = false;
 
-  async put(key: string, body: string, contentType: string): Promise<void> {
-    if (this.failing) {
-      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
-    }
+  async put(key: string, body: string | Buffer, contentType: string): Promise<void> {
+    this.failIfUnreachable();
     this.objects.set(key, { body, contentType });
   }
 
   async get(key: string): Promise<string | null> {
-    return this.objects.get(key)?.body ?? null;
+    return (await this.getBytes(key))?.toString('utf-8') ?? null;
+  }
+
+  async getBytes(key: string): Promise<Buffer | null> {
+    const body = this.objects.get(key)?.body;
+    if (body === undefined) return null;
+    return typeof body === 'string' ? Buffer.from(body, 'utf-8') : body;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.failIfUnreachable();
+    this.objects.delete(key);
+  }
+
+  private failIfUnreachable(): void {
+    if (this.failing) {
+      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
+    }
   }
 }
 

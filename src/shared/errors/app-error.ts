@@ -52,3 +52,15 @@ export class UnprocessableError extends AppError {
     super(message);
   }
 }
+
+/** A service this one depends on (object storage) is down: worth trying again later */
+export class ServiceUnavailableError extends AppError {
+  readonly statusCode = 503;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}

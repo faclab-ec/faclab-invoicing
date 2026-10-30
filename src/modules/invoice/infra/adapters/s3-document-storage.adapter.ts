@@ -1,4 +1,10 @@
-import { GetObjectCommand, NoSuchKey, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  NoSuchKey,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 
 import { InvoiceIssueError } from '../../domain/issue';
 import { DocumentStorage } from '../../domain/ports';
@@ -33,7 +39,7 @@ export class S3DocumentStorage implements DocumentStorage {
     });
   }
 
-  async put(key: string, body: string, contentType: string): Promise<void> {
+  async put(key: string, body: string | Buffer, contentType: string): Promise<void> {
     try {
       await this.client.send(
         new PutObjectCommand({
@@ -50,14 +56,30 @@ export class S3DocumentStorage implements DocumentStorage {
   }
 
   async get(key: string): Promise<string | null> {
+    const bytes = await this.getBytes(key);
+    return bytes === null ? null : bytes.toString('utf-8');
+  }
+
+  async getBytes(key: string): Promise<Buffer | null> {
     try {
       const result = await this.client.send(
         new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
       );
-      return (await result.Body?.transformToString('utf-8')) ?? null;
+      const bytes = await result.Body?.transformToByteArray();
+      return bytes ? Buffer.from(bytes) : null;
     } catch (error) {
       if (error instanceof NoSuchKey) return null;
       throw error;
+    }
+  }
+
+  // S3 answers a delete of a missing key as a success
+  async delete(key: string): Promise<void> {
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', `Object storage failed: ${reason}`);
     }
   }
 
