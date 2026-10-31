@@ -104,6 +104,25 @@ describePostgres('PgCompanyConfigRepository', () => {
     expect(await sequences.find(keyOf(TENANT_A))).toMatchObject({ lastValue: 499 });
     expect(await sequences.findAll(TENANT_A)).toHaveLength(1);
   });
+
+  it("keeps the issuer's email, and its logo when the profile is saved again", async () => {
+    const logo = { key: `tenants/${TENANT_A}/issuer/logo`, contentType: 'image/png' };
+    // Without a profile there is nowhere to put it
+    expect(await configs().setLogo(TENANT_A, logo)).toBeNull();
+
+    await configs().save(makeConfig({ signingCertId: null, email: 'ventas@acme.ec' }));
+    expect(await configs().setLogo(TENANT_A, logo)).toMatchObject({ logo });
+    const saved = await configs().save(
+      makeConfig({ signingCertId: null, email: null, name: 'ACME CIA. LTDA.' }),
+    );
+
+    expect(saved).toMatchObject({ name: 'ACME CIA. LTDA.', email: null, logo });
+    expect(await configs().find(TENANT_A)).toMatchObject({ email: null, logo });
+    expect(await configs().clearLogo(TENANT_B)).toBe(false);
+    expect(await configs().clearLogo(TENANT_A)).toBe(true);
+    expect(await configs().clearLogo(TENANT_A)).toBe(false);
+    expect((await configs().find(TENANT_A))?.logo).toBeNull();
+  });
 });
 
 describePostgres('PgSequenceRepository', () => {

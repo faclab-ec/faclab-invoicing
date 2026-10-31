@@ -33,3 +33,8 @@ export function buildAuthorizedXml(authorized: AuthorizedVoucher): string {
 export function authorizedXmlKey(tenantId: string, emissionYear: string, accessCode: string) {
   return `tenants/${tenantId}/invoices/${emissionYear}/${accessCode}.xml`;
 }
+
+/** Where the RIDE (the printable PDF) of an invoice is kept: next to its authorized XML */
+export function rideKey(tenantId: string, emissionYear: string, accessCode: string) {
+  return `tenants/${tenantId}/invoices/${emissionYear}/${accessCode}.pdf`;
+}

@@ -83,9 +83,16 @@ export function issueFromError(error: unknown, at: Date): InvoiceIssue {
  * ready instead of a date and invalid invoices for a manual retry; null also means "stop retrying".
  */
 export function nextAttemptAt(code: InvoiceIssueCode, attempts: number, now: Date): Date | null {
-  if (isBlockingIssue(code) || isInvalidIssue(code) || attempts >= MAX_AUTOMATIC_ATTEMPTS) {
-    return null;
-  }
+  if (isBlockingIssue(code) || isInvalidIssue(code)) return null;
+  return retryAt(attempts, now);
+}
+
+/**
+ * When to try again something that may go away by itself after `attempts` failed attempts (1, 5,
+ * 15, then every 60 minutes); null once MAX_AUTOMATIC_ATTEMPTS are used up
+ */
+export function retryAt(attempts: number, now: Date): Date | null {
+  if (attempts >= MAX_AUTOMATIC_ATTEMPTS) return null;
   const step = Math.min(Math.max(attempts, 1), RETRY_DELAYS_MS.length);
   const delay = RETRY_DELAYS_MS[step - 1];
   return new Date(now.getTime() + delay);

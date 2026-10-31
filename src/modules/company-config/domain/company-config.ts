@@ -19,6 +19,12 @@ export enum RimpeRegime {
   POPULAR_BUSINESS = 'NEGOCIO_POPULAR',
 }
 
+/** Where the issuer's logo is kept in the object storage, and its type */
+export interface IssuerLogo {
+  key: string;
+  contentType: string;
+}
+
 /**
  * The fiscal profile of a company (a faclab-core tenant, one RUC). The establishment, its address
  * and the emission point are not here: each sale brings the ones it was made at.
@@ -38,6 +44,10 @@ export class CompanyConfig {
     public readonly emissionType: EmissionType,
     public readonly signingCertId: string | null,
     public readonly updatedAt: Date,
+    // Reply-To of the emails that carry its invoices
+    public readonly email: string | null = null,
+    // Drawn on the RIDE; uploaded apart from the profile
+    public readonly logo: IssuerLogo | null = null,
   ) {}
 
   static create(props: {
@@ -53,6 +63,7 @@ export class CompanyConfig {
     environment: Environment;
     emissionType: EmissionType;
     signingCertId?: string | null;
+    email?: string | null;
   }): CompanyConfig {
     return new CompanyConfig(
       props.tenantId,
@@ -68,6 +79,7 @@ export class CompanyConfig {
       props.emissionType,
       props.signingCertId ?? null,
       new Date(),
+      props.email ?? null,
     );
   }
 }

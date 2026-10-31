@@ -18,6 +18,8 @@ export interface SaveCompanyConfigInput {
   environment: Environment;
   emissionType: EmissionType;
   signingCertId?: string | null;
+  // Reply-To of the emails with its invoices
+  email?: string | null;
 }
 
 export class SaveCompanyConfigCommand {
@@ -57,10 +59,12 @@ export class SaveCompanyConfigCommand {
       environment: input.environment,
       emissionType: input.emissionType,
       signingCertId: input.signingCertId,
+      email: input.email?.trim() || null,
     });
-    await this.repository.save(config);
+    // As stored: with the logo it already had
+    const saved = await this.repository.save(config);
     this.issuerListener.issuerChanged(tenantId);
-    return config;
+    return saved;
   }
 }
 

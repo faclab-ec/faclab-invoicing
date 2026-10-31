@@ -1,4 +1,5 @@
 import { InvoicingStatus } from '../../app/queries/invoice.queries';
+import { buyerEmail, InvoiceDelivery } from '../../domain/delivery';
 import { Invoice } from '../../domain/invoice';
 
 export function toSummaryResponse(invoice: Invoice) {
@@ -10,6 +11,8 @@ export function toSummaryResponse(invoice: Invoice) {
     signatureId: invoice.signatureId,
     authorizationNumber: invoice.authorization?.number ?? null,
     authorizedAt: invoice.authorization?.authorizedAt.toISOString() ?? null,
+    // Where it is (re)sent: the buyer's email of the sale
+    buyerEmail: buyerEmail(invoice.sale),
     statusHistory: invoice.statusHistory.map((h) => ({
       name: h.name,
       statusDate: h.statusDate.toISOString(),
@@ -46,5 +49,23 @@ export function toStatusResponse(status: InvoicingStatus) {
     issues: status.issues,
     pendingInvoices: status.pendingInvoices,
     invoicesWithIssues: status.invoicesWithIssues,
+  };
+}
+
+export function toDeliveryResponse(delivery: InvoiceDelivery) {
+  return {
+    id: delivery.id,
+    invoiceId: delivery.invoiceId,
+    kind: delivery.kind,
+    recipient: delivery.recipient,
+    status: delivery.status,
+    attempts: delivery.attempts,
+    nextAttemptAt: delivery.nextAttemptAt?.toISOString() ?? null,
+    lastError: delivery.lastError,
+    smtpResponse: delivery.smtpResponse,
+    sentAt: delivery.sentAt?.toISOString() ?? null,
+    requestedBy: delivery.requestedBy,
+    createdAt: delivery.createdAt.toISOString(),
+    updatedAt: delivery.updatedAt.toISOString(),
   };
 }

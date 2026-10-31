@@ -85,6 +85,11 @@ const invoiceSummaryProperties = {
     format: 'date-time',
     description: 'When the SRI authorized it. Null until `authorized`.',
   },
+  buyerEmail: {
+    type: ['string', 'null'],
+    description:
+      "The buyer's email of the sale: where the invoice goes, and the only address a resend uses. Null for the final consumer or a sale without a valid email.",
+  },
   issue: issueSchema,
   attempts: {
     type: 'number',
@@ -212,6 +217,109 @@ export const getAuthorizedXmlSchema = {
       description:
         'No invoice with the given ID, not authorized yet, or authorized before its XML was kept.',
     },
+  },
+} as const;
+
+export const getRideSchema = {
+  tags: ['Invoices'],
+  summary: 'Download the RIDE (PDF)',
+  description:
+    "The RIDE (Representación Impresa del Documento Electrónico) of an authorized invoice: the printable PDF the buyer receives with the authorized XML, with the access code as a barcode and the issuer's logo. Generated from the authorized XML and kept next to it; an invoice authorized before S4.4 gets it the first time it is asked for. Answers `application/pdf` as an attachment named after the access code.",
+  params: {
+    type: 'object',
+    properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
+    required: ['id'],
+  },
+  produces: ['application/pdf'],
+  response: {
+    200: {
+      description: 'The RIDE.',
+      content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } },
+    },
+    404: {
+      ...errorResponseSchema,
+      description: 'No invoice with the given ID, not authorized yet, or authorized before S4.1.',
+    },
+    503: {
+      ...errorResponseSchema,
+      description: '`STORAGE_UNAVAILABLE`: the document storage failed; try again later.',
+    },
+  },
+} as const;
+
+const deliveryObjectSchema = {
+  type: 'object',
+  description:
+    'One delivery of the invoice to its buyer: the authorization starts one, each resend another.',
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    invoiceId: { type: 'string', format: 'uuid' },
+    kind: {
+      type: 'string',
+      enum: ['authorization', 'resend'],
+      description: '`authorization`: started when the SRI authorized it; `resend`: asked for.',
+    },
+    recipient: {
+      type: ['string', 'null'],
+      description: "The buyer's email it goes to. Null when the sale has none.",
+    },
+    status: {
+      type: 'string',
+      enum: ['pending', 'sent', 'bounced', 'failed', 'no_recipient', 'disabled'],
+      description:
+        '`pending` (to send, or retried later), `sent` (the mail server accepted it), `bounced` (the mail server refused the address), `failed` (still failing after every retry), `no_recipient` (the buyer has no email: only the RIDE was kept), `disabled` (sending is off).',
+    },
+    attempts: { type: 'number', description: 'Failed attempts.' },
+    nextAttemptAt: { type: ['string', 'null'], format: 'date-time' },
+    lastError: {
+      type: ['string', 'null'],
+      description: 'Why the last attempt failed.',
+    },
+    smtpResponse: {
+      type: ['string', 'null'],
+      description: 'What the mail server answered: accepted (250), or why it refused it.',
+    },
+    sentAt: { type: ['string', 'null'], format: 'date-time' },
+    requestedBy: {
+      type: ['string', 'null'],
+      description: 'Who asked for a resend (the username of the token).',
+    },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+  },
+} as const;
+
+const invoiceIdParams = {
+  type: 'object',
+  properties: { id: { type: 'string', format: 'uuid', description: 'Invoice UUID.' } },
+  required: ['id'],
+} as const;
+
+export const resendInvoiceEmailSchema = {
+  tags: ['Invoices'],
+  summary: 'Send the invoice to its buyer again',
+  description:
+    "Queues a new delivery of an authorized invoice: its RIDE and authorized XML go again to the buyer's email of the sale (never to another address; the request has no body). While a delivery of the invoice is pending, answers that one instead of queuing another.",
+  params: invoiceIdParams,
+  response: {
+    202: { ...successSchema(deliveryObjectSchema), description: 'Delivery queued.' },
+    404: { ...errorResponseSchema, description: 'No invoice of the company with the given ID.' },
+    409: {
+      ...errorResponseSchema,
+      description:
+        '`INVOICE_NOT_AUTHORIZED`: not authorized (yet); `EMAIL_DISABLED`: sending by email is off; `BUYER_EMAIL_MISSING`: the buyer of the sale has no valid email.',
+    },
+  },
+} as const;
+
+export const listInvoiceDeliveriesSchema = {
+  tags: ['Invoices'],
+  summary: 'Send log of an invoice',
+  description: 'Every delivery of the invoice to its buyer, latest first.',
+  params: invoiceIdParams,
+  response: {
+    200: successSchema({ type: 'array', items: deliveryObjectSchema }),
+    404: { ...errorResponseSchema, description: 'No invoice of the company with the given ID.' },
   },
 } as const;
 

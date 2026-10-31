@@ -15,6 +15,9 @@ export interface CompanyConfigRow {
   emission_type: number;
   signing_cert_id: string | null;
   updated_at: Date;
+  email: string | null;
+  logo_key: string | null;
+  logo_content_type: string | null;
 }
 
 export function toCompanyConfigRow(config: CompanyConfig): CompanyConfigRow {
@@ -32,6 +35,9 @@ export function toCompanyConfigRow(config: CompanyConfig): CompanyConfigRow {
     emission_type: config.emissionType,
     signing_cert_id: config.signingCertId,
     updated_at: config.updatedAt,
+    email: config.email,
+    logo_key: config.logo?.key ?? null,
+    logo_content_type: config.logo?.contentType ?? null,
   };
 }
 
@@ -50,5 +56,9 @@ export function fromCompanyConfigRow(row: CompanyConfigRow): CompanyConfig {
     row.emission_type as EmissionType,
     row.signing_cert_id,
     row.updated_at,
+    row.email,
+    row.logo_key && row.logo_content_type
+      ? { key: row.logo_key, contentType: row.logo_content_type }
+      : null,
   );
 }

@@ -23,4 +23,8 @@ export const LOCAL_DEFAULTS: EnvDefaults = {
   OBJECT_STORAGE_ACCESS_KEY_ID: 'GKfac00000000000000000000000000000',
   OBJECT_STORAGE_SECRET_ACCESS_KEY:
     'facfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfacfac0',
+  // faclab-infra's Mailpit: it keeps every email (http://localhost:8025) and delivers none
+  SMTP_HOST: 'localhost',
+  SMTP_PORT: '1025',
+  INVOICE_EMAIL_FROM: 'facturas@faclab.local',
 };

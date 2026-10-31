@@ -13,11 +13,18 @@ import {
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
 import {
+  DeleteIssuerLogoCommand,
+  GetIssuerLogoQuery,
+  SetIssuerLogoCommand,
+} from '#/modules/company-config/app/issuer-logo.commands';
+import {
   ListSequencesQuery,
   SetNextSequenceCommand,
 } from '#/modules/company-config/app/sequence.commands';
+import { issuerLogoKey } from '#/modules/company-config/domain/logo';
 import { INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
+import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
   RetryInvoiceCommand,
   RetryInvoicesCommand,
@@ -27,11 +34,15 @@ import {
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
+  ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
+import { RideService } from '#/modules/invoice/app/services/ride-service';
 import { Invoice } from '#/modules/invoice/domain/invoice';
+import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
@@ -47,12 +58,14 @@ import {
   makeConfig,
   makePoint,
   makeSale,
+  multipartFile,
   readinessStub,
   RUC_A,
   RUC_B,
   TENANT_A,
   TENANT_B,
 } from '../helpers';
+import { LOGO_PNG, makePng } from '../pdf-text';
 import { accessToken, AUTH, bearer } from './tokens';
 
 // Two companies with the same data: an invoice of sale 42, a profile, a certificate and a counter;
@@ -75,11 +88,24 @@ describe('API isolation between companies', () => {
   beforeAll(async () => {
     const pointB = makePoint({ tenantId: TENANT_B, issuerRuc: RUC_B });
     await invoices.createInvoice(Invoice.receive(INVOICE_A, makePoint(), makeSale()));
-    await invoices.createInvoice(await makeAuthorizedInvoice(INVOICE_B, pointB, storage));
+    const buyer = {
+      id: 1,
+      name: 'Construcciones Andinas',
+      tax_id: '1790012345001',
+      tax_type: 'RUC' as const,
+      email: 'compras@andinas.ec',
+      phone: null,
+      address: null,
+    };
+    await invoices.createInvoice(
+      await makeAuthorizedInvoice(INVOICE_B, pointB, storage, makeSale({ customer: buyer })),
+    );
     await certificates.save(makeCertificate({ id: CERT_A }));
     await certificates.save(makeCertificate({ id: CERT_B, tenantId: TENANT_B, taxIds: [RUC_B] }));
     await configs.save(makeConfig({ signingCertId: CERT_A }));
     await configs.save(makeConfig({ tenantId: TENANT_B, taxId: RUC_B, signingCertId: CERT_B }));
+    await storage.put(issuerLogoKey(TENANT_B), LOGO_PNG, 'image/png');
+    await configs.setLogo(TENANT_B, { key: issuerLogoKey(TENANT_B), contentType: 'image/png' });
     for (const [tenantId, next] of [
       [TENANT_A, 10],
       [TENANT_B, 900],
@@ -106,6 +132,10 @@ describe('API isolation between companies', () => {
       {
         get: new GetInvoiceQuery(invoices),
         authorizedXml: new GetAuthorizedXmlQuery(invoices, storage),
+        ride: new GetRideQuery(
+          invoices,
+          new RideService(storage, configs, new PdfKitRideRenderer(), 'America/Guayaquil'),
+        ),
         list: new ListInvoicesQuery(invoices, 'America/Guayaquil'),
         findBySaleId: new FindInvoicesBySaleIdQuery(invoices),
         status: new GetInvoicingStatusQuery(
@@ -119,6 +149,8 @@ describe('API isolation between companies', () => {
           leaseMs: 60_000,
         }),
         retryAll: new RetryInvoicesCommand(readiness, recovery),
+        resendEmail: new ResendInvoiceEmailCommand(invoices, invoices.deliveries, true),
+        deliveries: new ListInvoiceDeliveriesQuery(invoices, invoices.deliveries),
       },
       authorize,
     );
@@ -129,6 +161,9 @@ describe('API isolation between companies', () => {
         get: new GetCompanyConfigQuery(configs),
         listSequences: new ListSequencesQuery(sequences),
         setNextSequence: new SetNextSequenceCommand(sequences),
+        setLogo: new SetIssuerLogoCommand(configs, storage),
+        deleteLogo: new DeleteIssuerLogoCommand(configs, storage),
+        getLogo: new GetIssuerLogoQuery(configs, storage),
       },
       authorize,
     );
@@ -174,6 +209,36 @@ describe('API isolation between companies', () => {
     expect((await get(`/api/invoices/${INVOICE_B}/authorized-xml`, TENANT_B)).statusCode).toBe(200);
   });
 
+  it("downloads only the company's RIDE", async () => {
+    const ofA = await get(`/api/invoices/${INVOICE_B}/ride`);
+    expect(ofA.statusCode).toBe(404);
+    // Nothing was generated for B on A's request
+    expect([...storage.objects.keys()].some((key) => key.endsWith('.pdf'))).toBe(false);
+
+    const ofB = await get(`/api/invoices/${INVOICE_B}/ride`, TENANT_B);
+    expect(ofB.statusCode).toBe(200);
+    expect(ofB.headers['content-type']).toBe('application/pdf');
+  });
+
+  it("neither sends nor shows the send log of another company's invoice", async () => {
+    const asA = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${INVOICE_B}/email`,
+      headers: bearer(TENANT_A),
+    });
+    expect(asA.statusCode).toBe(404);
+    expect(invoices.deliveries.records.size).toBe(0);
+    expect((await get(`/api/invoices/${INVOICE_B}/emails`)).statusCode).toBe(404);
+
+    const asB = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${INVOICE_B}/email`,
+      headers: bearer(TENANT_B),
+    });
+    expect(asB.statusCode).toBe(202);
+    expect((await get(`/api/invoices/${INVOICE_B}/emails`, TENANT_B)).json().data).toHaveLength(1);
+  });
+
   it("doesn't retry another company's invoice", async () => {
     const response = await app.inject({
       method: 'POST',
@@ -216,6 +281,31 @@ describe('API isolation between companies', () => {
 
     expect(saved.statusCode).toBe(422);
     expect((await configs.find(TENANT_B))?.signingCertId).toBe(CERT_B);
+  });
+
+  it("reads, replaces and removes only the company's logo", async () => {
+    // A has none: it never gets B's
+    expect((await get('/api/company-config/logo')).statusCode).toBe(404);
+    expect((await get('/api/company-config/logo', TENANT_B)).rawPayload).toEqual(LOGO_PNG);
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/api/company-config/logo',
+      headers: bearer(TENANT_A),
+    });
+    expect(removed.statusCode).toBe(204);
+    expect((await configs.find(TENANT_B))?.logo).not.toBeNull();
+
+    const upload = multipartFile(makePng(10, 10));
+    const uploaded = await app.inject({
+      method: 'PUT',
+      url: '/api/company-config/logo',
+      headers: { ...bearer(TENANT_A), ...upload.headers },
+      payload: upload.payload,
+    });
+    expect(uploaded.statusCode).toBe(200);
+    expect(await storage.getBytes(issuerLogoKey(TENANT_A))).toEqual(makePng(10, 10));
+    expect(await storage.getBytes(issuerLogoKey(TENANT_B))).toEqual(LOGO_PNG);
   });
 
   it("lists, finds and deletes only the company's certificates", async () => {

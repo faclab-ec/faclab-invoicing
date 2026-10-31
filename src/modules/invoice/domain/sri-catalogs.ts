@@ -38,3 +38,26 @@ export const IVA_CODES = {
 
 export type IvaCode = keyof typeof IVA_CODES;
 export const IVA_CODE_KEYS = Object.keys(IVA_CODES) as [IvaCode, ...IvaCode[]];
+
+// formaPago (Tabla 24) as the RIDE prints it
+export const FORMA_PAGO_LABELS: Record<string, string> = {
+  '01': 'SIN UTILIZACIÓN DEL SISTEMA FINANCIERO',
+  '15': 'COMPENSACIÓN DE DEUDAS',
+  '16': 'TARJETA DE DÉBITO',
+  '17': 'DINERO ELECTRÓNICO',
+  '18': 'TARJETA PREPAGO',
+  '19': 'TARJETA DE CRÉDITO',
+  '20': 'OTROS CON UTILIZACIÓN DEL SISTEMA FINANCIERO',
+  '21': 'ENDOSO DE TÍTULOS',
+};
+
+// codigoPorcentaje (Tabla 17) of the categories without a rate, as the RIDE prints them
+export const IVA_NOT_TAXED_CODE = IVA_CODES.NOT_TAXED.code;
+export const IVA_EXEMPT_CODE = IVA_CODES.EXEMPT.code;
+
+/** The rate of a codigoPorcentaje (`15%`), or null for not taxed and exempt */
+export function ivaRateLabel(codigoPorcentaje: number): string | null {
+  if (codigoPorcentaje === IVA_NOT_TAXED_CODE || codigoPorcentaje === IVA_EXEMPT_CODE) return null;
+  const category = Object.values(IVA_CODES).find((iva) => iva.code === codigoPorcentaje);
+  return category ? `${category.rate}%` : null;
+}

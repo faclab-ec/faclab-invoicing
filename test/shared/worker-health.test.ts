@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startHealthServer, WorkerHealth } from '#/shared/infra/worker-health';
+import { allHealthy, startHealthServer, WorkerHealth } from '#/shared/infra/worker-health';
 import { serviceNameFor } from '#/shared/telemetry/service-name';
 
 describe('WorkerHealth', () => {
@@ -23,6 +23,22 @@ describe('WorkerHealth', () => {
     expect(worker.healthy).toBe(false);
 
     worker.beat();
+    expect(worker.healthy).toBe(true);
+  });
+
+  it('is healthy only while every part of the worker is', () => {
+    now = 0;
+    const invoices = health();
+    const deliveries = new WorkerHealth(3_000, () => now);
+    const worker = allHealthy(invoices, deliveries);
+    expect(worker.healthy).toBe(true);
+
+    // The invoices stall while the deliveries go on
+    now = 2_000;
+    deliveries.beat();
+    expect(worker.healthy).toBe(false);
+
+    invoices.beat();
     expect(worker.healthy).toBe(true);
   });
 

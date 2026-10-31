@@ -3,9 +3,11 @@ import { DateTime } from 'luxon';
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { ReadinessReport } from '#/modules/company-config/domain/readiness';
 
+import { InvoiceDelivery } from '../../domain/delivery';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
 import { DocumentStorage } from '../../domain/ports';
-import { InvoicePage, InvoiceRepository } from '../../domain/repository';
+import { InvoiceDeliveryRepository, InvoicePage, InvoiceRepository } from '../../domain/repository';
+import { RideFile, RideService } from '../services/ride-service';
 
 // Every query reads the invoices of one company: the one of the token
 
@@ -38,6 +40,34 @@ export class GetAuthorizedXmlQuery {
     const xml = await this.documentStorage.get(key);
     if (xml === null) return null;
     return { fileName: `${invoice.requireAccessCode().value}.xml`, xml };
+  }
+}
+
+/** The RIDE (PDF) of an invoice of the company, generated the first time it is asked for */
+export class GetRideQuery {
+  constructor(
+    private readonly invoiceRepository: InvoiceRepository,
+    private readonly rides: RideService,
+  ) {}
+
+  /** Null when the invoice isn't found, isn't authorized or was authorized before S4.1 */
+  async execute(tenantId: string, id: string): Promise<RideFile | null> {
+    const invoice = await this.invoiceRepository.findForTenant(tenantId, id);
+    return invoice ? this.rides.ensure(invoice) : null;
+  }
+}
+
+/** The send log of an invoice of the company, latest first */
+export class ListInvoiceDeliveriesQuery {
+  constructor(
+    private readonly invoiceRepository: InvoiceRepository,
+    private readonly deliveries: InvoiceDeliveryRepository,
+  ) {}
+
+  /** Null when the invoice isn't the company's */
+  async execute(tenantId: string, invoiceId: string): Promise<InvoiceDelivery[] | null> {
+    const invoice = await this.invoiceRepository.findForTenant(tenantId, invoiceId);
+    return invoice ? this.deliveries.findByInvoice(tenantId, invoice.id) : null;
   }
 }
 

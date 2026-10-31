@@ -23,6 +23,11 @@ const SENSITIVE_KEYS = new Set([
   'privatekey',
   'xml',
   'signature',
+  // Personal data of the buyers (S4.4): never in the logs
+  'email',
+  'recipient',
+  'replyto',
+  'smtppassword',
 ]);
 const REDACTED = '[REDACTED]';
 

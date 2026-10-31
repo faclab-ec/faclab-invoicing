@@ -32,6 +32,21 @@ describe.skipIf(!ENDPOINT)('S3DocumentStorage against an S3-compatible service',
     storage.destroy();
   });
 
+  it('keeps a binary document byte for byte and deletes it', async () => {
+    const storage = new S3DocumentStorage(config);
+    const key = `tests/${randomUUID()}/ride.pdf`;
+    const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x80, 0x0a]);
+
+    await storage.put(key, pdf, 'application/pdf');
+    expect(await storage.getBytes(key)).toEqual(pdf);
+
+    await storage.delete(key);
+    expect(await storage.getBytes(key)).toBeNull();
+    // Deleting what isn't there is not an error
+    await storage.delete(key);
+    storage.destroy();
+  });
+
   it('answers null for a key without a document', async () => {
     const storage = new S3DocumentStorage(config);
 

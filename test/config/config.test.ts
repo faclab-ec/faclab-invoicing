@@ -7,6 +7,7 @@ const JWT_SECRET = randomBytes(32).toString('hex');
 const CERTIFICATE_PASSWORD_KEY = randomBytes(32).toString('base64');
 const DATABASE_URL = `postgres://faclab_invoicing:${randomBytes(8).toString('hex')}@db:5432/faclab_invoicing`;
 const STORAGE_SECRET = randomBytes(32).toString('hex');
+const SMTP_PASSWORD = randomBytes(16).toString('hex');
 
 const production = (overrides: Record<string, string | undefined> = {}) => ({
   NODE_ENV: 'production',
@@ -20,6 +21,10 @@ const production = (overrides: Record<string, string | undefined> = {}) => ({
   OBJECT_STORAGE_BUCKET: 'faclab-invoicing',
   OBJECT_STORAGE_ACCESS_KEY_ID: 'GK0123456789abcdef0123456789abcdef',
   OBJECT_STORAGE_SECRET_ACCESS_KEY: STORAGE_SECRET,
+  SMTP_HOST: 'smtp.provider.test',
+  SMTP_USER: 'faclab',
+  SMTP_PASSWORD,
+  INVOICE_EMAIL_FROM: 'comprobantes@faclab.test',
   ...overrides,
 });
 
@@ -111,6 +116,7 @@ describe('parseConfig in local', () => {
       INVOICE_WORKER_CONCURRENCY: '2',
       INVOICE_POLL_INTERVAL_MS: '500',
       SRI_TIMEOUT_MS: '10000',
+      SMTP_TIMEOUT_MS: '5000',
       INVOICE_LOCK_TIMEOUT_MS: '20000',
     });
 
@@ -162,6 +168,79 @@ describe('parseConfig in local', () => {
       tenantId.toLowerCase(),
     );
     expect(errorOf({ SALES_V1_TENANT_ID: 'default' })).toContain('SALES_V1_TENANT_ID');
+  });
+});
+
+describe('parseConfig: the delivery of invoices by email', () => {
+  it("sends locally through faclab-infra's Mailpit", () => {
+    expect(parseConfig({}).invoiceEmail).toEqual({
+      enabled: true,
+      from: 'facturas@faclab.local',
+      smtp: {
+        host: 'localhost',
+        port: 1025,
+        secure: false,
+        requireTls: false,
+        user: null,
+        password: null,
+        timeoutMs: 20_000,
+      },
+      concurrency: 2,
+    });
+  });
+
+  it('needs STARTTLS in production unless TLS goes from the start', () => {
+    expect(parseConfig(production()).invoiceEmail).toEqual({
+      enabled: true,
+      from: 'comprobantes@faclab.test',
+      smtp: {
+        host: 'smtp.provider.test',
+        port: 587,
+        secure: false,
+        requireTls: true,
+        user: 'faclab',
+        password: SMTP_PASSWORD,
+        timeoutMs: 20_000,
+      },
+      concurrency: 2,
+    });
+    const implicit = parseConfig(production({ SMTP_SECURE: 'true', SMTP_PORT: '465' }));
+    expect(implicit.invoiceEmail.smtp).toMatchObject({
+      secure: true,
+      requireTls: false,
+      port: 465,
+    });
+  });
+
+  it('refuses to send without a mail server or a sender, unless sending is off', () => {
+    const message = errorOf(production({ SMTP_HOST: undefined, INVOICE_EMAIL_FROM: '' }));
+    expect(message).toContain('SMTP_HOST is required while INVOICE_EMAIL_ENABLED is true');
+    expect(message).toContain('INVOICE_EMAIL_FROM is required while INVOICE_EMAIL_ENABLED is true');
+
+    const off = parseConfig(
+      production({ INVOICE_EMAIL_ENABLED: 'false', SMTP_HOST: undefined, INVOICE_EMAIL_FROM: '' }),
+    );
+    expect(off.invoiceEmail).toMatchObject({ enabled: false, from: null });
+    expect(off.invoiceEmail.smtp.host).toBeNull();
+  });
+
+  it('refuses half the credentials and a sender that is not an address, without echoing them', () => {
+    const message = errorOf(production({ SMTP_USER: undefined }));
+    expect(message).toContain('SMTP_PASSWORD must be set together with SMTP_USER');
+    expect(message).not.toContain(SMTP_PASSWORD);
+
+    expect(errorOf(production({ INVOICE_EMAIL_FROM: 'Faclab' }))).toContain(
+      'INVOICE_EMAIL_FROM must be an email address',
+    );
+  });
+
+  it('keeps both workers within the database pool, and the lease longer than a slow server', () => {
+    expect(
+      errorOf(production({ INVOICE_WORKER_CONCURRENCY: '7', INVOICE_DELIVERY_CONCURRENCY: '2' })),
+    ).toContain('INVOICE_DELIVERY_CONCURRENCY plus INVOICE_WORKER_CONCURRENCY must be at most 8');
+    expect(
+      errorOf(production({ SMTP_TIMEOUT_MS: '60000', INVOICE_LOCK_TIMEOUT_MS: '120000' })),
+    ).toContain('INVOICE_LOCK_TIMEOUT_MS must be at least 3 times SMTP_TIMEOUT_MS');
   });
 });
 

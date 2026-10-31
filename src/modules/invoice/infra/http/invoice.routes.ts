@@ -2,23 +2,35 @@ import { FastifyInstance } from 'fastify';
 
 import { NotFoundError } from '#/shared/errors/app-error';
 import { Authorize, tenantOf } from '#/shared/infra/http/auth';
+import { withStorage } from '#/shared/infra/http/storage';
 
+import { ResendInvoiceEmailCommand } from '../../app/commands/resend-invoice-email';
 import { RetryInvoiceCommand, RetryInvoicesCommand } from '../../app/commands/retry-invoice';
 import {
   FindInvoicesBySaleIdQuery,
   GetAuthorizedXmlQuery,
   GetInvoiceQuery,
   GetInvoicingStatusQuery,
+  GetRideQuery,
+  ListInvoiceDeliveriesQuery,
   ListInvoicesOptions,
   ListInvoicesQuery,
 } from '../../app/queries/invoice.queries';
-import { toDetailResponse, toStatusResponse, toSummaryResponse } from './invoice.mapper';
+import {
+  toDeliveryResponse,
+  toDetailResponse,
+  toStatusResponse,
+  toSummaryResponse,
+} from './invoice.mapper';
 import {
   findBySaleIdSchema,
   getAuthorizedXmlSchema,
   getInvoiceSchema,
+  getRideSchema,
   invoicingStatusSchema,
+  listInvoiceDeliveriesSchema,
   listInvoicesSchema,
+  resendInvoiceEmailSchema,
   retryInvoiceSchema,
   retryInvoicesSchema,
 } from './invoice.schemas';
@@ -26,11 +38,14 @@ import {
 export interface InvoiceHandlers {
   get: GetInvoiceQuery;
   authorizedXml: GetAuthorizedXmlQuery;
+  ride: GetRideQuery;
   list: ListInvoicesQuery;
   findBySaleId: FindInvoicesBySaleIdQuery;
   status: GetInvoicingStatusQuery;
   retry: RetryInvoiceCommand;
   retryAll: RetryInvoicesCommand;
+  resendEmail: ResendInvoiceEmailCommand;
+  deliveries: ListInvoiceDeliveriesQuery;
 }
 
 export function registerInvoiceRoutes(
@@ -109,7 +124,9 @@ export function registerInvoiceRoutes(
     '/api/invoices/:id/authorized-xml',
     { schema: getAuthorizedXmlSchema, preHandler: canRead },
     async (request, reply) => {
-      const authorized = await handlers.authorizedXml.execute(tenantOf(request), request.params.id);
+      const authorized = await withStorage(() =>
+        handlers.authorizedXml.execute(tenantOf(request), request.params.id),
+      );
       if (!authorized) {
         throw new NotFoundError('Authorized XML not found');
       }
@@ -117,6 +134,52 @@ export function registerInvoiceRoutes(
         .header('Content-Type', 'application/xml; charset=utf-8')
         .header('Content-Disposition', `attachment; filename="${authorized.fileName}"`)
         .send(authorized.xml);
+    },
+  );
+
+  // GET /api/invoices/:id/ride — its RIDE, the printable PDF
+  app.get<{ Params: { id: string } }>(
+    '/api/invoices/:id/ride',
+    { schema: getRideSchema, preHandler: canRead },
+    async (request, reply) => {
+      const ride = await withStorage(() =>
+        handlers.ride.execute(tenantOf(request), request.params.id),
+      );
+      if (!ride) {
+        throw new NotFoundError('RIDE not found');
+      }
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `attachment; filename="${ride.fileName}"`)
+        .send(ride.pdf);
+    },
+  );
+
+  // POST /api/invoices/:id/email — send it to its buyer again; no body: never another address
+  app.post<{ Params: { id: string } }>(
+    '/api/invoices/:id/email',
+    { schema: resendInvoiceEmailSchema, preHandler: canRetry },
+    async (request, reply) => {
+      const delivery = await handlers.resendEmail.execute(
+        tenantOf(request),
+        request.params.id,
+        request.auth!.username,
+      );
+      reply.code(202);
+      return reply.success(toDeliveryResponse(delivery));
+    },
+  );
+
+  // GET /api/invoices/:id/emails — its send log
+  app.get<{ Params: { id: string } }>(
+    '/api/invoices/:id/emails',
+    { schema: listInvoiceDeliveriesSchema, preHandler: canRead },
+    async (request, reply) => {
+      const deliveries = await handlers.deliveries.execute(tenantOf(request), request.params.id);
+      if (!deliveries) {
+        throw new NotFoundError('Invoice not found');
+      }
+      return reply.success(deliveries.map(toDeliveryResponse));
     },
   );
 

@@ -1,7 +1,8 @@
 import { logger } from '#/shared/logger';
 
 import { authorizedXmlKey, buildAuthorizedXml } from '../../domain/authorized-xml';
-import { Invoice } from '../../domain/invoice';
+import { InvoiceDelivery } from '../../domain/delivery';
+import { Invoice, TraceContext } from '../../domain/invoice';
 import { InvoiceIssueError } from '../../domain/issue';
 import { DocumentStorage, SriAuthorizationPort } from '../../domain/ports';
 import { InvoiceRepository } from '../../domain/repository';
@@ -13,6 +14,9 @@ export class AuthorizeInvoiceCommand implements InvoiceCommand {
     private sriAuthorizationPort: SriAuthorizationPort,
     private invoiceRepository: InvoiceRepository,
     private documentStorage: DocumentStorage,
+    // The trace the delivery continues: the step's own, in the worker
+    private traceContext: () => TraceContext | null = () => null,
+    private now: () => Date = () => new Date(),
   ) {}
 
   async execute(invoice: Invoice): Promise<void> {
@@ -52,10 +56,15 @@ export class AuthorizeInvoiceCommand implements InvoiceCommand {
         },
         authorizationVoucher.messages,
       );
+      // With its delivery (RIDE and email to the buyer), in the same transaction
+      await this.invoiceRepository.saveAuthorized(
+        invoice,
+        InvoiceDelivery.forAuthorization(invoice, this.now(), this.traceContext()),
+      );
     } else {
       invoice.reject(authorizationVoucher.messages);
+      await this.invoiceRepository.updateInvoice(invoice);
     }
-    await this.invoiceRepository.updateInvoice(invoice);
     logger.info(
       { invoiceId: invoice.id, status: invoice.status },
       'Invoice authorization completed',

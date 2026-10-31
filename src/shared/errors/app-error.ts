@@ -52,3 +52,22 @@ export class UnprocessableError extends AppError {
     super(message);
   }
 }
+
+/** A service this one depends on (object storage) is down: worth trying again later */
+export class ServiceUnavailableError extends AppError {
+  readonly statusCode = 503;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** The object storage failed (the documents, the logo): the request can be tried again later */
+export const storageUnavailable = () =>
+  new ServiceUnavailableError(
+    'STORAGE_UNAVAILABLE',
+    'The document storage is not available, try again later',
+  );

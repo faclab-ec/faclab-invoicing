@@ -8,6 +8,8 @@ import {
   CompanyConfig,
   EmissionType,
   Environment,
+  IssuerLogo,
+  RimpeRegime,
 } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError, ReadinessReport } from '#/modules/company-config/domain/readiness';
 import {
@@ -31,7 +33,9 @@ import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice'
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { authorizedXmlKey } from '#/modules/invoice/domain/authorized-xml';
+import { InvoiceDelivery } from '#/modules/invoice/domain/delivery';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
+import { buildInvoiceXml, InvoiceXmlInput } from '#/modules/invoice/domain/invoice-xml-builder';
 import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
 import {
   DocumentStorage,
@@ -39,10 +43,17 @@ import {
   SriAuthorizationPort,
   SriValidationPort,
 } from '#/modules/invoice/domain/ports';
-import { ClaimedInvoice, InvoiceQueue, WaitingInvoice } from '#/modules/invoice/domain/queue';
+import {
+  ClaimedDelivery,
+  ClaimedInvoice,
+  DeliveryQueue,
+  InvoiceQueue,
+  WaitingInvoice,
+} from '#/modules/invoice/domain/queue';
 import {
   ConcurrentUpdateError,
   InFlightCounts,
+  InvoiceDeliveryRepository,
   InvoiceFilter,
   InvoicePage,
   InvoiceRepository,
@@ -178,18 +189,33 @@ export function fakeKafkaConsumer() {
 
 /** Object storage kept in memory; `failing` makes every upload fail like an unreachable service */
 export class InMemoryDocumentStorage implements DocumentStorage {
-  readonly objects = new Map<string, { body: string; contentType: string }>();
+  readonly objects = new Map<string, { body: string | Buffer; contentType: string }>();
   failing = false;
 
-  async put(key: string, body: string, contentType: string): Promise<void> {
-    if (this.failing) {
-      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
-    }
+  async put(key: string, body: string | Buffer, contentType: string): Promise<void> {
+    this.failIfUnreachable();
     this.objects.set(key, { body, contentType });
   }
 
   async get(key: string): Promise<string | null> {
-    return this.objects.get(key)?.body ?? null;
+    return (await this.getBytes(key))?.toString('utf-8') ?? null;
+  }
+
+  async getBytes(key: string): Promise<Buffer | null> {
+    const body = this.objects.get(key)?.body;
+    if (body === undefined) return null;
+    return typeof body === 'string' ? Buffer.from(body, 'utf-8') : body;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.failIfUnreachable();
+    this.objects.delete(key);
+  }
+
+  private failIfUnreachable(): void {
+    if (this.failing) {
+      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
+    }
   }
 }
 
@@ -221,8 +247,12 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
   readonly sequences = new Map<string, number>();
   // The queue's leases (locked_by, locked_until), by invoice
   readonly locks = new Map<string, { holder: string; until: number }>();
+  // invoice_deliveries: saveAuthorized writes there too
+  readonly deliveries: InMemoryDeliveryRepository;
 
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly now: () => Date = () => new Date()) {
+    this.deliveries = new InMemoryDeliveryRepository(now);
+  }
 
   async createInvoice(invoice: Invoice): Promise<boolean> {
     if (this.records.has(invoice.id)) return false;
@@ -246,6 +276,13 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     }
     invoice.version += 1;
     this.records.set(invoice.id, toRow(invoice));
+    return invoice;
+  }
+
+  async saveAuthorized(invoice: Invoice, delivery: InvoiceDelivery): Promise<Invoice> {
+    // Like one transaction: no delivery when the invoice can't be saved
+    await this.updateInvoice(invoice);
+    await this.deliveries.insert(delivery);
     return invoice;
   }
 
@@ -378,18 +415,132 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
   }
 }
 
-/** Same contract as PgCompanyConfigRepository: one profile per company */
+const copyOf = (delivery: InvoiceDelivery) => new InvoiceDelivery({ ...delivery });
+
+/** Same contract as PgInvoiceDeliveryRepository (deliveries and their queue), kept in memory */
+export class InMemoryDeliveryRepository implements InvoiceDeliveryRepository, DeliveryQueue {
+  readonly records = new Map<string, InvoiceDelivery>();
+  readonly locks = new Map<string, { holder: string; until: number }>();
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
+
+  /** Like insertDelivery: false when a unique index of invoice_deliveries forbids it */
+  async insert(delivery: InvoiceDelivery): Promise<boolean> {
+    const clash = [...this.records.values()].some(
+      (stored) =>
+        stored.invoiceId === delivery.invoiceId &&
+        ((stored.kind === 'authorization' && delivery.kind === 'authorization') ||
+          (stored.isPending && delivery.isPending)),
+    );
+    if (clash || this.records.has(delivery.id)) return false;
+    this.records.set(delivery.id, copyOf(delivery));
+    return true;
+  }
+
+  async getById(id: string): Promise<InvoiceDelivery | null> {
+    const delivery = this.records.get(id);
+    return delivery ? copyOf(delivery) : null;
+  }
+
+  async update(delivery: InvoiceDelivery): Promise<void> {
+    if (this.records.has(delivery.id)) this.records.set(delivery.id, copyOf(delivery));
+  }
+
+  async createResend(delivery: InvoiceDelivery): Promise<InvoiceDelivery> {
+    if (await this.insert(delivery)) return delivery;
+    const pending = [...this.records.values()].find(
+      (stored) =>
+        stored.tenantId === delivery.tenantId &&
+        stored.invoiceId === delivery.invoiceId &&
+        stored.isPending,
+    );
+    if (!pending) throw new Error('No pending delivery');
+    return copyOf(pending);
+  }
+
+  async findByInvoice(tenantId: string, invoiceId: string): Promise<InvoiceDelivery[]> {
+    return [...this.records.values()]
+      .filter((stored) => stored.tenantId === tenantId && stored.invoiceId === invoiceId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map(copyOf);
+  }
+
+  async claimDue(holder: string, leaseMs: number, limit: number): Promise<ClaimedDelivery[]> {
+    const now = this.now().getTime();
+    const due = [...this.records.values()]
+      .filter((stored) => stored.isPending && stored.nextAttemptAt!.getTime() <= now)
+      .filter((stored) => {
+        const lock = this.locks.get(stored.id);
+        return !lock || lock.until < now;
+      })
+      .sort((a, b) => a.nextAttemptAt!.getTime() - b.nextAttemptAt!.getTime())
+      .slice(0, limit);
+    for (const stored of due) this.locks.set(stored.id, { holder, until: now + leaseMs });
+    return due.map((stored) => ({
+      id: stored.id,
+      invoiceId: stored.invoiceId,
+      traceContext: stored.traceContext,
+    }));
+  }
+
+  async release(id: string, holder: string): Promise<void> {
+    if (this.locks.get(id)?.holder === holder) this.locks.delete(id);
+  }
+
+  async postpone(id: string, at: Date): Promise<void> {
+    const stored = this.records.get(id);
+    if (stored?.isPending) stored.nextAttemptAt = at;
+  }
+}
+
+/** Same contract as PgCompanyConfigRepository: one profile per company, which keeps its logo */
 export class InMemoryCompanyConfigRepository implements CompanyConfigRepository {
   readonly configs = new Map<string, CompanyConfig>();
 
   async save(config: CompanyConfig): Promise<CompanyConfig> {
-    this.configs.set(config.tenantId, config);
-    return config;
+    const stored = withLogo(config, this.configs.get(config.tenantId)?.logo ?? null);
+    this.configs.set(config.tenantId, stored);
+    return stored;
   }
 
   async find(tenantId: string): Promise<CompanyConfig | null> {
     return this.configs.get(tenantId) ?? null;
   }
+
+  async setLogo(tenantId: string, logo: IssuerLogo): Promise<CompanyConfig | null> {
+    const config = this.configs.get(tenantId);
+    if (!config) return null;
+    const stored = withLogo(config, logo);
+    this.configs.set(tenantId, stored);
+    return stored;
+  }
+
+  async clearLogo(tenantId: string): Promise<boolean> {
+    const config = this.configs.get(tenantId);
+    if (!config?.logo) return false;
+    this.configs.set(tenantId, withLogo(config, null));
+    return true;
+  }
+}
+
+function withLogo(config: CompanyConfig, logo: IssuerLogo | null): CompanyConfig {
+  return new CompanyConfig(
+    config.tenantId,
+    config.taxId,
+    config.name,
+    config.tradeName,
+    config.mainAddress,
+    config.specialTaxpayerResolution,
+    config.withholdingAgentResolution,
+    config.rimpeRegime,
+    config.accountingRequired,
+    config.environment,
+    config.emissionType,
+    config.signingCertId,
+    config.updatedAt,
+    config.email,
+    logo,
+  );
 }
 
 /** Same contract as PgCertificateRepository: another company's certificate is not found */
@@ -516,6 +667,97 @@ export function makeReceivedSale(
 // An access code of 2026 in testing, for invoices that don't go through PrepareInvoiceCommand
 export const TEST_ACCESS_CODE = '0910202601179214100100110010010000000011234567812';
 
+// When the simulated SRI authorizes, and what it answers
+export const TEST_AUTHORIZATION = {
+  number: TEST_ACCESS_CODE,
+  authorizedAt: new Date('2026-10-09T15:01:02Z'),
+};
+
+/**
+ * The input of an invoice with every part the RIDE prints: the issuer's legends, a customer with
+ * contact data, lines at 15%, 0% and not taxed (one with a discount), two payments and the
+ * provider's RUC. Totals: 80.75 + 8.64 + 5.00 without taxes, 12.11 of IVA, 106.50
+ */
+export function fullInvoiceXmlInput(overrides: Partial<InvoiceXmlInput> = {}): InvoiceXmlInput {
+  return {
+    environment: 1,
+    emissionType: 1,
+    companyName: 'Ferretería ACME S.A.',
+    companyTradeName: 'ACME',
+    companyCode: RUC_A,
+    companyMainAddress: 'Av. 10 de Agosto N25-34, Quito',
+    companyBranchAddress: 'Av. Amazonas N34-120, Quito',
+    companyBranchCode: '001',
+    companySalePointCode: '001',
+    companyAccountingRequired: true,
+    companySpecialTaxpayerResolution: '5368',
+    companyWithholdingAgentResolution: '12345678',
+    companyRimpeRegime: RimpeRegime.ENTREPRENEUR,
+    providerRuc: RUC_B,
+    accessCode: TEST_ACCESS_CODE,
+    sequence: '000000001',
+    voucherTypeCode: '01',
+    date: REQUESTED_AT,
+    customer: {
+      taxIdCode: '04',
+      name: 'Construcciones Andinas Cía. Ltda.',
+      taxId: '1790012345001',
+      email: 'compras@construccionesandinas.ec',
+      phone: '022345678',
+      address: 'Av. 6 de Diciembre N24-253, Quito',
+    },
+    total: 106.5,
+    payments: [
+      { formaPago: '01', amount: 50 },
+      { formaPago: '19', amount: 56.5 },
+    ],
+    items: [
+      {
+        productId: '7',
+        sku: 'CEM-50',
+        description: 'Cemento Portland 50 kg',
+        quantity: 10,
+        unitPrice: 8.5,
+        discount: 4.25,
+        taxableBase: 80.75,
+        taxCode: 4,
+        taxRate: 15,
+        taxAmount: 12.11,
+      },
+      {
+        productId: '8',
+        sku: 'VAR-12',
+        description: 'Varilla corrugada 12 mm',
+        quantity: 2.5,
+        unitPrice: 3.456789,
+        discount: 0,
+        taxableBase: 8.64,
+        taxCode: 0,
+        taxRate: 0,
+        taxAmount: 0,
+      },
+      {
+        productId: '9',
+        sku: null,
+        description: 'Corte de varilla',
+        quantity: 1,
+        unitPrice: 5,
+        discount: 0,
+        taxableBase: 5,
+        taxCode: 6,
+        taxRate: 0,
+        taxAmount: 0,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** fullInvoiceXmlInput's XML, signed like the test signer does */
+export function signedInvoiceXml(overrides: Partial<InvoiceXmlInput> = {}): string {
+  return `${buildInvoiceXml(fullInvoiceXmlInput(overrides))}<!-- signed -->`;
+}
+
 /**
  * An invoice the SRI authorized, with its authorized XML in `storage` (left out when null, like
  * an invoice authorized before S4.1)
@@ -529,14 +771,16 @@ export async function makeAuthorizedInvoice(
   const invoice = Invoice.receive(id, point, sale);
   invoice.assignSequence('000000001');
   const accessCode = AccessCode.create(TEST_ACCESS_CODE);
-  invoice.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
-  invoice.sign('<factura firmada/>');
+  const xml = signedInvoiceXml({
+    companyCode: point.issuerRuc ?? RUC_A,
+    companyBranchCode: point.establishment,
+    companySalePointCode: point.emissionPoint,
+  });
+  invoice.prepare({ accessCode, signatureId: 'cert-1', xml });
+  invoice.sign(xml);
   invoice.markAsSent([]);
   const xmlKey = authorizedXmlKey(point.tenantId, accessCode.emissionYear, accessCode.value);
-  invoice.authorize(
-    { number: accessCode.value, authorizedAt: new Date('2026-10-09T15:01:02Z'), xmlKey },
-    ['AUTORIZADO'],
-  );
+  invoice.authorize({ ...TEST_AUTHORIZATION, xmlKey }, ['AUTORIZADO']);
   if (storage) {
     await storage.put(xmlKey, `<autorizacion><estado>AUTORIZADO</estado></autorizacion>`, 'xml');
   }
@@ -618,6 +862,26 @@ export function readinessStub(issuer: IssuerState | Record<string, IssuerState>)
     invalidate: vi.fn(),
     invalidateIfOlder: vi.fn(),
   } as unknown as IssuerReadinessService;
+}
+
+/** A multipart/form-data body with one file in the field `file`, for `app.inject` */
+export function multipartFile(
+  bytes: Buffer,
+  filename = 'logo.png',
+  contentType = 'image/png',
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = '----faclab-test';
+  return {
+    payload: Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+          `Content-Type: ${contentType}\r\n\r\n`,
+      ),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  };
 }
 
 /** Lets every request through as a user of `tenantId`, like a valid token of that company */
