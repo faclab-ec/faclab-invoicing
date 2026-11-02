@@ -1,7 +1,7 @@
 import { ConflictError } from '#/shared/errors/app-error';
 
 import { SequenceRepository } from '../domain/repository';
-import { formatSequence, INVOICE_DOC_TYPE, Sequence, SequenceKey } from '../domain/sequence';
+import { formatSequence, Sequence, SequenceKey, VoucherType } from '../domain/sequence';
 
 export class ListSequencesQuery {
   constructor(private readonly repository: SequenceRepository) {}
@@ -15,13 +15,15 @@ export class ListSequencesQuery {
 export interface SetNextSequenceInput {
   establishment: string;
   emissionPoint: string;
-  // The number the next invoice of that establishment and emission point gets
+  // The number the next document of that type, establishment and emission point gets
   nextSequence: number;
+  // Invoices when it doesn't say
+  docType?: VoucherType;
 }
 
 /**
- * Sets where the invoice numbering of an emission point continues, for example after a previous
- * system. It can only move forward: the SRI rejects a number issued twice.
+ * Sets where the numbering of a document type of an emission point continues, for example after a
+ * previous system. It can only move forward: the SRI rejects a number issued twice.
  */
 export class SetNextSequenceCommand {
   constructor(private readonly repository: SequenceRepository) {}
@@ -31,7 +33,7 @@ export class SetNextSequenceCommand {
       tenantId,
       establishment: input.establishment,
       emissionPoint: input.emissionPoint,
-      docType: INVOICE_DOC_TYPE,
+      docType: input.docType ?? VoucherType.INVOICE,
     };
     const sequence = await this.repository.setNext(key, input.nextSequence);
     if (sequence) return sequence;
@@ -40,7 +42,7 @@ export class SetNextSequenceCommand {
     const last = current ? formatSequence(current.lastValue) : 'a later one';
     throw new ConflictError(
       'SEQUENCE_CANNOT_GO_BACK',
-      `${input.establishment}-${input.emissionPoint} already issued ${last}: the next invoice can't be ${formatSequence(input.nextSequence)}`,
+      `${input.establishment}-${input.emissionPoint} already issued ${last}: the next document can't be ${formatSequence(input.nextSequence)}`,
     );
   }
 }

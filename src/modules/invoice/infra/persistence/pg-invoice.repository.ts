@@ -1,7 +1,7 @@
 import { Pool, PoolClient } from 'pg';
 import { validate as isUuid } from 'uuid';
 
-import { formatSequence, INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
+import { formatSequence, VoucherType } from '#/modules/company-config/domain/sequence';
 import { takeNextSequence } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { withTransaction } from '#/shared/infra/database';
 
@@ -54,10 +54,10 @@ export class PgInvoiceRepository implements InvoiceRepository {
            establishment_address, status, sale, access_code, sequence, signature_id, xml,
            issue_code, issue_message, issue_at, attempts, next_attempt_at, created_at,
            updated_at, version, requested_at, numeric_code, authorization_number, authorized_at,
-           authorized_xml_key, result_published_at, trace_context
+           authorized_xml_key, result_published_at, trace_context, doc_type
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
          )
          ON CONFLICT DO NOTHING`,
         [
@@ -89,6 +89,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.authorized_xml_key,
           row.result_published_at,
           row.trace_context,
+          row.doc_type,
         ],
       );
       if (result.rowCount === 0) return false;
@@ -161,7 +162,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
         tenantId: point.tenantId,
         establishment: point.establishment,
         emissionPoint: point.emissionPoint,
-        docType: INVOICE_DOC_TYPE,
+        docType: invoice.docType,
       });
       invoice.assignSequence(formatSequence(value));
       // uq_invoices_tenant_number: a number is never stored twice
@@ -212,10 +213,12 @@ export class PgInvoiceRepository implements InvoiceRepository {
     return { items: rows.rows.map(fromInvoiceRow), total: Number(count.rows[0].total) };
   }
 
-  async findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]> {
+  async findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]> {
     const result = await this.pool.query<InvoiceRow>(
-      `${SELECT_INVOICES} WHERE i.tenant_id = $1 AND i.sale_id = $2 ORDER BY i.created_at, i.id`,
-      [tenantId, saleId],
+      `${SELECT_INVOICES}
+       WHERE i.tenant_id = $1 AND i.sale_id = $2 AND ($3::text IS NULL OR i.doc_type = $3)
+       ORDER BY i.created_at, i.id`,
+      [tenantId, saleId, docType ?? null],
     );
     return result.rows.map(fromInvoiceRow);
   }

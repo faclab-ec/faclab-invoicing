@@ -22,7 +22,7 @@ import {
   SetNextSequenceCommand,
 } from '#/modules/company-config/app/sequence.commands';
 import { issuerLogoKey } from '#/modules/company-config/domain/logo';
-import { INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
@@ -111,7 +111,7 @@ describe('API isolation between companies', () => {
       [TENANT_B, 900],
     ] as const) {
       await sequences.setNext(
-        { tenantId, establishment: '001', emissionPoint: '001', docType: INVOICE_DOC_TYPE },
+        { tenantId, establishment: '001', emissionPoint: '001', docType: VoucherType.INVOICE },
         next,
       );
     }

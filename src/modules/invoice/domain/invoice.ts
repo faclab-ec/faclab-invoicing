@@ -1,3 +1,5 @@
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+
 import { AccessCode } from './access-code';
 import { generateNumericCode } from './access-code-generator';
 import { InvoiceResultEvent, InvoiceStatus } from './events';
@@ -20,6 +22,8 @@ export type TraceContext = Record<string, string>;
 
 export interface InvoiceProps {
   id: string;
+  // Which document it is: invoices when it doesn't say
+  docType?: VoucherType;
   saleId: string;
   point: IssuingPoint;
   status: InvoiceStatus;
@@ -55,8 +59,13 @@ export interface InvoiceAuthorization {
 
 const FINAL_STATUSES = [InvoiceStatus.AUTHORIZED, InvoiceStatus.REJECTED];
 
+/**
+ * An electronic document on its way to the SRI (`docType` says which): every type goes through the
+ * same steps, queue and worker.
+ */
 export class Invoice {
   readonly id: string;
+  readonly docType: VoucherType;
   readonly saleId: string;
   // Company, establishment and emission point that issue it, as the sale says
   readonly point: IssuingPoint;
@@ -84,6 +93,7 @@ export class Invoice {
 
   constructor(props: InvoiceProps) {
     this.id = props.id;
+    this.docType = props.docType ?? VoucherType.INVOICE;
     this.saleId = props.saleId;
     this.point = props.point;
     this.sale = props.sale;

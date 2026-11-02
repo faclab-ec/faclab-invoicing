@@ -3,6 +3,28 @@
 Cada versión de un mensaje, qué cambió y en qué orden se desplegó. Las reglas de compatibilidad
 están en [README.md](README.md#versiones-y-compatibilidad).
 
+## `credit_notes.requested` v1 y `credit_notes.results` v1 (S4.5, 2026-11)
+
+- **Nuevos**, con el envelope completo de ADR-0006. El core pide una nota de crédito (codDoc 04) por
+  una devolución de una venta facturada o por la factura autorizada de una venta anulada, y
+  faclab-invoicing responde con su resultado en un topic propio: en `invoices` marcaría la venta como
+  facturada.
+- **Kafka**: dos topics nuevos, que crea `faclab-infra/scripts/create-topics.sh` (la autocreación está
+  apagada).
+- **Despliegue**: faclab-infra (topics), faclab-invoicing (consume y publica), faclab-core (consume y
+  publica), faclab-web.
+- **Vuelta atrás**: `CREDIT_NOTES_ENABLED=false` en el core deja de pedir notas; las emitidas se
+  conservan.
+
+## `invoices` v1: solo el resultado de cada factura (S4.2, 2026-10)
+
+- **Sin cambio de esquema**: faclab-invoicing deja de consumir `invoices` (avanza sus facturas con
+  una cola en PostgreSQL) y solo publica `InvoiceAuthorized` e `InvoiceRejected`, desde su worker.
+  Los otros cuatro tipos siguen siendo válidos en v1, pero ya no se publican.
+- Un resultado puede repetirse: si Kafka falla, faclab-invoicing vuelve a publicarlo. El core ya
+  ignoraba la repetición (una venta facturada no cambia; un rechazo repetido tampoco).
+- **Despliegue**: solo faclab-invoicing; el core no cambia.
+
 ## `invoices` v1: motivo del rechazo (S3.4, 2026-10)
 
 - **Nuevo, opcional**: `reason` (texto o `null`) en `InvoiceRejected`, con los mensajes del SRI

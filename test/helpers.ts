@@ -18,9 +18,9 @@ import {
 } from '#/modules/company-config/domain/repository';
 import {
   formatSequence,
-  INVOICE_DOC_TYPE,
   Sequence,
   SequenceKey,
+  VoucherType,
 } from '#/modules/company-config/domain/sequence';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
@@ -261,6 +261,8 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
       (row) =>
         row.tenant_id === invoice.tenantId &&
         row.sale_id === invoice.saleId &&
+        row.doc_type === VoucherType.INVOICE &&
+        invoice.docType === VoucherType.INVOICE &&
         row.status !== InvoiceStatus.REJECTED,
     );
     if (active && invoice.isActive) return false;
@@ -292,7 +294,7 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
       throw new ConcurrentUpdateError(invoice.id);
     }
     const { tenantId, establishment, emissionPoint } = invoice.point;
-    const key = [tenantId, establishment, emissionPoint, INVOICE_DOC_TYPE].join('|');
+    const key = [tenantId, establishment, emissionPoint, invoice.docType].join('|');
     const next = (this.sequences.get(key) ?? 0) + 1;
     this.sequences.set(key, next);
     invoice.assignSequence(formatSequence(next));
@@ -327,9 +329,12 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     };
   }
 
-  async findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]> {
+  async findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]> {
     return (await this.all()).filter(
-      (invoice) => invoice.tenantId === tenantId && invoice.saleId === saleId,
+      (invoice) =>
+        invoice.tenantId === tenantId &&
+        invoice.saleId === saleId &&
+        (!docType || invoice.docType === docType),
     );
   }
 

@@ -1,3 +1,5 @@
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+
 import { AccessCode } from '../../domain/access-code';
 import { Invoice, InvoiceStatus, InvoiceStatusHistory, TraceContext } from '../../domain/invoice';
 import { InvoiceIssueCode } from '../../domain/issue';
@@ -6,6 +8,7 @@ import { SaleData } from '../../domain/sale';
 /** A row of `invoices`, with its `invoice_events` aggregated in order as `status_history` */
 export interface InvoiceRow {
   id: string;
+  doc_type: string;
   tenant_id: string;
   sale_id: string;
   issuer_ruc: string | null;
@@ -48,6 +51,7 @@ export interface InvoiceEventRow {
 export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history'> {
   return {
     id: invoice.id,
+    doc_type: invoice.docType,
     tenant_id: invoice.point.tenantId,
     sale_id: invoice.saleId,
     issuer_ruc: invoice.point.issuerRuc,
@@ -90,6 +94,7 @@ export function toInvoiceEventRows(invoice: Invoice): InvoiceEventRow[] {
 export function fromInvoiceRow(row: InvoiceRow): Invoice {
   return new Invoice({
     id: row.id,
+    docType: row.doc_type as VoucherType,
     saleId: row.sale_id,
     point: {
       tenantId: row.tenant_id,

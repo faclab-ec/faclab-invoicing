@@ -1,3 +1,5 @@
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+
 import { InvoiceDelivery } from './delivery';
 import { Invoice, InvoiceStatus } from './invoice';
 
@@ -68,7 +70,8 @@ export interface InvoiceRepository {
   findForTenant(tenantId: string, id: string): Promise<Invoice | null>;
   /** One page of the matching invoices, latest first (`attention`: latest change first) */
   findPage(tenantId: string, filter: InvoiceFilter, page: PageRequest): Promise<InvoicePage>;
-  findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]>;
+  /** Every document of the sale, or only those of one type */
+  findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]>;
   countInFlight(tenantId: string): Promise<InFlightCounts>;
 }
 

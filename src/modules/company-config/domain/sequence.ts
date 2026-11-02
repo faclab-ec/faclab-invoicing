@@ -1,5 +1,8 @@
-// SRI document code of the invoice (factura)
-export const INVOICE_DOC_TYPE = '01';
+/** The documents Faclab issues, by SRI code (Tabla 3): each one numbers on its own */
+export enum VoucherType {
+  INVOICE = '01',
+  CREDIT_NOTE = '04',
+}
 
 /** Whose numbers a counter hands out: a company, an establishment, an emission point and a document type */
 export interface SequenceKey {

@@ -1,4 +1,5 @@
 import { Environment } from '#/modules/company-config/domain/company-config';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 
 import { Ride } from './ride';
 import { AuthorizationVoucher, ValidationVoucher } from './voucher';
@@ -27,9 +28,9 @@ export interface SchemaValidationResult {
   errors: string[];
 }
 
-/** Checks an invoice XML against the SRI schema (XSD) before it is signed */
+/** Checks a document's XML against the SRI schema (XSD) of its type before it is signed */
 export interface InvoiceSchemaValidator {
-  validate(xml: string): Promise<SchemaValidationResult>;
+  validate(xml: string, type?: VoucherType): Promise<SchemaValidationResult>;
 }
 
 /** Object storage for the documents kept for each company (authorized XML, RIDE, issuer logo) */
