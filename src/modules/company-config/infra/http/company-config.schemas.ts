@@ -4,6 +4,7 @@ import {
   SPECIAL_TAXPAYER_RESOLUTION_PATTERN,
   WITHHOLDING_AGENT_RESOLUTION_PATTERN,
 } from '../../domain/company-config';
+import { VoucherType } from '../../domain/sequence';
 
 const companyConfigResponseProperties = {
   taxId: {
@@ -214,9 +215,9 @@ export const listSequencesSchema = {
 
 export const setNextSequenceSchema = {
   tags: ['Company Config'],
-  summary: 'Set where the invoice numbering of an emission point continues',
+  summary: 'Set where the numbering of an emission point continues',
   description:
-    'The next invoice of the establishment and emission point gets `nextSequence`, for example to continue the numbering of a previous system. It never goes back: a number already issued answers 409 `SEQUENCE_CANNOT_GO_BACK`.',
+    'The next document of that type, establishment and emission point gets `nextSequence`, for example to continue the numbering of a previous system. Invoices and credit notes number apart. It never goes back: a number already issued answers 409 `SEQUENCE_CANNOT_GO_BACK`.',
   params: {
     type: 'object',
     required: ['establishment', 'emissionPoint'],
@@ -233,7 +234,13 @@ export const setNextSequenceSchema = {
         type: 'integer',
         minimum: 1,
         maximum: 999999999,
-        description: 'Number the next invoice gets.',
+        description: 'Number the next document gets.',
+      },
+      docType: {
+        type: 'string',
+        enum: Object.values(VoucherType),
+        default: VoucherType.INVOICE,
+        description: 'SRI code of the document: 01 invoice (default), 04 credit note.',
       },
     },
   },

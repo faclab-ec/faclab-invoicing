@@ -2,6 +2,7 @@ import { DateTime } from 'luxon';
 
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { ReadinessReport } from '#/modules/company-config/domain/readiness';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 
 import { InvoiceDelivery } from '../../domain/delivery';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
@@ -75,6 +76,7 @@ export interface ListInvoicesOptions {
   // Only unfinished invoices that are stuck or waiting to start, latest change first
   attention?: boolean;
   status?: InvoiceStatus;
+  docType?: VoucherType;
   // Days (YYYY-MM-DD) in the service's timezone, both included
   fromDate?: string;
   toDate?: string;
@@ -94,6 +96,7 @@ export class ListInvoicesQuery {
       {
         attention: options.attention,
         status: options.status,
+        docType: options.docType,
         createdFrom: options.fromDate ? this.startOfDay(options.fromDate) : undefined,
         // The day after `toDate`, excluded
         createdBefore: options.toDate ? this.startOfDay(options.toDate, 1) : undefined,

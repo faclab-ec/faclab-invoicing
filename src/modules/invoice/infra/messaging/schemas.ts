@@ -7,7 +7,8 @@ import { IVA_CODE_KEYS } from '../../domain/sri-catalogs';
 // contracts/README.md): test/contract checks these schemas against their examples. A message
 // without schema_version predates v1 and is read as v1; a version not listed here is kept as a dead
 // letter.
-// Only `sales.confirmed` comes in: `invoices` goes out to faclab-core (S4.2).
+// `sales.confirmed` and `credit_notes.requested` come in; `invoices` and `credit_notes.results` go
+// out to faclab-core.
 
 const SaleConfirmedCustomerSchema = z.object({
   id: z.number(),
@@ -92,3 +93,43 @@ export const SaleConfirmedMessageSchema = z.union([
 export type SaleConfirmedV1Message = z.infer<typeof SaleConfirmedV1MessageSchema>;
 export type SaleConfirmedV2Message = z.infer<typeof SaleConfirmedV2MessageSchema>;
 export type SaleConfirmedMessage = z.infer<typeof SaleConfirmedMessageSchema>;
+
+const CreditNoteItemSchema = z.object({
+  product_id: z.number(),
+  sku: z.string().nullable(),
+  product_name: z.string().nullable(),
+  quantity: z.number(),
+  unit_price: z.string(),
+  tax_code: z.enum(IVA_CODE_KEYS),
+  invoice_discount: z.string(),
+  invoice_base: z.string(),
+  invoice_tax: z.string(),
+});
+
+// v1: what to credit and from where; the buyer and the invoice's number come from the invoice
+export const CreditNoteRequestedMessageSchema = z.object({
+  event_id: z.string().uuid(),
+  event_type: z.literal('CreditNoteRequested'),
+  schema_version: z.literal(1),
+  tenant_id: z.string().uuid(),
+  aggregate_id: z.number(),
+  occurred_at: z.string().transform((s) => new Date(s.endsWith('Z') ? s : s + 'Z')),
+  payload: z.object({
+    credit_note_id: z.number(),
+    sale_id: z.number(),
+    invoice_id: z.string().uuid(),
+    refund_id: z.number().nullable(),
+    refund_number: z.string().nullable(),
+    issuer_ruc: z.string().regex(/^\d{13}$/),
+    establishment_code: SriCodeSchema,
+    establishment_address: z.string().nullable(),
+    emission_point_code: SriCodeSchema,
+    reason: z.string().min(1),
+    subtotal: z.string(),
+    tax: z.string(),
+    total: z.string(),
+    items: z.array(CreditNoteItemSchema).min(1),
+  }),
+});
+
+export type CreditNoteRequestedMessage = z.infer<typeof CreditNoteRequestedMessageSchema>;

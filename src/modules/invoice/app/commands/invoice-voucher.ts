@@ -1,5 +1,3 @@
-import { CompanyConfig } from '#/modules/company-config/domain/company-config';
-
 import { Invoice } from '../../domain/invoice';
 import { buildInvoiceXml } from '../../domain/invoice-xml-builder';
 import { InvoiceInvalidError } from '../../domain/issue';
@@ -20,7 +18,7 @@ export interface VoucherKind {
   // How the logs and the issues name it
   readonly label: string;
   /** Why it can't be issued at all: it ends rejected, without a number */
-  rejection(invoice: Invoice, config?: CompanyConfig): string | null;
+  rejection(invoice: Invoice): string | null;
   /** Throws InvoiceInvalidError when its amounts don't add up */
   check(invoice: Invoice): void;
   buildXml(invoice: Invoice, issue: VoucherIssue): string;

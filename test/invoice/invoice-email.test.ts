@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+import { buildCreditNoteXml } from '#/modules/invoice/domain/credit-note-xml-builder';
 import { buildInvoiceEmail } from '#/modules/invoice/domain/invoice-email';
 import { buildRide } from '#/modules/invoice/domain/ride';
 
-import { signedInvoiceXml, TEST_ACCESS_CODE, TEST_AUTHORIZATION } from '../helpers';
+import {
+  fullInvoiceXmlInput,
+  signedInvoiceXml,
+  TEST_ACCESS_CODE,
+  TEST_AUTHORIZATION,
+} from '../helpers';
 
 const rideOf = (environment: number, buyer = 'Construcciones Andinas Cía. Ltda.') =>
   buildRide(
@@ -66,5 +73,41 @@ describe('buildInvoiceEmail', () => {
 
     expect(mail.html).toContain('Ferretería &lt;b&gt;&quot;La Llave&quot;&lt;/b&gt; &amp; Cía');
     expect(mail.html).not.toContain('<b>');
+  });
+});
+
+describe('buildInvoiceEmail of a credit note', () => {
+  const ride = buildRide(
+    buildCreditNoteXml({
+      ...fullInvoiceXmlInput(),
+      voucherTypeCode: VoucherType.CREDIT_NOTE,
+      modifiedNumber: '001-001-000000123',
+      modifiedDate: '05/10/2026',
+      reason: 'Devolución de mercadería',
+      environment: 2,
+    }),
+    TEST_AUTHORIZATION,
+    'America/Guayaquil',
+  );
+  const mail = buildInvoiceEmail({
+    ride,
+    authorizedXml: Buffer.from('<autorizacion/>'),
+    pdf: Buffer.from('%PDF-1.3'),
+    from: 'facturas@faclab.test',
+    replyTo: null,
+    to: 'compras@andinas.ec',
+  });
+
+  it('names the document and the invoice it modifies', () => {
+    expect(mail.subject).toBe('Nota de crédito electrónica No. 001-001-000000001 de ACME');
+    for (const value of [
+      'ACME le envía su nota de crédito electrónica.',
+      'Nota de crédito No.: 001-001-000000001',
+      'Factura que modifica: 001-001-000000123',
+      'Motivo: Devolución de mercadería',
+    ]) {
+      expect(mail.text).toContain(value);
+    }
+    expect(mail.text).not.toContain('Factura No.');
   });
 });

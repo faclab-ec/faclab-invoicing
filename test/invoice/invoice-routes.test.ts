@@ -29,6 +29,7 @@ import {
   InMemoryInvoiceRepository,
   makeAuthorizedInvoice,
   makeConfig,
+  makeCreditNoteMessage,
   makePoint,
   makeSale,
   TENANT_A,
@@ -378,5 +379,63 @@ describe('POST /api/invoices/:id/email and GET /api/invoices/:id/emails', () => 
       'compras@andinas.ec',
     );
     expect((await api.inject(`/api/invoices/${NO_EMAIL}`)).json().data.buyerEmail).toBeNull();
+  });
+});
+
+describe('The documents of a sale', () => {
+  let app: Awaited<ReturnType<typeof server>> | undefined;
+  afterEach(async () => app?.close());
+
+  async function withCreditNote() {
+    const repo = new InMemoryInvoiceRepository();
+    await repo.createInvoice(Invoice.receive('inv-1', makePoint(), makeSale()));
+    const { credit_note_id, sale_id, invoice_id, refund_id, refund_number, reason, ...amounts } =
+      makeCreditNoteMessage().payload;
+    await repo.createInvoice(
+      Invoice.receiveCreditNote('cn-1', makePoint(), {
+        credit_note_id,
+        sale_id,
+        invoice_id,
+        refund_id,
+        refund_number,
+        reason,
+        subtotal: amounts.subtotal,
+        tax: amounts.tax,
+        total: amounts.total,
+        items: amounts.items,
+        modified: null,
+        problem: null,
+      }),
+    );
+    app = await server(repo);
+    return app;
+  }
+
+  it('by-sale answers the invoice and its credit note, each with its type', async () => {
+    const response = await (await withCreditNote()).inject('/api/invoices/by-sale/42');
+
+    expect(
+      response
+        .json()
+        .data.map((document: { id: string; docType: string; sourceInvoiceId: string | null }) => [
+          document.id,
+          document.docType,
+          document.sourceInvoiceId,
+        ]),
+    ).toEqual([
+      ['inv-1', '01', null],
+      ['cn-1', '04', 'inv-1'],
+    ]);
+  });
+
+  it('the list filters by document type', async () => {
+    const api = await withCreditNote();
+
+    const creditNotes = await api.inject('/api/invoices?docType=04');
+    const invoices = await api.inject('/api/invoices?docType=01');
+
+    expect(creditNotes.json().data.map((d: { id: string }) => d.id)).toEqual(['cn-1']);
+    expect(invoices.json().data.map((d: { id: string }) => d.id)).toEqual(['inv-1']);
+    expect((await api.inject('/api/invoices?docType=07')).statusCode).toBe(400);
   });
 });

@@ -5,14 +5,18 @@ import { Invoice } from '../../domain/invoice';
 export function toSummaryResponse(invoice: Invoice) {
   return {
     id: invoice.id,
+    // SRI code: 01 invoice, 04 credit note
+    docType: invoice.docType,
     saleId: invoice.saleId,
+    // The invoice a credit note modifies; null in an invoice
+    sourceInvoiceId: invoice.creditNote?.invoice_id ?? null,
     accessCode: invoice.accessCode?.value ?? null,
     status: invoice.status,
     signatureId: invoice.signatureId,
     authorizationNumber: invoice.authorization?.number ?? null,
     authorizedAt: invoice.authorization?.authorizedAt.toISOString() ?? null,
     // Where it is (re)sent: the buyer's email of the sale
-    buyerEmail: buyerEmail(invoice.sale),
+    buyerEmail: buyerEmail(invoice.buyer),
     statusHistory: invoice.statusHistory.map((h) => ({
       name: h.name,
       statusDate: h.statusDate.toISOString(),

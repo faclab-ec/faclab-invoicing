@@ -53,6 +53,14 @@ export interface RideAmount {
   value: string;
 }
 
+/** What a credit note says of the invoice it modifies (ficha técnica, RIDE de nota de crédito) */
+export interface RideModifiedDocument {
+  type: 'FACTURA';
+  number: string;
+  issueDate: string;
+  reason: string;
+}
+
 export interface RidePayment {
   description: string;
   amount: string;
@@ -66,7 +74,7 @@ export interface RidePayment {
  */
 export interface Ride {
   issuer: RideIssuer;
-  documentType: 'FACTURA';
+  documentType: 'FACTURA' | 'NOTA DE CRÉDITO';
   // 001-001-000000123
   documentNumber: string;
   authorizationNumber: string;
@@ -77,6 +85,8 @@ export interface Ride {
   emission: string;
   accessCode: string;
   buyer: RideBuyer;
+  // Only in a credit note
+  modifiedDocument: RideModifiedDocument | null;
   lines: RideLine[];
   totals: RideAmount[];
   total: string;
@@ -89,15 +99,18 @@ export interface RideAuthorization {
   authorizedAt: Date;
 }
 
-/** The RIDE of a signed invoice XML (factura 1.1.0) and its authorization, in `timezone` */
+/**
+ * The RIDE of a signed XML (factura or notaCredito 1.1.0) and its authorization, in `timezone`
+ */
 export function buildRide(
   signedXml: string,
   authorization: RideAuthorization,
   timezone: string,
 ): Ride {
-  const factura = parseFactura(signedXml);
-  const tributaria = required(factura, 'infoTributaria');
-  const info = required(factura, 'infoFactura');
+  const voucher = parseVoucher(signedXml);
+  const isCreditNote = voucher.localName === 'notaCredito';
+  const tributaria = required(voucher, 'infoTributaria');
+  const info = required(voucher, isCreditNote ? 'infoNotaCredito' : 'infoFactura');
   const ambiente = requiredText(tributaria, 'ambiente');
 
   return {
@@ -112,7 +125,7 @@ export function buildRide(
       withholdingAgent: text(tributaria, 'agenteRetencion'),
       rimpe: text(tributaria, 'contribuyenteRimpe'),
     },
-    documentType: 'FACTURA',
+    documentType: isCreditNote ? 'NOTA DE CRÉDITO' : 'FACTURA',
     documentNumber: [
       requiredText(tributaria, 'estab'),
       requiredText(tributaria, 'ptoEmi'),
@@ -132,11 +145,21 @@ export function buildRide(
       address: text(info, 'direccionComprador'),
       issueDate: requiredText(info, 'fechaEmision'),
     },
-    lines: children(required(factura, 'detalles'), 'detalle').map(toLine),
-    totals: totalsOf(info),
-    total: money(requiredText(info, 'importeTotal')),
+    modifiedDocument: isCreditNote
+      ? {
+          type: 'FACTURA',
+          number: requiredText(info, 'numDocModificado'),
+          issueDate: requiredText(info, 'fechaEmisionDocSustento'),
+          reason: requiredText(info, 'motivo'),
+        }
+      : null,
+    lines: children(required(voucher, 'detalles'), 'detalle').map(
+      isCreditNote ? toCreditNoteLine : toLine,
+    ),
+    totals: totalsOf(info, isCreditNote),
+    total: money(requiredText(info, isCreditNote ? 'valorModificacion' : 'importeTotal')),
     payments: children(child(info, 'pagos'), 'pago').map(toPayment),
-    additionalInfo: children(child(factura, 'infoAdicional'), 'campoAdicional').map((campo) => ({
+    additionalInfo: children(child(voucher, 'infoAdicional'), 'campoAdicional').map((campo) => ({
       label: campo.getAttribute('nombre') ?? '',
       value: campo.textContent?.trim() ?? '',
     })),
@@ -144,12 +167,21 @@ export function buildRide(
 }
 
 function toLine(detalle: Element): RideLine {
+  return lineOf(detalle, requiredText(detalle, 'codigoPrincipal'), text(detalle, 'codigoAuxiliar'));
+}
+
+// The schema has its own tags for the codes of a credit note's lines
+function toCreditNoteLine(detalle: Element): RideLine {
+  return lineOf(detalle, requiredText(detalle, 'codigoInterno'), text(detalle, 'codigoAdicional'));
+}
+
+function lineOf(detalle: Element, mainCode: string, auxiliaryCode: string | null): RideLine {
   const details = children(child(detalle, 'detallesAdicionales'), 'detAdicional')
     .map((det) => `${det.getAttribute('nombre')}: ${det.getAttribute('valor')}`)
     .join(' · ');
   return {
-    mainCode: requiredText(detalle, 'codigoPrincipal'),
-    auxiliaryCode: text(detalle, 'codigoAuxiliar'),
+    mainCode,
+    auxiliaryCode,
     description: requiredText(detalle, 'descripcion'),
     details: details || null,
     quantity: decimal(requiredText(detalle, 'cantidad')),
@@ -171,9 +203,10 @@ function toPayment(pago: Element): RidePayment {
 
 /**
  * The SRI's summary: subtotals by rate (the general rate, 0%, not taxed and exempt always; other
- * rates when the invoice has them), then discount, the IVA of each taxed rate, tip and total.
+ * rates when the invoice has them), then discount, the IVA of each taxed rate, tip and total. A
+ * credit note has no discount nor tip at this level.
  */
-function totalsOf(info: Element): RideAmount[] {
+function totalsOf(info: Element, isCreditNote: boolean): RideAmount[] {
   const subtotals = new Map<string, number>([
     [GENERAL_RATE, 0],
     ['0%', 0],
@@ -205,14 +238,19 @@ function totalsOf(info: Element): RideAmount[] {
     amount('SUBTOTAL NO OBJETO DE IVA', notTaxed),
     amount('SUBTOTAL EXENTO DE IVA', exempt),
     { label: 'SUBTOTAL SIN IMPUESTOS', value: money(requiredText(info, 'totalSinImpuestos')) },
-    { label: 'TOTAL DESCUENTO', value: money(requiredText(info, 'totalDescuento')) },
+    ...(isCreditNote
+      ? []
+      : [{ label: 'TOTAL DESCUENTO', value: money(requiredText(info, 'totalDescuento')) }]),
     ...[...ivas].map(([rate, value]) => amount(`IVA ${rate}`, value)),
-    { label: 'PROPINA', value: money(text(info, 'propina') ?? '0') },
-    { label: 'VALOR TOTAL', value: money(requiredText(info, 'importeTotal')) },
+    ...(isCreditNote ? [] : [{ label: 'PROPINA', value: money(text(info, 'propina') ?? '0') }]),
+    {
+      label: 'VALOR TOTAL',
+      value: money(requiredText(info, isCreditNote ? 'valorModificacion' : 'importeTotal')),
+    },
   ];
 }
 
-function parseFactura(xml: string): Element {
+function parseVoucher(xml: string): Element {
   const errors: string[] = [];
   const document = new DOMParser({
     errorHandler: {
@@ -222,7 +260,7 @@ function parseFactura(xml: string): Element {
     },
   }).parseFromString(xml, 'text/xml');
   const root = document.documentElement;
-  if (errors.length > 0 || !root || root.localName !== 'factura') {
+  if (errors.length > 0 || !root || !['factura', 'notaCredito'].includes(root.localName ?? '')) {
     throw new Error(`Not an invoice XML${errors.length > 0 ? `: ${errors[0]}` : ''}`);
   }
   return root;

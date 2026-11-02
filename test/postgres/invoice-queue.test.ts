@@ -97,7 +97,7 @@ describePostgres('Invoice queue on PostgreSQL', () => {
       queue,
       invoiceSteps(repo, readiness, { sri }),
       readiness,
-      { sendMessage: async (event) => void published.push(event) },
+      { sendMessage: async (event) => void published.push(event as InvoiceResultEvent) },
     );
     const run = vi.spyOn(processor, 'run');
     const worker = new InvoiceWorker(queue, processor, {

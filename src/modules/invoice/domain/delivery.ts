@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { Invoice, TraceContext } from './invoice';
 import { retryAt } from './issue';
-import { SaleData } from './sale';
 
 // Created with the authorization, or by someone who asked to send it again
 export type DeliveryKind = 'authorization' | 'resend';
@@ -47,9 +46,9 @@ export interface InvoiceDeliveryProps {
 const EMAIL_PATTERN = /^[^\s@,;<>"()[\]\\]+@[^\s@,;<>"()[\]\\]+\.[^\s@,;<>"()[\]\\]+$/;
 const MAX_EMAIL_LENGTH = 254;
 
-/** The email the invoice goes to: the buyer's, as the sale brought it; null if it has none */
-export function buyerEmail(sale: SaleData | null): string | null {
-  const email = sale?.customer?.email?.trim();
+/** The email a document goes to: the buyer's, as the sale brought it; null if it has none */
+export function buyerEmail(buyer: { customer: { email: string | null } | null } | null) {
+  const email = buyer?.customer?.email?.trim();
   if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) return null;
   return email;
 }
@@ -126,7 +125,7 @@ export class InvoiceDelivery {
       tenantId: invoice.tenantId,
       invoiceId: invoice.id,
       kind,
-      recipient: buyerEmail(invoice.sale),
+      recipient: buyerEmail(invoice.buyer),
       requestedBy,
       status: 'pending',
       attempts: 0,

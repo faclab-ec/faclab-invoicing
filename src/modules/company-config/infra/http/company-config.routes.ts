@@ -18,6 +18,7 @@ import {
 } from '../../app/issuer-logo.commands';
 import { ListSequencesQuery, SetNextSequenceCommand } from '../../app/sequence.commands';
 import { LOGO_MAX_BYTES } from '../../domain/logo';
+import { VoucherType } from '../../domain/sequence';
 import { toResponse, toSequenceResponse } from './company-config.mapper';
 import {
   deleteLogoSchema,
@@ -128,7 +129,7 @@ export function registerCompanyConfigRoutes(
     },
   );
 
-  // GET /api/sequences — the company's invoice counters
+  // GET /api/sequences — the company's counters, one per document type and emission point
   app.get('/api/sequences', { schema: listSequencesSchema, preHandler }, async (request, reply) => {
     const sequences = await handlers.listSequences.execute(tenantOf(request));
     return reply.success(sequences.map(toSequenceResponse));
@@ -137,7 +138,7 @@ export function registerCompanyConfigRoutes(
   // PUT /api/sequences/:establishment/:emissionPoint — where its numbering continues
   app.put<{
     Params: { establishment: string; emissionPoint: string };
-    Body: { nextSequence: number };
+    Body: { nextSequence: number; docType?: VoucherType };
   }>(
     '/api/sequences/:establishment/:emissionPoint',
     { schema: setNextSequenceSchema, preHandler },
@@ -146,10 +147,11 @@ export function registerCompanyConfigRoutes(
         establishment: request.params.establishment,
         emissionPoint: request.params.emissionPoint,
         nextSequence: request.body.nextSequence,
+        docType: request.body.docType,
       });
       logger.info(
         { establishment: sequence.establishment, emissionPoint: sequence.emissionPoint },
-        'Invoice sequence set',
+        'Sequence set',
       );
       return reply.success(toSequenceResponse(sequence));
     },

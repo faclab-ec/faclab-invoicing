@@ -1,6 +1,7 @@
 import { VoucherType } from '#/modules/company-config/domain/sequence';
 
 import { AccessCode } from '../../domain/access-code';
+import { CreditNoteData } from '../../domain/credit-note';
 import { Invoice, InvoiceStatus, InvoiceStatusHistory, TraceContext } from '../../domain/invoice';
 import { InvoiceIssueCode } from '../../domain/issue';
 import { SaleData } from '../../domain/sale';
@@ -17,6 +18,10 @@ export interface InvoiceRow {
   establishment_address: string | null;
   status: string;
   sale: SaleData | null;
+  credit_note: CreditNoteData | null;
+  // The invoice it modifies and the id faclab-core gave it: only in a credit note
+  source_invoice_id: string | null;
+  request_id: number | null;
   requested_at: Date | null;
   access_code: string | null;
   sequence: string | null;
@@ -60,6 +65,10 @@ export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history
     establishment_address: invoice.point.establishmentAddress,
     status: invoice.status,
     sale: invoice.sale,
+    credit_note: invoice.creditNote,
+    // Null when the invoice it names doesn't exist: it ends rejected
+    source_invoice_id: invoice.creditNote?.modified ? invoice.creditNote.invoice_id : null,
+    request_id: invoice.creditNote?.credit_note_id ?? null,
     requested_at: invoice.requestedAt,
     access_code: invoice.accessCode?.value ?? null,
     sequence: invoice.sequence,
@@ -105,6 +114,7 @@ export function fromInvoiceRow(row: InvoiceRow): Invoice {
     },
     status: row.status as InvoiceStatus,
     sale: row.sale,
+    creditNote: row.credit_note,
     requestedAt: row.requested_at,
     accessCode: row.access_code ? AccessCode.create(row.access_code) : null,
     sequence: row.sequence,

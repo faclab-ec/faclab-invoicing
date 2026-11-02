@@ -1,7 +1,7 @@
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { logger } from '#/shared/logger';
 
-import { InvoiceResultEvent } from '../../domain/events';
+import { VoucherResultEvent } from '../../domain/events';
 import { Invoice, InvoiceStatus } from '../../domain/invoice';
 import { isBlockingIssue, issueFromError } from '../../domain/issue';
 import { MessageProducer } from '../../domain/ports';
@@ -35,7 +35,7 @@ export class InvoiceProcessor {
     private queue: InvoiceQueue,
     private commandMap: Map<InvoiceStatus, InvoiceCommand>,
     private readiness: IssuerReadinessService,
-    private resultProducer: MessageProducer<InvoiceResultEvent> | null,
+    private resultProducer: MessageProducer<VoucherResultEvent> | null,
     private publishRetryMs: number = DEFAULT_PUBLISH_RETRY_MS,
     private now: () => Date = () => new Date(),
   ) {}

@@ -2,7 +2,8 @@ import { VoucherType } from '#/modules/company-config/domain/sequence';
 
 import { AccessCode } from './access-code';
 import { generateNumericCode } from './access-code-generator';
-import { InvoiceResultEvent, InvoiceStatus } from './events';
+import { CreditNoteData } from './credit-note';
+import { CreditNoteResultEvent, InvoiceStatus, VoucherResultEvent } from './events';
 import { InvoiceIssue, nextAttemptAt } from './issue';
 import { IssuingPoint, SaleData } from './sale';
 
@@ -28,6 +29,8 @@ export interface InvoiceProps {
   point: IssuingPoint;
   status: InvoiceStatus;
   sale: SaleData | null;
+  // What a credit note credits and what it modifies; null in an invoice
+  creditNote?: CreditNoteData | null;
   // When faclab-core asked to invoice the sale (`occurred_at` of sales.confirmed): its confirmation,
   // or a resend. Null in invoices received before S4.1
   requestedAt: Date | null;
@@ -71,6 +74,7 @@ export class Invoice {
   readonly point: IssuingPoint;
   // Kept so the XML can be built whenever the issuer is ready
   readonly sale: SaleData | null;
+  readonly creditNote: CreditNoteData | null;
   readonly requestedAt: Date | null;
   readonly traceContext: TraceContext | null;
   readonly statusHistory: InvoiceStatusHistory[];
@@ -97,6 +101,7 @@ export class Invoice {
     this.saleId = props.saleId;
     this.point = props.point;
     this.sale = props.sale;
+    this.creditNote = props.creditNote ?? null;
     this.requestedAt = props.requestedAt;
     this.traceContext = props.traceContext;
     this.statusHistory = props.statusHistory;
@@ -118,6 +123,17 @@ export class Invoice {
 
   get tenantId(): string {
     return this.point.tenantId;
+  }
+
+  /** Who gets the document: the sale's customer or, in a credit note, the invoice's buyer */
+  get buyer(): { customer: SaleData['customer'] } | null {
+    return this.sale ?? this.creditNote?.modified ?? null;
+  }
+
+  /** The number of the document: 001-001-000000123; null until it has one */
+  get number(): string | null {
+    if (this._sequence === null) return null;
+    return `${this.point.establishment}-${this.point.emissionPoint}-${this._sequence}`;
   }
 
   get status(): InvoiceStatus {
@@ -224,6 +240,44 @@ export class Invoice {
     return invoice;
   }
 
+  /** A credit note of faclab-core, on its way like any other document of the sale */
+  static receiveCreditNote(
+    id: string,
+    point: IssuingPoint,
+    creditNote: CreditNoteData,
+    now: Date = new Date(),
+    requestedAt: Date | null = null,
+    traceContext: TraceContext | null = null,
+  ): Invoice {
+    const document = new Invoice({
+      id,
+      docType: VoucherType.CREDIT_NOTE,
+      saleId: String(creditNote.sale_id),
+      point,
+      status: InvoiceStatus.PENDING,
+      sale: null,
+      creditNote,
+      requestedAt,
+      accessCode: null,
+      sequence: null,
+      numericCode: null,
+      signatureId: null,
+      xml: null,
+      authorization: null,
+      statusHistory: [],
+      issue: null,
+      attempts: 0,
+      nextAttemptAt: null,
+      resultPublishedAt: null,
+      traceContext,
+      createdAt: now,
+      updatedAt: now,
+      version: 0,
+    });
+    document.addStatusHistory(InvoiceStatus.PENDING, now, 'Credit note received');
+    return document;
+  }
+
   requireXml(): string {
     if (this._xml === null) throw new Error(`Invoice ${this.id} has no XML yet`);
     return this._xml;
@@ -299,10 +353,11 @@ export class Invoice {
     this._updatedAt = issue.at;
   }
 
-  /** The SRI's answer, for faclab-core: null until the invoice is authorized or rejected */
-  resultEvent(): InvoiceResultEvent | null {
+  /** The SRI's answer, for faclab-core: null until the document is authorized or rejected */
+  resultEvent(): VoucherResultEvent | null {
     if (!this.isFinal) return null;
     const last = this.statusHistory[this.statusHistory.length - 1];
+    if (this.creditNote) return this.creditNoteResult(this.creditNote.credit_note_id, last);
     const base = {
       tenantId: this.tenantId,
       invoiceId: this.id,
@@ -313,6 +368,38 @@ export class Invoice {
     if (this._status === InvoiceStatus.AUTHORIZED) return { ...base, type: 'InvoiceAuthorized' };
     // A rejection carries the SRI's messages (invoices v1 `reason`)
     return { ...base, type: 'InvoiceRejected', reason: last.description || null };
+  }
+
+  private creditNoteResult(
+    creditNoteId: number,
+    last: InvoiceStatusHistory,
+  ): CreditNoteResultEvent {
+    const base = {
+      tenantId: this.tenantId,
+      documentId: this.id,
+      creditNoteId,
+      saleId: this.saleId,
+      status: this._status,
+      occurredAt: last.statusDate,
+    };
+    if (this._status === InvoiceStatus.AUTHORIZED) {
+      return {
+        ...base,
+        type: 'CreditNoteAuthorized',
+        number: this.number!,
+        accessCode: this.requireAccessCode().value,
+        authorizedAt: this._authorization!.authorizedAt,
+        reason: null,
+      };
+    }
+    return {
+      ...base,
+      type: 'CreditNoteRejected',
+      number: this.number,
+      accessCode: this._accessCode?.value ?? null,
+      authorizedAt: null,
+      reason: last.description || null,
+    };
   }
 
   /**

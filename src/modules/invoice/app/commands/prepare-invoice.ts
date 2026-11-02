@@ -10,6 +10,7 @@ import { InvoiceInvalidError } from '../../domain/issue';
 import { InvoiceSchemaValidator } from '../../domain/ports';
 import { InvoiceRepository } from '../../domain/repository';
 import { InvoiceCommand } from './command';
+import { CreditNoteVoucher } from './credit-note-voucher';
 import { InvoiceVoucher, VoucherKind } from './invoice-voucher';
 
 // Schema errors shown in the invoice's issue
@@ -48,8 +49,10 @@ export class PrepareInvoiceCommand implements InvoiceCommand {
     private options: PrepareInvoiceOptions,
     private now: () => Date = () => new Date(),
   ) {
-    const invoice = new InvoiceVoucher(options.finalConsumerMaxTotal);
-    this.kinds = { [VoucherType.INVOICE]: invoice, [VoucherType.CREDIT_NOTE]: invoice };
+    this.kinds = {
+      [VoucherType.INVOICE]: new InvoiceVoucher(options.finalConsumerMaxTotal),
+      [VoucherType.CREDIT_NOTE]: new CreditNoteVoucher(),
+    };
   }
 
   async execute(invoice: Invoice): Promise<void> {

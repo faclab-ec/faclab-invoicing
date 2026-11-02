@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+import { buildCreditNoteXml } from '#/modules/invoice/domain/credit-note-xml-builder';
 import { buildRide, Ride } from '#/modules/invoice/domain/ride';
 import {
   PdfKitRideRenderer,
@@ -149,5 +151,44 @@ describe('PdfKitRideRenderer: the RIDE as a PDF', () => {
 describe('toWinAnsi', () => {
   it('keeps Spanish and WinAnsi punctuation, replaces the rest', () => {
     expect(toWinAnsi('Ñandú – “ok” €5 ✓\tfin')).toBe('Ñandú – “ok” €5 ? fin');
+  });
+});
+
+describe('PdfKitRideRenderer: the RIDE of a credit note', () => {
+  const xml = buildCreditNoteXml({
+    ...fullInvoiceXmlInput(),
+    voucherTypeCode: VoucherType.CREDIT_NOTE,
+    modifiedNumber: '001-001-000000123',
+    modifiedDate: '05/10/2026',
+    reason: 'Devolución de mercadería',
+  });
+
+  it('prints the document, what it modifies and why, as the ficha técnica shows it', async () => {
+    const text = pdfText(await renderer.render(rideOf(xml), null));
+
+    for (const value of [
+      'NOTA DE CRÉDITO',
+      'No. 001-001-000000001',
+      'Comprobante que se modifica:',
+      'FACTURA 001-001-000000123',
+      'Fecha Emisión (Comprobante a modificar):',
+      '05/10/2026',
+      'Razón de Modificación:',
+      'Devolución de mercadería',
+      'VALOR TOTAL',
+    ]) {
+      expect(text).toContain(value);
+    }
+  });
+
+  it('has no table of payments', async () => {
+    const text = pdfText(await renderer.render(rideOf(xml), null));
+
+    expect(text).not.toContain('Forma de pago');
+    expect(text).not.toContain('PROPINA');
+  });
+
+  it('keeps the payments of an invoice', async () => {
+    expect(pdfText(await renderer.render(rideOf(), null))).toContain('Forma de pago');
   });
 });
