@@ -107,10 +107,30 @@ The SRI number (`secuencial`, 9 digits) is per company, establishment, emission 
 
 ---
 
+### Credit notes (S4.5)
+
+A credit note (codDoc 04) is a row of `invoices` with `doc_type = '04'`: same steps, queue, worker, signature, sending, authorization, kept XML, RIDE and delivery. What changes per type is in `VoucherKind` (`invoice-voucher.ts`, `credit-note-voucher.ts`): why it can't be issued, what must add up and how its XML is built. `PrepareInvoiceCommand` does the rest.
+
+```
+credit_notes.requested ──► consumer: ReceiveCreditNote ──► PENDING, due now ──► offset committed
+                                                   │
+                      worker: Prepare, Sign, Send, Authorize (like any invoice)
+                                                   │
+                      credit_notes.results ◄───────┘  CreditNoteAuthorized / CreditNoteRejected
+```
+
+- **What it modifies comes from the invoice.** `ReceiveCreditNote` reads the invoice named by `invoice_id` in the company and keeps its number, its date (the first 8 digits of its access code) and its buyer, the only valid receiver. faclab-core only says what to credit, why and from which emission point.
+- **Rejected without a number**: an invoice that doesn't exist in the company, isn't authorized, isn't an invoice, or was issued to the final consumer (`customer` null or thirteen nines): NAC-DGERCGC25-00000014, art. 3, and ficha 5.7. faclab-core already refuses such a refund; this is the last barrier.
+- **Idempotent.** Id: UUID v5 of the `event_id`. `uq_invoices_active_credit_note` keeps one active document per credit note of faclab-core (`request_id`). Asking again after a rejection issues another one, with another number; if it is authorized, its result is published again.
+- **Its own numbering**: `sequences.doc_type`, and `uq_invoices_tenant_number` includes the type. `PUT /api/sequences/:establishment/:emissionPoint` takes an optional `docType`.
+- **Its result goes on its own topic.** On `invoices`, faclab-core would mark the sale as invoiced. `VoucherResultProducer` picks the topic by event.
+- **The buyer gets it** (reformatoria 1 of the resolution asks to inform any change): a delivery with its RIDE and XML, like an invoice. The RIDE follows the ficha: document modified, its date and the reason, without payments, discount or tip.
+
 ## SRI Compliance
 
-Checked against the SRI's offline scheme ficha técnica **2.34** (27/07/2026), the factura XSD and resolutions NAC-DGERCGC25-00000014 and NAC-DGERCGC25-00000017, all from [sri.gob.ec/facturacion-electronica](https://www.sri.gob.ec/facturacion-electronica) (S4.1, 2026-10-29).
+Checked against the SRI's offline scheme ficha técnica **2.34** (27/07/2026), the factura and notaCredito XSD and resolutions NAC-DGERCGC25-00000014 and NAC-DGERCGC25-00000017, all from [sri.gob.ec/facturacion-electronica](https://www.sri.gob.ec/facturacion-electronica) (S4.1, 2026-10-29).
 
+- **Credit notes**, `notaCredito` 1.1.0 (section above). They carry no time limit: NAC-DGERCGC25-00000017 replaced art. 5 of the 14 and removed the 12 months. Cancelling online until the 7th of the next month is done by hand in the SRI's portal, and cancelling a credit note needs the receiver's acceptance (art. 4): neither is done here.
 - **XML version 1.1.0.** 2.0.0 and 2.1.0 only add the invoice that replaces a remission guide and third-party items. The XSD is in `resources/xsd/` (its README has the source, the hashes and the one local change: the Negocio Popular legend of `contribuyenteRimpe`, required by the ficha but missing from the published XSD).
 - **XSD before signing.** `PrepareInvoice` validates every XML with libxml2 (`xmllint-wasm`); a failure stays as a `XML_SCHEMA_INVALID` issue. Free texts are fitted to the schema first: one line, at most 300 characters; a SKU longer than 25 is left out of `codigoAuxiliar`; `pagos` is left out when the sale has no payments.
 - **Issuer legends**, from the fiscal profile: `agenteRetencion` (Anexo 21: the resolution number, up to 8 digits without leading zeros), `contribuyenteRimpe` (Anexo 22: `CONTRIBUYENTE RÉGIMEN RIMPE` or `CONTRIBUYENTE NEGOCIO POPULAR - RÉGIMEN RIMPE`) and `contribuyenteEspecial` (3 to 13 letters or digits). `PUT /api/company-config` refuses other formats (422) and readiness reports stored ones that don't fit (`CONFIG_INVALID`).
@@ -210,8 +230,8 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/invoicing/status` | Whether the company's issuer can invoice, with issues and counts |
-| `GET` | `/api/invoices` | One page of invoices, latest first, with `meta.pagination` (`limit` 1-1000, default 100; `offset`; `status`; `fromDate`/`toDate`, days in Ecuador; `attention=true`: only pending or failed ones) |
-| `GET` | `/api/invoices/by-sale/:saleId` | Invoices of a sale |
+| `GET` | `/api/invoices` | One page of documents (invoices and credit notes; `docType` filters: `01`, `04`), latest first, with `meta.pagination` (`limit` 1-1000, default 100; `offset`; `status`; `fromDate`/`toDate`, days in Ecuador; `attention=true`: only pending or failed ones) |
+| `GET` | `/api/invoices/by-sale/:saleId` | Documents of a sale: its invoices and credit notes (`docType`, `sourceInvoiceId`) |
 | `GET` | `/api/invoices/:id` | Get invoice by ID, with `authorizationNumber` and `authorizedAt` once authorized |
 | `GET` | `/api/invoices/:id/authorized-xml` | The authorized XML as an attachment (`<access code>.xml`); 404 until authorized |
 | `GET` | `/api/invoices/:id/ride` | The RIDE as an attachment (`<access code>.pdf`), generated the first time; 404 until authorized |
@@ -321,6 +341,8 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 | Topic | Direction | Schema |
 |-------|-----------|--------|
 | `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v2.schema.json` (and v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
+| `credit_notes.requested` | Inbound | Contract `contracts/events/credit_notes.requested/v1.schema.json`; validated with `CreditNoteRequestedMessageSchema` |
+| `credit_notes.results` | Outbound | Contract `contracts/events/credit_notes.results/v1.schema.json`; `CreditNoteAuthorized` and `CreditNoteRejected`, for faclab-core |
 | `invoices` | Outbound | Contract `contracts/events/invoices/v1.schema.json`; only the results, `InvoiceAuthorized` and `InvoiceRejected`, sent through `toInvoiceMessage`. `InvoiceRejected` carries the SRI's messages in `reason`, which faclab-core shows in the sale |
 
 Until S4.2 the service also consumed `invoices` to move each invoice to its next step; the queue in PostgreSQL does that now, and the topic only tells faclab-core the result: on `InvoiceAuthorized` it marks the sale as `INVOICED`, on `InvoiceRejected` its invoice as rejected. v1 still lists the four intermediate event types, which nothing publishes anymore. Each `invoices` message carries the invoice's company as its key and in the `faclab-tenant-id` header (not in the body, whose v1 schema is closed): faclab-core opens that company's context with it.
