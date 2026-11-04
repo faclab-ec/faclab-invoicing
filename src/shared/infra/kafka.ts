@@ -36,6 +36,18 @@ function calculateBackoff(attempt: number, baseDelayMs: number): number {
 
 const tracer = trace.getTracer('faclab-invoicing.kafka');
 
+/**
+ * How every consumer of the service joins its group. It commits by hand, after processing. A
+ * partition without a committed offset is read from the beginning, like faclab-core's consumer: the
+ * default (only new messages) loses what arrives while the service is down, such as the first message
+ * of a new topic or of a company in a partition. Handlers are idempotent, so reading again is safe.
+ */
+export const consumerOptions = (groupId: string) => ({
+  groupId,
+  autoCommit: false,
+  fromBeginning: true,
+});
+
 export abstract class BaseKafkaConsumer {
   private retryConfig: RetryConfig;
 

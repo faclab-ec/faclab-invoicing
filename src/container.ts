@@ -101,6 +101,7 @@ import {
 } from '#/shared/infra/dead-letters';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
+import { consumerOptions } from '#/shared/infra/kafka';
 import { QueueWorker } from '#/shared/infra/queue-worker';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
 import { allHealthy, HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
@@ -337,12 +338,7 @@ export function createContainer(config: AppConfig): Container {
         logLevel: KafkaJS.logLevel.INFO,
       },
     });
-    const consumer = kafka.consumer({
-      kafkaJS: {
-        groupId: config.kafka.groupId,
-        autoCommit: false,
-      },
-    });
+    const consumer = kafka.consumer({ kafkaJS: consumerOptions(config.kafka.groupId) });
     const producer = kafka.producer({
       kafkaJS: {
         acks: -1,
