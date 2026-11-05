@@ -58,6 +58,7 @@ export class CreditNoteVoucher implements VoucherKind {
         return {
           productId: String(item.product_id),
           sku: item.sku,
+          constructionMaterialCode: item.construction_material_code,
           // No name means the product no longer exists in faclab-core; the SRI requires one
           description: item.product_name || `Producto ${item.product_id}`,
           quantity: item.quantity,

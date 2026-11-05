@@ -3,6 +3,16 @@
 Cada versión de un mensaje, qué cambió y en qué orden se desplegó. Las reglas de compatibilidad
 están en [README.md](README.md#versiones-y-compatibilidad).
 
+## `sales.confirmed` v2 y `credit_notes.requested` v1: código de material de construcción (S4.6, 2026-11)
+
+- **Campo nuevo y compatible**, sin cambio de versión: `construction_material_code` en cada línea,
+  nulable y opcional. Es la subcategoría de la Tabla 31 del Anexo 23 de la ficha técnica 2.34 (Res.
+  NAC-DGERCGC24-00000013). faclab-invoicing la escribe en `codigoAuxiliar` de la factura y en
+  `codigoAdicional` de la nota de crédito, en lugar del SKU. Un mensaje sin el campo se factura igual,
+  con el SKU.
+- **Despliegue**: faclab-invoicing (acepta el campo y lo usa), faclab-core (lo envía), faclab-web.
+- **Vuelta atrás**: revertir; las líneas vuelven al SKU.
+
 ## `credit_notes.requested` v1 y `credit_notes.results` v1 (S4.5, 2026-11)
 
 - **Nuevos**, con el envelope completo de ADR-0006. El core pide una nota de crédito (codDoc 04) por

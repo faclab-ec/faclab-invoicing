@@ -167,6 +167,30 @@
           "$ref": "#/$defs/nullableText",
           "description": "null si el producto no tiene SKU o ya no existe."
         },
+        "construction_material_code": {
+          "enum": [
+            "F010101",
+            "F010201",
+            "F010202",
+            "F010203",
+            "F010204",
+            "F010205",
+            "F010301",
+            "F010401",
+            "F010402",
+            "F010501",
+            "F010601",
+            "F010701",
+            "F010702",
+            "F010703",
+            "F010801",
+            "F010802",
+            "F010803",
+            "F010804",
+            null
+          ],
+          "description": "Subcategoría de material de construcción (Tabla 31 del Anexo 23 de la ficha técnica). null si el producto no es uno de esos materiales o ya no existe. Opcional: falta en los mensajes anteriores a S4.6."
+        },
         "product_name": {
           "$ref": "#/$defs/nullableText",
           "description": "null si el producto ya no existe."

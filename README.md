@@ -140,7 +140,9 @@ Checked against the SRI's offline scheme ficha técnica **2.34** (27/07/2026), t
 - **Payments**: `pagos` must add up to `importeTotal` (faclab-core sends what each payment applied since S3.3); otherwise `INVOICE_DATA_INVALID`.
 - **Authorized invoice.** When the SRI authorizes, the `autorizacion` document (status, `numeroAutorizacion`, `fechaAutorizacion`, environment and the signed voucher in CDATA) goes to the object storage at `tenants/{tenant_id}/invoices/{year of emission}/{access code}.xml` **before** the invoice is marked: an authorized invoice always has its XML. The invoice keeps the number, the date and the key; `GET /api/invoices/:id/authorized-xml` downloads it. `fechaAutorizacion` is in UTC (the SOAP client parses it). Invoices authorized before S4.1 have none. The invoice is saved as authorized together with its delivery to the buyer, in one transaction (see [Delivery to the buyer](#delivery-to-the-buyer-ride-and-email)).
 
-Not covered yet: the Gran Contribuyente legend (Anexo 24) and the construction materials codes in `codigoAuxiliar` (Anexo 23, S4.6).
+- **Construction materials** (Anexo 23 of the technical sheet 2.34, Res. NAC-DGERCGC24-00000013, S4.6). A line with `construction_material_code` carries that exact code of Table 31 (`F010401`, cement) in `codigoAuxiliar` instead of the SKU. Credit notes carry it in `codigoAdicional`: the annex only names `codigoAuxiliar`, which a credit note doesn't have, but its change log covers "documentos complementarios" (to confirm with the accountant). A line without it, or a message from before S4.6, keeps the SKU. faclab-core keeps the catalog and requires the 5% rate; here it is copied as it comes, so a new code of the SRI doesn't stop an invoice.
+
+Not covered yet: the Gran Contribuyente legend (Anexo 24).
 
 ---
 

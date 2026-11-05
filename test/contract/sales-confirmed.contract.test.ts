@@ -148,6 +148,37 @@ describe.each([
   });
 });
 
+const itemsOf = (example: Record<string, unknown>) =>
+  (example.payload as { items: Record<string, unknown>[] }).items;
+
+describe('sales.confirmed v2: construction materials', () => {
+  it('writes the code of a material in codigoAuxiliar and the SKU of the rest', async () => {
+    const doc = await invoiceXml(v2['construction-material']);
+
+    expect(texts(doc, 'codigoAuxiliar')).toEqual(['F010401', 'MART-16OZ']);
+    expect(texts(doc, 'codigoPrincipal')).toEqual(['104', '101']);
+  });
+
+  it('invoices a message from before S4.6, without the field, with its SKU', async () => {
+    expect(itemsOf(v2['customer-without-contact'])[0]).not.toHaveProperty(
+      'construction_material_code',
+    );
+
+    const doc = await invoiceXml(v2['customer-without-contact']);
+
+    expect(texts(doc, 'codigoAuxiliar')).toEqual(['CEM-GU-50']);
+  });
+
+  it('copies a code it does not know: the SRI may add one before faclab-core is here', async () => {
+    const example = structuredClone(v2['construction-material']);
+    itemsOf(example)[0].construction_material_code = 'F010999';
+
+    const doc = await invoiceXml(example);
+
+    expect(texts(doc, 'codigoAuxiliar')).toEqual(['F010999', 'MART-16OZ']);
+  });
+});
+
 describe('sales.confirmed v1 from before S3.3', () => {
   it('has an example whose cash payment is more than the total, and refuses to number it', async () => {
     const overpaid = Object.keys(v1).filter((name) => !paymentsAddUp(v1[name]));

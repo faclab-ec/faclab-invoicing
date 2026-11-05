@@ -1,6 +1,7 @@
 import { create } from 'xmlbuilder2';
 
 import {
+  auxiliaryCode,
   buildCampoAdicional,
   detalleAmounts,
   fitText,
@@ -8,7 +9,6 @@ import {
   formatDate,
   infoTributaria,
   lineTotals,
-  MAX_CODE,
   VoucherBuyer,
   VoucherIssue,
   VoucherItem,
@@ -58,12 +58,15 @@ export function buildCreditNoteXml(input: CreditNoteXmlInput): string {
         motivo: fitText(input.reason),
       },
       detalles: {
-        detalle: input.items.map((item) => ({
-          codigoInterno: item.productId,
-          // Optional in the SRI schema, but never empty; left out when it doesn't fit (25 characters)
-          ...(item.sku && item.sku.length <= MAX_CODE ? { codigoAdicional: item.sku } : {}),
-          ...detalleAmounts(item),
-        })),
+        detalle: input.items.map((item) => {
+          const code = auxiliaryCode(item);
+          return {
+            codigoInterno: item.productId,
+            // The same code as in its invoice's codigoAuxiliar
+            ...(code ? { codigoAdicional: code } : {}),
+            ...detalleAmounts(item),
+          };
+        }),
       },
       ...(campoAdicional.length > 0 && { infoAdicional: { campoAdicional } }),
     },

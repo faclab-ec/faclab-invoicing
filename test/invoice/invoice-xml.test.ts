@@ -113,6 +113,53 @@ describe('buildInvoiceXml against the SRI schema (factura 1.1.0)', () => {
     expect(texts(xml, 'campoAdicional')[0]).toHaveLength(300);
   });
 
+  describe('Anexo 23: construction materials', () => {
+    const line = (overrides: Partial<InvoiceXmlInput['items'][number]>) =>
+      buildInvoiceXml(input({ items: [{ ...input().items[0], ...overrides }] }));
+
+    it.each(['F010101', 'F010401', 'F010802', 'F010804'])(
+      'writes %s exactly in codigoAuxiliar, instead of the SKU',
+      async (code) => {
+        const xml = line({ constructionMaterialCode: code });
+
+        await expectValid(xml);
+        expect(texts(xml, 'codigoAuxiliar')).toEqual([code]);
+        // codigoPrincipal stays the product's own
+        expect(texts(xml, 'codigoPrincipal')).toEqual(['7']);
+      },
+    );
+
+    it.each([
+      ['null', null],
+      ['absent', undefined],
+      ['empty', ''],
+    ])('keeps the SKU when the code is %s', async (_name, code) => {
+      const xml = line({ constructionMaterialCode: code });
+
+      await expectValid(xml);
+      expect(texts(xml, 'codigoAuxiliar')).toEqual(['SKU-7']);
+    });
+
+    it("writes the code even when the SKU doesn't fit or there is none", async () => {
+      for (const sku of ['S'.repeat(26), null]) {
+        const xml = line({ sku, constructionMaterialCode: 'F010202' });
+
+        await expectValid(xml);
+        expect(texts(xml, 'codigoAuxiliar')).toEqual(['F010202']);
+      }
+    });
+
+    it('takes each line on its own', async () => {
+      const [first] = input().items;
+      const xml = buildInvoiceXml(
+        input({ items: [{ ...first, constructionMaterialCode: 'F010401' }, first] }),
+      );
+
+      await expectValid(xml);
+      expect(texts(xml, 'codigoAuxiliar')).toEqual(['F010401', 'SKU-7']);
+    });
+  });
+
   it('leaves pagos out of a sale without payments', async () => {
     const xml = buildInvoiceXml(
       input({

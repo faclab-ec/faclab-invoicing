@@ -137,6 +137,17 @@ describe('buildCreditNoteXml: the notaCredito 1.1.0 of the SRI', () => {
     expect(texts(xml, 'precioTotalSinImpuesto')).toEqual(['16.15', '6.00']);
   });
 
+  it('writes the code of a construction material in codigoAdicional, instead of the SKU', async () => {
+    const [cement, other] = input().items;
+    const xml = buildCreditNoteXml(
+      input({ items: [{ ...cement, constructionMaterialCode: 'F010401' }, other] }),
+    );
+
+    await expectValid(xml);
+    expect(texts(xml, 'codigoAdicional')).toEqual(['F010401']);
+    expect(texts(xml, 'codigoInterno')).toEqual(['7', '8']);
+  });
+
   it.each([
     ['RUC', '04', '1790012345001'],
     ['cédula', '05', '1712345678'],
