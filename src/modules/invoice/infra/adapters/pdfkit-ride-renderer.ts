@@ -203,6 +203,30 @@ export class PdfKitRideRenderer implements RideRenderer {
     y = labeled(doc, 'Identificación', buyer.identification, MARGIN + PAD, y, inner);
     y = labeled(doc, 'Fecha Emisión', buyer.issueDate, MARGIN + PAD, y, inner);
     if (buyer.address) y = labeled(doc, 'Dirección', buyer.address, MARGIN + PAD, y, inner);
+    const { modifiedDocument } = ride;
+    if (modifiedDocument) {
+      doc
+        .moveTo(MARGIN + PAD, y + 3)
+        .lineTo(MARGIN + CONTENT_WIDTH - PAD, y + 3)
+        .stroke();
+      y = labeled(
+        doc,
+        'Comprobante que se modifica',
+        `${modifiedDocument.type} ${modifiedDocument.number}`,
+        MARGIN + PAD,
+        y + 6,
+        inner,
+      );
+      y = labeled(
+        doc,
+        'Fecha Emisión (Comprobante a modificar)',
+        modifiedDocument.issueDate,
+        MARGIN + PAD,
+        y,
+        inner,
+      );
+      y = labeled(doc, 'Razón de Modificación', modifiedDocument.reason, MARGIN + PAD, y, inner);
+    }
     doc.roundedRect(MARGIN, top, CONTENT_WIDTH, y + PAD - top, 4).stroke();
     return y + PAD + GAP;
   }
@@ -269,10 +293,12 @@ export class PdfKitRideRenderer implements RideRenderer {
     ]);
     const totals = ride.totals.map((row): [string, string] => [row.label, row.value]);
 
+    // A credit note has no payments
+    const paymentsHeight = payments.length
+      ? GAP + this.table(doc, ['Forma de pago', 'Valor'], payments, MARGIN, 0, leftWidth, false)
+      : 0;
     const height = Math.max(
-      this.infoBox(doc, info, MARGIN, top, leftWidth, false) +
-        GAP +
-        this.table(doc, ['Forma de pago', 'Valor'], payments, MARGIN, 0, leftWidth, false),
+      this.infoBox(doc, info, MARGIN, top, leftWidth, false) + paymentsHeight,
       this.table(doc, null, totals, right, 0, TOTALS_WIDTH, false),
     );
     if (top + height > BOTTOM) {
@@ -280,15 +306,17 @@ export class PdfKitRideRenderer implements RideRenderer {
       top = MARGIN;
     }
     const infoHeight = this.infoBox(doc, info, MARGIN, top, leftWidth, true);
-    this.table(
-      doc,
-      ['Forma de pago', 'Valor'],
-      payments,
-      MARGIN,
-      top + infoHeight + GAP,
-      leftWidth,
-      true,
-    );
+    if (payments.length) {
+      this.table(
+        doc,
+        ['Forma de pago', 'Valor'],
+        payments,
+        MARGIN,
+        top + infoHeight + GAP,
+        leftWidth,
+        true,
+      );
+    }
     this.table(doc, null, totals, right, top, TOTALS_WIDTH, true);
   }
 

@@ -32,7 +32,7 @@ export class ResendInvoiceEmailCommand {
     if (!this.emailEnabled) {
       throw new ConflictError('EMAIL_DISABLED', 'Sending invoices by email is turned off');
     }
-    if (!buyerEmail(invoice.sale)) {
+    if (!buyerEmail(invoice.buyer)) {
       throw new ConflictError('BUYER_EMAIL_MISSING', 'The buyer of the sale has no valid email');
     }
     const delivery = await this.deliveries.createResend(

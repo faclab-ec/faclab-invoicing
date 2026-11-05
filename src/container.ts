@@ -35,6 +35,7 @@ import { PgSequenceRepository } from '#/modules/company-config/infra/persistence
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
+import { ReceiveCreditNoteCommand } from '#/modules/invoice/app/commands/receive-credit-note';
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
 import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
@@ -43,6 +44,7 @@ import {
 } from '#/modules/invoice/app/commands/retry-invoice';
 import { SendInvoiceCommand } from '#/modules/invoice/app/commands/send-invoice';
 import { SignInvoiceCommand } from '#/modules/invoice/app/commands/sign-invoice';
+import { CreditNoteRequestedHandler } from '#/modules/invoice/app/handlers/credit-note-requested.handler';
 import { SaleConfirmedHandler } from '#/modules/invoice/app/handlers/sale-confirmed.handler';
 import {
   FindInvoicesBySaleIdQuery,
@@ -57,7 +59,7 @@ import { InvoiceDeliveryProcessor } from '#/modules/invoice/app/services/invoice
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { RideService } from '#/modules/invoice/app/services/ride-service';
-import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
+import { CreditNoteResultEvent, InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { NodemailerInvoiceMailer } from '#/modules/invoice/infra/adapters/nodemailer-mailer.adapter';
 import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
@@ -68,6 +70,10 @@ import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
+import {
+  creditNoteTenant,
+  toCreditNoteResultMessage,
+} from '#/modules/invoice/infra/messaging/credit-note-message';
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import {
   dispatchMessage,
@@ -75,8 +81,12 @@ import {
   MessageProcessors,
 } from '#/modules/invoice/infra/messaging/kafka-consumer';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
-import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/schemas';
+import {
+  CreditNoteRequestedMessageSchema,
+  SaleConfirmedMessageSchema,
+} from '#/modules/invoice/infra/messaging/schemas';
 import { KAFKA_TOPICS } from '#/modules/invoice/infra/messaging/topics';
+import { VoucherResultProducer } from '#/modules/invoice/infra/messaging/voucher-result-producer';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 import { PgInvoiceDeliveryRepository } from '#/modules/invoice/infra/persistence/pg-invoice-delivery.repository';
 import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
@@ -91,6 +101,7 @@ import {
 } from '#/shared/infra/dead-letters';
 import { createAuthorize } from '#/shared/infra/http/auth';
 import { createHttpServer } from '#/shared/infra/http-server';
+import { consumerOptions } from '#/shared/infra/kafka';
 import { QueueWorker } from '#/shared/infra/queue-worker';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
 import { allHealthy, HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
@@ -209,10 +220,17 @@ export function createContainer(config: AppConfig): Container {
       new ReceiveSaleCommand(invoiceRepository, withTrace ? captureTraceContext : undefined),
       config.kafka.salesV1TenantId,
     );
+    const creditNoteRequestedHandler = new CreditNoteRequestedHandler(
+      new ReceiveCreditNoteCommand(invoiceRepository, withTrace ? captureTraceContext : undefined),
+    );
     return {
       [KAFKA_TOPICS.SALES_CONFIRMED]: {
         handler: saleConfirmedHandler,
         validator: SaleConfirmedMessageSchema,
+      },
+      [KAFKA_TOPICS.CREDIT_NOTES_REQUESTED]: {
+        handler: creditNoteRequestedHandler,
+        validator: CreditNoteRequestedMessageSchema,
       },
     };
   }
@@ -320,12 +338,7 @@ export function createContainer(config: AppConfig): Container {
         logLevel: KafkaJS.logLevel.INFO,
       },
     });
-    const consumer = kafka.consumer({
-      kafkaJS: {
-        groupId: config.kafka.groupId,
-        autoCommit: false,
-      },
-    });
+    const consumer = kafka.consumer({ kafkaJS: consumerOptions(config.kafka.groupId) });
     const producer = kafka.producer({
       kafkaJS: {
         acks: -1,
@@ -334,16 +347,26 @@ export function createContainer(config: AppConfig): Container {
       'max.in.flight.requests.per.connection': 5,
     });
 
-    // Results for faclab-core: the only messages on `invoices`
-    const resultProducer = new KafkaProducer<InvoiceResultEvent>(
+    // Results for faclab-core: the only messages on `invoices` and `credit_notes.results`. Both go
+    // through the same connection: starting and stopping the first one is enough
+    const invoiceResults = new KafkaProducer<InvoiceResultEvent>(
       producer,
       KAFKA_TOPICS.INVOICES,
       toInvoiceMessage,
       invoiceTenant,
     );
+    const resultProducer = new VoucherResultProducer(
+      invoiceResults,
+      new KafkaProducer<CreditNoteResultEvent>(
+        producer,
+        KAFKA_TOPICS.CREDIT_NOTES_RESULTS,
+        toCreditNoteResultMessage,
+        creditNoteTenant,
+      ),
+    );
     const kafkaConsumer = new InvoiceKafkaConsumer(
       consumer,
-      [KAFKA_TOPICS.SALES_CONFIRMED],
+      [KAFKA_TOPICS.SALES_CONFIRMED, KAFKA_TOPICS.CREDIT_NOTES_REQUESTED],
       messageProcessors(true),
       deadLetters,
     );
@@ -411,7 +434,7 @@ export function createContainer(config: AppConfig): Container {
     return {
       health: allHealthy(invoiceHealth, deliveryHealth),
       async start() {
-        await resultProducer.connect();
+        await invoiceResults.connect();
         await kafkaConsumer.start();
         worker.start();
         deliveryWorker.start();
@@ -423,7 +446,7 @@ export function createContainer(config: AppConfig): Container {
         await deliveryWorker.stop();
         mailer?.close();
         recoveryScheduler.stop();
-        await resultProducer.disconnect();
+        await invoiceResults.disconnect();
       },
     };
   }

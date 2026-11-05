@@ -1,7 +1,7 @@
 import { Pool, PoolClient } from 'pg';
 import { validate as isUuid } from 'uuid';
 
-import { formatSequence, INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
+import { formatSequence, VoucherType } from '#/modules/company-config/domain/sequence';
 import { takeNextSequence } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { withTransaction } from '#/shared/infra/database';
 
@@ -46,18 +46,20 @@ export class PgInvoiceRepository implements InvoiceRepository {
     const version = invoice.version + 1;
     const row = { ...toInvoiceRow(invoice), version };
     const created = await withTransaction(this.pool, async (client) => {
-      // Skipped when the id exists or the sale already has an active invoice
-      // (uq_invoices_active_sale): a concurrent resend waits for this one and finds it
+      // Skipped when the id exists, the sale already has an active invoice
+      // (uq_invoices_active_sale) or the credit note an active document
+      // (uq_invoices_active_credit_note): a concurrent resend waits for this one and finds it
       const result = await client.query(
         `INSERT INTO invoices (
            id, tenant_id, sale_id, issuer_ruc, establishment, emission_point,
            establishment_address, status, sale, access_code, sequence, signature_id, xml,
            issue_code, issue_message, issue_at, attempts, next_attempt_at, created_at,
            updated_at, version, requested_at, numeric_code, authorization_number, authorized_at,
-           authorized_xml_key, result_published_at, trace_context
+           authorized_xml_key, result_published_at, trace_context, doc_type, credit_note,
+           source_invoice_id, request_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
          )
          ON CONFLICT DO NOTHING`,
         [
@@ -89,6 +91,10 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.authorized_xml_key,
           row.result_published_at,
           row.trace_context,
+          row.doc_type,
+          row.credit_note,
+          row.source_invoice_id,
+          row.request_id,
         ],
       );
       if (result.rowCount === 0) return false;
@@ -161,7 +167,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
         tenantId: point.tenantId,
         establishment: point.establishment,
         emissionPoint: point.emissionPoint,
-        docType: INVOICE_DOC_TYPE,
+        docType: invoice.docType,
       });
       invoice.assignSequence(formatSequence(value));
       // uq_invoices_tenant_number: a number is never stored twice
@@ -212,12 +218,23 @@ export class PgInvoiceRepository implements InvoiceRepository {
     return { items: rows.rows.map(fromInvoiceRow), total: Number(count.rows[0].total) };
   }
 
-  async findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]> {
+  async findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]> {
     const result = await this.pool.query<InvoiceRow>(
-      `${SELECT_INVOICES} WHERE i.tenant_id = $1 AND i.sale_id = $2 ORDER BY i.created_at, i.id`,
-      [tenantId, saleId],
+      `${SELECT_INVOICES}
+       WHERE i.tenant_id = $1 AND i.sale_id = $2 AND ($3::text IS NULL OR i.doc_type = $3)
+       ORDER BY i.created_at, i.id`,
+      [tenantId, saleId, docType ?? null],
     );
     return result.rows.map(fromInvoiceRow);
+  }
+
+  async findActiveCreditNote(tenantId: string, creditNoteId: number): Promise<Invoice | null> {
+    const result = await this.pool.query<InvoiceRow>(
+      `${SELECT_INVOICES}
+       WHERE i.tenant_id = $1 AND i.request_id = $2 AND i.doc_type = $3 AND i.status <> $4`,
+      [tenantId, creditNoteId, VoucherType.CREDIT_NOTE, InvoiceStatus.REJECTED],
+    );
+    return result.rows[0] ? fromInvoiceRow(result.rows[0]) : null;
   }
 
   async countInFlight(tenantId: string): Promise<InFlightCounts> {
@@ -275,6 +292,7 @@ function whereClause(
   // Always the company's: the API never lists another company's invoices
   conditions.push(`i.tenant_id = ${param(tenantId)}`);
   if (filter.status) conditions.push(`i.status = ${param(filter.status)}`);
+  if (filter.docType) conditions.push(`i.doc_type = ${param(filter.docType)}`);
   if (filter.createdFrom) conditions.push(`i.created_at >= ${param(filter.createdFrom)}`);
   if (filter.createdBefore) conditions.push(`i.created_at < ${param(filter.createdBefore)}`);
   if (filter.attention) {

@@ -1,9 +1,12 @@
 import { randomInt } from 'crypto';
 
 import { Environment } from '#/modules/company-config/domain/company-config';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 
 export interface AccessCodeInput {
   date: Date;
+  // Invoices when it doesn't say
+  voucherType?: VoucherType;
   taxId: string;
   environment: Environment;
   establishment: string;
@@ -25,7 +28,7 @@ export function generateAccessCode(input: AccessCodeInput): string {
     throw new Error(`Invalid numeric code: must be 8 digits, got "${input.numericCode}"`);
   }
   const dateStr = formatDate(input.date);
-  const voucherType = '01';
+  const voucherType = input.voucherType ?? VoucherType.INVOICE;
   const ruc = input.taxId;
   const environment = String(input.environment);
   const series = input.establishment.padStart(3, '0') + input.emissionPoint.padStart(3, '0');

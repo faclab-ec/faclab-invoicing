@@ -1,6 +1,7 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
 import { describe, expect, it, vi } from 'vitest';
 
+import { InvoiceResultEvent } from '#/modules/invoice/domain/events';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { invoiceTenant, toInvoiceMessage } from '#/modules/invoice/infra/messaging/invoice-message';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
@@ -19,7 +20,7 @@ describe('KafkaProducer of the invoices topic', () => {
     const invoice = Invoice.receive('inv-1', makePoint({ tenantId: TENANT_B }), makeSale());
     invoice.reject(['NO AUTORIZADO']);
 
-    await producer.sendMessage(invoice.resultEvent()!);
+    await producer.sendMessage(invoice.resultEvent() as InvoiceResultEvent);
 
     const [record] = (send.mock.calls[0] as unknown as [KafkaJS.ProducerRecord])[0].messages;
     expect(record.key).toBe(TENANT_B);

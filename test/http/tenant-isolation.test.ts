@@ -22,7 +22,7 @@ import {
   SetNextSequenceCommand,
 } from '#/modules/company-config/app/sequence.commands';
 import { issuerLogoKey } from '#/modules/company-config/domain/logo';
-import { INVOICE_DOC_TYPE } from '#/modules/company-config/domain/sequence';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import { ResendInvoiceEmailCommand } from '#/modules/invoice/app/commands/resend-invoice-email';
 import {
@@ -111,7 +111,7 @@ describe('API isolation between companies', () => {
       [TENANT_B, 900],
     ] as const) {
       await sequences.setNext(
-        { tenantId, establishment: '001', emissionPoint: '001', docType: INVOICE_DOC_TYPE },
+        { tenantId, establishment: '001', emissionPoint: '001', docType: VoucherType.INVOICE },
         next,
       );
     }
@@ -343,6 +343,36 @@ describe('API isolation between companies', () => {
 
     expect(set.json().data.nextSequence).toBe(20);
     expect((await get('/api/sequences', TENANT_B)).json().data[0].nextSequence).toBe(900);
+  });
+
+  it('sets the numbering of the credit notes apart from the invoices', async () => {
+    const set = await app.inject({
+      method: 'PUT',
+      url: '/api/sequences/001/001',
+      headers: bearer(TENANT_B),
+      payload: { nextSequence: 5, docType: '04' },
+    });
+
+    expect(set.statusCode).toBe(200);
+    expect(set.json().data).toMatchObject({ docType: '04', nextSequence: 5 });
+    const listed = (await get('/api/sequences', TENANT_B)).json().data;
+    expect(
+      listed.map((s: { docType: string; nextSequence: number }) => [s.docType, s.nextSequence]),
+    ).toEqual([
+      ['01', 900],
+      ['04', 5],
+    ]);
+  });
+
+  it('refuses a document type it does not issue', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/sequences/001/001',
+      headers: bearer(TENANT_B),
+      payload: { nextSequence: 950, docType: '07' },
+    });
+
+    expect(response.statusCode).toBe(400);
   });
 
   it("refuses to move a company's sequence back", async () => {

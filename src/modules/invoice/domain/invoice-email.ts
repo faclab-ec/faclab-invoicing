@@ -20,16 +20,24 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): OutgoingMail {
   const { ride } = input;
   const issuer = ride.issuer.tradeName ?? ride.issuer.name;
   const prefix = ride.isTest ? '[PRUEBAS] ' : '';
+  const { modifiedDocument } = ride;
+  const name = modifiedDocument ? 'Nota de crédito' : 'Factura';
   const details: [string, string][] = [
-    ['Factura No.', ride.documentNumber],
+    [`${name} No.`, ride.documentNumber],
     ['Fecha de emisión', ride.buyer.issueDate],
+    ...(modifiedDocument
+      ? ([
+          ['Factura que modifica', modifiedDocument.number],
+          ['Motivo', modifiedDocument.reason],
+        ] as [string, string][])
+      : []),
     ['Valor total', `USD ${ride.total}`],
     ['Clave de acceso', ride.accessCode],
     ['Número de autorización', ride.authorizationNumber],
   ];
   const paragraphs = [
     `Estimado/a ${ride.buyer.name}:`,
-    `${issuer} le envía su factura electrónica.`,
+    `${issuer} le envía su ${name.toLowerCase()} electrónica.`,
     'Adjuntamos el comprobante autorizado por el SRI (XML) y su representación impresa (RIDE, en PDF).',
     ...(ride.isTest ? [TEST_NOTE] : []),
     input.replyTo
@@ -64,7 +72,7 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): OutgoingMail {
     from: { name: issuer, address: input.from },
     replyTo: input.replyTo,
     to: input.to,
-    subject: `${prefix}Factura electrónica No. ${ride.documentNumber} de ${issuer}`,
+    subject: `${prefix}${name} electrónica No. ${ride.documentNumber} de ${issuer}`,
     text,
     html,
     attachments: [

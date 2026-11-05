@@ -1,3 +1,5 @@
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+
 import { InvoiceDelivery } from './delivery';
 import { Invoice, InvoiceStatus } from './invoice';
 
@@ -12,6 +14,7 @@ export class ConcurrentUpdateError extends Error {
 
 export interface InvoiceFilter {
   status?: InvoiceStatus;
+  docType?: VoucherType;
   // Created at or after `createdFrom` and before `createdBefore`
   createdFrom?: Date;
   createdBefore?: Date;
@@ -68,7 +71,10 @@ export interface InvoiceRepository {
   findForTenant(tenantId: string, id: string): Promise<Invoice | null>;
   /** One page of the matching invoices, latest first (`attention`: latest change first) */
   findPage(tenantId: string, filter: InvoiceFilter, page: PageRequest): Promise<InvoicePage>;
-  findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]>;
+  /** Every document of the sale, or only those of one type */
+  findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]>;
+  /** The document of a credit note of faclab-core that isn't rejected, if any */
+  findActiveCreditNote(tenantId: string, creditNoteId: number): Promise<Invoice | null>;
   countInFlight(tenantId: string): Promise<InFlightCounts>;
 }
 

@@ -12,7 +12,7 @@ import {
   Environment,
   RimpeRegime,
 } from '#/modules/company-config/domain/company-config';
-import { INVOICE_DOC_TYPE, SequenceKey } from '#/modules/company-config/domain/sequence';
+import { SequenceKey, VoucherType } from '#/modules/company-config/domain/sequence';
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
 import { PgSequenceRepository } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { Invoice } from '#/modules/invoice/domain/invoice';
@@ -45,7 +45,7 @@ const keyOf = (tenantId: string, establishment = '001', emissionPoint = '001'): 
   tenantId,
   establishment,
   emissionPoint,
-  docType: INVOICE_DOC_TYPE,
+  docType: VoucherType.INVOICE,
 });
 
 describePostgres('PgCompanyConfigRepository', () => {

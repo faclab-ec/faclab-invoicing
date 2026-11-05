@@ -22,6 +22,11 @@ export class AccessCode {
     return this.value.slice(4, 8);
   }
 
+  /** Its emission date as the SRI's XML writes it: dd/mm/aaaa */
+  get emissionDate(): string {
+    return `${this.value.slice(0, 2)}/${this.value.slice(2, 4)}/${this.value.slice(4, 8)}`;
+  }
+
   toString(): string {
     return this.value;
   }

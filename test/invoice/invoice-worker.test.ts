@@ -60,7 +60,7 @@ function workerFor(
     repo,
     invoiceSteps(repo, readiness, sri),
     readiness,
-    { sendMessage: async (event) => void published.push(event) },
+    { sendMessage: async (event) => void published.push(event as InvoiceResultEvent) },
   );
   return { worker: new InvoiceWorker(repo, processor, OPTIONS, heartbeat), published, heartbeat };
 }

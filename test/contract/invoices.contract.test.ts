@@ -33,7 +33,7 @@ function publishedEvents(): InvoiceResultEvent[] {
   rejected.prepare({ accessCode, signatureId: 'cert-1', xml: '<factura/>' });
   rejected.sign('<factura firmada/>');
   rejected.reject(['ERROR SECUENCIAL REGISTRADO']);
-  return [authorized.resultEvent()!, rejected.resultEvent()!];
+  return [authorized.resultEvent()!, rejected.resultEvent()!] as InvoiceResultEvent[];
 }
 
 describe('invoices v1 contract', () => {

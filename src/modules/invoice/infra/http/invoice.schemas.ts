@@ -1,4 +1,5 @@
 import { READINESS_ERROR_CODES } from '#/modules/company-config/domain/readiness';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 import {
   errorResponseSchema,
   paginatedSchema,
@@ -51,7 +52,17 @@ const issueSchema = {
 
 const invoiceSummaryProperties = {
   id: { type: 'string', format: 'uuid', description: 'Unique invoice identifier.' },
+  docType: {
+    type: 'string',
+    enum: Object.values(VoucherType),
+    description: 'SRI code of the document: 01 invoice, 04 credit note.',
+  },
   saleId: { type: 'string', description: 'Identifier of the originating sale.' },
+  sourceInvoiceId: {
+    type: ['string', 'null'],
+    format: 'uuid',
+    description: 'The invoice a credit note modifies. Null in an invoice.',
+  },
   accessCode: {
     type: ['string', 'null'],
     description:
@@ -137,6 +148,11 @@ export const listInvoicesSchema = {
         enum: Object.values(InvoiceStatus),
         description: 'Only invoices in this status.',
       },
+      docType: {
+        type: 'string',
+        enum: Object.values(VoucherType),
+        description: 'Only documents of this type: 01 invoices, 04 credit notes.',
+      },
       fromDate: {
         type: 'string',
         format: 'date',
@@ -169,8 +185,8 @@ export const listInvoicesSchema = {
 
 export const findBySaleIdSchema = {
   tags: ['Invoices'],
-  summary: 'Find invoices by sale ID',
-  description: 'Returns all invoices associated with the given sale ID.',
+  summary: 'Find the documents of a sale',
+  description: 'Returns all documents of the given sale ID: its invoices and its credit notes.',
   params: {
     type: 'object',
     properties: { saleId: { type: 'string', description: 'Sale ID.' } },

@@ -1,0 +1,17 @@
+{
+  "event_id": "c1d2e3f4-a5b6-5c7d-8e9f-0a1b2c3d4e53",
+  "event_type": "CreditNoteRejected",
+  "schema_version": 1,
+  "tenant_id": "6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f",
+  "aggregate_id": 32,
+  "occurred_at": "2026-11-02T16:10:02.100Z",
+  "payload": {
+    "credit_note_id": 32,
+    "document_id": "2f3a4b5c-6d7e-5f80-9a1b-2c3d4e5f6a7d",
+    "sale_id": 1201,
+    "number": null,
+    "access_code": null,
+    "authorized_at": null,
+    "reason": "The invoice was issued to the final consumer: it doesn't admit a credit note (NAC-DGERCGC25-00000014, art. 3)"
+  }
+}

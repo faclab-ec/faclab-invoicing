@@ -1,5 +1,6 @@
 import { v5 as uuidv5 } from 'uuid';
 
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { logger } from '#/shared/logger';
 
 import { Invoice, TraceContext } from '../../domain/invoice';
@@ -50,7 +51,11 @@ export class ReceiveSaleCommand {
       return null;
     }
 
-    const invoices = await this.invoiceRepository.findBySaleId(tenantId, saleId);
+    const invoices = await this.invoiceRepository.findBySaleId(
+      tenantId,
+      saleId,
+      VoucherType.INVOICE,
+    );
     const active = invoices.find((invoice) => invoice.isActive);
     if (active) {
       if (active.publishResultAgain()) {

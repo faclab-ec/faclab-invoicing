@@ -116,7 +116,7 @@ describePostgres('Dead letters on PostgreSQL', () => {
     const worker = new InvoiceWorker(
       queue,
       new InvoiceProcessor(repo, queue, invoiceSteps(repo, readiness), readiness, {
-        sendMessage: async (event) => void published.push(event),
+        sendMessage: async (event) => void published.push(event as InvoiceResultEvent),
       }),
       { concurrency: 1, pollIntervalMs: 20, leaseMs: 60_000, errorBackoffMs: 60_000, holder: 'w' },
     );

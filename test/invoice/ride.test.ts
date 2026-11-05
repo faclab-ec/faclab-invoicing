@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+import { buildCreditNoteXml } from '#/modules/invoice/domain/credit-note-xml-builder';
 import { buildRide } from '#/modules/invoice/domain/ride';
 
-import { signedInvoiceXml, TEST_ACCESS_CODE, TEST_AUTHORIZATION } from '../helpers';
+import {
+  fullInvoiceXmlInput,
+  signedInvoiceXml,
+  TEST_ACCESS_CODE,
+  TEST_AUTHORIZATION,
+} from '../helpers';
 
 const TIMEZONE = 'America/Guayaquil';
 
@@ -187,9 +194,66 @@ describe('buildRide: what the RIDE prints, from the authorized XML', () => {
   });
 
   it('refuses what is not an invoice XML', () => {
-    expect(() => buildRide('<notaCredito/>', TEST_AUTHORIZATION, TIMEZONE)).toThrow(
+    expect(() => buildRide('<notaDebito/>', TEST_AUTHORIZATION, TIMEZONE)).toThrow(
       'Not an invoice XML',
     );
     expect(() => buildRide('<factura', TEST_AUTHORIZATION, TIMEZONE)).toThrow('Not an invoice');
+  });
+});
+
+describe('buildRide of a credit note: what the ficha técnica prints', () => {
+  const xml = buildCreditNoteXml({
+    ...fullInvoiceXmlInput(),
+    voucherTypeCode: VoucherType.CREDIT_NOTE,
+    modifiedNumber: '001-001-000000123',
+    modifiedDate: '05/10/2026',
+    reason: 'Devolución de mercadería',
+  });
+  const ride = buildRide(`${xml}<!-- signed -->`, TEST_AUTHORIZATION, TIMEZONE);
+
+  it('says it is a credit note and which invoice it modifies, and why', () => {
+    expect(ride.documentType).toBe('NOTA DE CRÉDITO');
+    expect(ride.modifiedDocument).toEqual({
+      type: 'FACTURA',
+      number: '001-001-000000123',
+      issueDate: '05/10/2026',
+      reason: 'Devolución de mercadería',
+    });
+  });
+
+  it('prints the buyer of the invoice', () => {
+    expect(ride.buyer).toMatchObject({
+      name: 'Construcciones Andinas Cía. Ltda.',
+      identification: '1790012345001',
+      issueDate: '09/10/2026',
+    });
+  });
+
+  it('reads the codes of its lines from the tags of a credit note', () => {
+    expect(ride.lines.map((line) => [line.mainCode, line.auxiliaryCode])).toEqual(
+      fullInvoiceXmlInput().items.map((item) => [item.productId, item.sku]),
+    );
+  });
+
+  it('has no payments, discount nor tip, and its total is what it modifies', () => {
+    expect(ride.payments).toEqual([]);
+    const labels = ride.totals.map((row) => row.label);
+    expect(labels).not.toContain('TOTAL DESCUENTO');
+    expect(labels).not.toContain('PROPINA');
+    expect(ride.totals.at(-1)).toEqual({ label: 'VALOR TOTAL', value: ride.total });
+    // 93.75... + 12.11, added up from the lines
+    expect(ride.total).toBe(
+      (
+        fullInvoiceXmlInput().items.reduce(
+          (sum, item) =>
+            sum + Math.round(item.taxableBase * 100) + Math.round(item.taxAmount * 100),
+          0,
+        ) / 100
+      ).toFixed(2),
+    );
+  });
+
+  it('keeps the invoice without a modified document', () => {
+    expect(buildRide(signedInvoiceXml(), TEST_AUTHORIZATION, TIMEZONE).modifiedDocument).toBeNull();
   });
 });

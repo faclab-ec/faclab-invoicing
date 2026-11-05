@@ -18,9 +18,9 @@ import {
 } from '#/modules/company-config/domain/repository';
 import {
   formatSequence,
-  INVOICE_DOC_TYPE,
   Sequence,
   SequenceKey,
+  VoucherType,
 } from '#/modules/company-config/domain/sequence';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
@@ -67,7 +67,10 @@ import {
   ValidationVoucherStatus,
 } from '#/modules/invoice/domain/voucher';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
-import { SaleConfirmedV2Message } from '#/modules/invoice/infra/messaging/schemas';
+import {
+  CreditNoteRequestedMessage,
+  SaleConfirmedV2Message,
+} from '#/modules/invoice/infra/messaging/schemas';
 import {
   fromInvoiceRow,
   InvoiceRow,
@@ -148,6 +151,50 @@ export function invoiceSteps(
     [InvoiceStatus.SIGNED, new SendInvoiceCommand({ validateXml }, repo)],
     [InvoiceStatus.SENT, new AuthorizeInvoiceCommand({ authorizeXml }, repo, storage)],
   ]);
+}
+
+/** A `credit_notes.requested` message of the invoice of `makeSale`, unless it says otherwise */
+export function makeCreditNoteMessage(
+  overrides: Partial<CreditNoteRequestedMessage['payload']> = {},
+  eventId = '4f1d2c3b-5a6e-4d7c-8b9a-0c1d2e3f4a5b',
+): CreditNoteRequestedMessage {
+  return {
+    event_id: eventId,
+    event_type: 'CreditNoteRequested',
+    schema_version: 1,
+    tenant_id: TENANT_A,
+    aggregate_id: overrides.credit_note_id ?? 31,
+    occurred_at: REQUESTED_AT,
+    payload: {
+      credit_note_id: 31,
+      sale_id: 42,
+      invoice_id: 'inv-1',
+      refund_id: 45,
+      refund_number: 'D-001-000045',
+      issuer_ruc: RUC_A,
+      establishment_code: '001',
+      establishment_address: 'Av. Amazonas N34-120, Quito',
+      emission_point_code: '001',
+      reason: 'Producto con defecto de fábrica',
+      subtotal: '10.00',
+      tax: '1.50',
+      total: '11.50',
+      items: [
+        {
+          product_id: 7,
+          sku: 'SKU-7',
+          product_name: 'Producto',
+          quantity: 1,
+          unit_price: '10.000000',
+          tax_code: 'VAT_15',
+          invoice_discount: '0.00',
+          invoice_base: '10.00',
+          invoice_tax: '1.50',
+        },
+      ],
+      ...overrides,
+    },
+  };
 }
 
 /** The access code in an invoice XML */
@@ -261,9 +308,20 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
       (row) =>
         row.tenant_id === invoice.tenantId &&
         row.sale_id === invoice.saleId &&
+        row.doc_type === VoucherType.INVOICE &&
+        invoice.docType === VoucherType.INVOICE &&
         row.status !== InvoiceStatus.REJECTED,
     );
     if (active && invoice.isActive) return false;
+    // Like uq_invoices_active_credit_note
+    const activeCreditNote = [...this.records.values()].some(
+      (row) =>
+        row.tenant_id === invoice.tenantId &&
+        row.request_id !== null &&
+        row.request_id === (invoice.creditNote?.credit_note_id ?? null) &&
+        row.status !== InvoiceStatus.REJECTED,
+    );
+    if (activeCreditNote && invoice.isActive) return false;
     invoice.version += 1;
     this.records.set(invoice.id, toRow(invoice));
     return true;
@@ -292,7 +350,7 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
       throw new ConcurrentUpdateError(invoice.id);
     }
     const { tenantId, establishment, emissionPoint } = invoice.point;
-    const key = [tenantId, establishment, emissionPoint, INVOICE_DOC_TYPE].join('|');
+    const key = [tenantId, establishment, emissionPoint, invoice.docType].join('|');
     const next = (this.sequences.get(key) ?? 0) + 1;
     this.sequences.set(key, next);
     invoice.assignSequence(formatSequence(next));
@@ -313,6 +371,7 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     const matching = (await this.all())
       .filter((invoice) => invoice.tenantId === tenantId)
       .filter((invoice) => !filter.status || invoice.status === filter.status)
+      .filter((invoice) => !filter.docType || invoice.docType === filter.docType)
       .filter((invoice) => !filter.createdFrom || invoice.createdAt >= filter.createdFrom)
       .filter((invoice) => !filter.createdBefore || invoice.createdAt < filter.createdBefore)
       .filter((invoice) => !filter.attention || invoice.needsAttention)
@@ -327,10 +386,23 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     };
   }
 
-  async findBySaleId(tenantId: string, saleId: string): Promise<Invoice[]> {
+  async findBySaleId(tenantId: string, saleId: string, docType?: VoucherType): Promise<Invoice[]> {
     return (await this.all()).filter(
-      (invoice) => invoice.tenantId === tenantId && invoice.saleId === saleId,
+      (invoice) =>
+        invoice.tenantId === tenantId &&
+        invoice.saleId === saleId &&
+        (!docType || invoice.docType === docType),
     );
+  }
+
+  async findActiveCreditNote(tenantId: string, creditNoteId: number): Promise<Invoice | null> {
+    const active = (await this.all()).find(
+      (invoice) =>
+        invoice.tenantId === tenantId &&
+        invoice.creditNote?.credit_note_id === creditNoteId &&
+        invoice.isActive,
+    );
+    return active ?? null;
   }
 
   async countInFlight(tenantId: string): Promise<InFlightCounts> {
