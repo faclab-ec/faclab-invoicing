@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faclab.ec/contracts/events/credit_notes.requested/v2.schema.json",
+  "title": "credit_notes.requested v2",
+  "description": "Nota de crédito (codDoc 04) que faclab-core pide a faclab-invoicing: por una devolución de una venta facturada o por la factura autorizada de una venta anulada. Productor: src/invoicing/infra/event_handlers.py, vía outbox. Consumidor: faclab-invoicing. Dice qué se acredita y desde qué punto de emisión; el comprador, el número y la fecha del documento modificado los toma faclab-invoicing de su factura (invoice_id). Volver a pedirla es el mismo mensaje con otro event_id. La clave del mensaje en Kafka y el header faclab-tenant-id llevan el mismo tenant_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "tenant_id",
+    "aggregate_id",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "Identificador del mensaje. Uno nuevo cada vez que se vuelve a pedir; el consumidor deduplica por él."
+    },
+    "event_type": { "const": "CreditNoteRequested" },
+    "schema_version": {
+      "const": 2,
+      "description": "Versión de este esquema."
+    },
+    "tenant_id": {
+      "$ref": "#/$defs/uuid",
+      "description": "Empresa (tenant) de faclab-core que emite la nota."
+    },
+    "aggregate_id": {
+      "type": "integer",
+      "description": "Id de la nota de crédito en faclab-core (igual a payload.credit_note_id)."
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/utcTimestamp",
+      "description": "Cuándo se pidió la nota. Con INVOICE_EMISSION_DATE=sale es su fecha de emisión."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "credit_note_id",
+        "sale_id",
+        "invoice_id",
+        "refund_id",
+        "refund_number",
+        "issuer_ruc",
+        "establishment_code",
+        "establishment_address",
+        "emission_point_code",
+        "reason",
+        "subtotal",
+        "tax",
+        "total",
+        "items"
+      ],
+      "properties": {
+        "credit_note_id": {
+          "type": "integer",
+          "description": "Id de la nota en faclab-core. faclab-invoicing mantiene a lo sumo un documento activo por cada uno."
+        },
+        "sale_id": { "type": "integer" },
+        "invoice_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "La factura autorizada que la nota modifica (invoiceId de invoices)."
+        },
+        "refund_id": {
+          "type": ["integer", "null"],
+          "description": "La devolución que la origina; null cuando acredita la factura de una venta anulada."
+        },
+        "refund_number": {
+          "$ref": "#/$defs/nullableText",
+          "description": "Número interno de la devolución (D-001-000045); null si no hay devolución. No es el secuencial de la nota, que asigna faclab-invoicing."
+        },
+        "issuer_ruc": {
+          "type": "string",
+          "pattern": "^\\d{13}$",
+          "description": "RUC de la empresa. faclab-invoicing lo compara con el de su perfil fiscal y no emite si no coincide."
+        },
+        "establishment_code": {
+          "$ref": "#/$defs/sriCode",
+          "description": "Establecimiento que emite la nota (estab)."
+        },
+        "establishment_address": {
+          "$ref": "#/$defs/nullableText",
+          "description": "Dirección de la sucursal (dirEstablecimiento); null si no la tiene."
+        },
+        "emission_point_code": {
+          "$ref": "#/$defs/sriCode",
+          "description": "Punto de emisión de la terminal de la devolución o, si no hay, el de la venta (ptoEmi). El secuencial de la nota es por empresa, establecimiento y punto de emisión, aparte del de las facturas."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Motivo de la nota (motivo, obligatorio en el XML)."
+        },
+        "subtotal": {
+          "$ref": "#/$defs/decimal",
+          "description": "Suma de invoice_base de los ítems (totalSinImpuestos)."
+        },
+        "tax": {
+          "$ref": "#/$defs/decimal",
+          "description": "Suma de invoice_tax de los ítems."
+        },
+        "total": {
+          "$ref": "#/$defs/decimal",
+          "description": "Lo que se acredita (valorModificacion): subtotal + tax."
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/item" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "description": "ISO 8601 en UTC con sufijo Z; los microsegundos son opcionales.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "decimal": {
+      "type": "string",
+      "description": "Monto como texto decimal (str de un Decimal de Python). Nunca un número JSON.",
+      "pattern": "^-?\\d+(\\.\\d+)?$"
+    },
+    "quantity": {
+      "type": "string",
+      "description": "Cantidad como texto decimal (str de un Decimal de Python) con hasta seis decimales, lo que admite `cantidad` en el XML 1.1.0 del SRI: \"2.000000\", \"2.500000\", \"3\". Cada unidad de medida de faclab-core limita sus decimales (0 a 6). Nunca un número JSON.",
+      "pattern": "^\\d+(\\.\\d{1,6})?$"
+    },
+    "nullableText": {
+      "type": ["string", "null"]
+    },
+    "sriCode": {
+      "type": "string",
+      "description": "Código SRI de tres dígitos, 001 a 999.",
+      "pattern": "^(00[1-9]|0[1-9]\\d|[1-9]\\d{2})$"
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id",
+        "sku",
+        "product_name",
+        "quantity",
+        "unit_price",
+        "tax_code",
+        "invoice_discount",
+        "invoice_base",
+        "invoice_tax"
+      ],
+      "properties": {
+        "product_id": { "type": "integer" },
+        "sku": {
+          "$ref": "#/$defs/nullableText",
+          "description": "null si el producto no tiene SKU o ya no existe."
+        },
+        "construction_material_code": {
+          "enum": [
+            "F010101",
+            "F010201",
+            "F010202",
+            "F010203",
+            "F010204",
+            "F010205",
+            "F010301",
+            "F010401",
+            "F010402",
+            "F010501",
+            "F010601",
+            "F010701",
+            "F010702",
+            "F010703",
+            "F010801",
+            "F010802",
+            "F010803",
+            "F010804",
+            null
+          ],
+          "description": "Subcategoría de material de construcción (Tabla 31 del Anexo 23 de la ficha técnica). null si el producto no es uno de esos materiales o ya no existe. Opcional: falta en los mensajes anteriores a S4.6."
+        },
+        "product_name": {
+          "$ref": "#/$defs/nullableText",
+          "description": "null si el producto ya no existe."
+        },
+        "quantity": {
+          "$ref": "#/$defs/quantity",
+          "description": "Mayor que cero."
+        },
+        "unit_price": {
+          "$ref": "#/$defs/decimal",
+          "description": "Precio unitario sin IVA, a precisión completa."
+        },
+        "tax_code": {
+          "enum": [
+            "VAT_0",
+            "VAT_5",
+            "VAT_8_TOURISM",
+            "VAT_12",
+            "VAT_13",
+            "VAT_14",
+            "VAT_15",
+            "EXEMPT",
+            "NOT_TAXED"
+          ],
+          "description": "Código semántico de IVA (TaxCode): el de la venta, porque la tarifa es la de la fecha del documento de sustento."
+        },
+        "invoice_discount": {
+          "$ref": "#/$defs/decimal",
+          "description": "Descuento de la línea en la nota (propio + su parte del global), en centavos."
+        },
+        "invoice_base": {
+          "$ref": "#/$defs/decimal",
+          "description": "precioTotalSinImpuesto y baseImponible, en centavos."
+        },
+        "invoice_tax": {
+          "$ref": "#/$defs/decimal",
+          "description": "Valor del IVA en la nota, en centavos."
+        }
+      }
+    }
+  }
+}

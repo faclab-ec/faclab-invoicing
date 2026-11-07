@@ -9,14 +9,14 @@ const V1_EMISSION_POINT = '001';
 
 /**
  * The sale and who issues it, by message version. v2 names the company, its RUC and the sale's
- * establishment and emission point. v1 names none of them: it is invoiced by `v1TenantId`, the
+ * establishment and emission point; v3 is v2 with decimal quantities. v1 names none of them: it is invoiced by `v1TenantId`, the
  * default issuer of a development setup (SALES_V1_TENANT_ID); without one it can't be invoiced.
  */
 export function toReceivedSale(
   message: SaleConfirmedMessage,
   v1TenantId: string | null,
 ): ReceivedSale {
-  if (message.schema_version === 2) {
+  if (message.schema_version === 2 || message.schema_version === 3) {
     const {
       sale_number: _number,
       issuer_ruc,

@@ -20,7 +20,8 @@ import { loadExamples } from './contracts';
 // What faclab-core publishes, as the examples of its contract show it
 const v1 = loadExamples('sales.confirmed', 1);
 const v2 = loadExamples('sales.confirmed', 2);
-// The company of the v2 examples and its RUC: its issuer invoices them
+const v3 = loadExamples('sales.confirmed', 3);
+// The company of the v2 and v3 examples and its RUC: its issuer invoices them
 const EXAMPLES_TENANT = '6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f';
 const EXAMPLES_RUC = '1799999990001';
 
@@ -77,6 +78,7 @@ function emptyElements(doc: XmlDocument): string[] {
 describe.each([
   ['v1', v1],
   ['v2', v2],
+  ['v3', v3],
 ])('sales.confirmed %s contract', (_version, examples) => {
   const buildable = Object.keys(examples).filter((name) => paymentsAddUp(examples[name]));
 
@@ -191,19 +193,22 @@ describe('sales.confirmed v1 from before S3.3', () => {
   });
 });
 
-describe('sales.confirmed v2: who issues and from where', () => {
+describe.each([
+  ['v2', v2],
+  ['v3', v3],
+])('sales.confirmed %s: who issues and from where', (_version, examples) => {
   it('has a branch without an address among its examples', () => {
-    expect(Object.keys(v2)).toContain('branch-without-address');
+    expect(Object.keys(examples)).toContain('branch-without-address');
   });
 
-  it.each(Object.keys(v2))(
+  it.each(Object.keys(examples))(
     '%s is invoiced by its company, at the establishment and emission point of the message',
     async (name) => {
-      const payload = v2[name].payload as Record<string, string | null>;
-      const invoice = await invoiceOf(v2[name]);
+      const payload = examples[name].payload as Record<string, string | null>;
+      const invoice = await invoiceOf(examples[name]);
       const doc = new DOMParser().parseFromString(invoice.requireXml(), 'text/xml');
 
-      expect(invoice.tenantId).toBe(v2[name].tenant_id);
+      expect(invoice.tenantId).toBe(examples[name].tenant_id);
       expect(texts(doc, 'ruc')).toEqual([payload.issuer_ruc]);
       expect(texts(doc, 'estab')).toEqual([payload.establishment_code]);
       expect(texts(doc, 'ptoEmi')).toEqual([payload.emission_point_code]);
@@ -220,9 +225,41 @@ describe('sales.confirmed v2: who issues and from where', () => {
   );
 
   it('is not read as v1 without its company', () => {
-    const { tenant_id: _, ...withoutTenant } = v2['full-customer'];
+    const { tenant_id: _, ...withoutTenant } = examples['full-customer'];
 
     expect(SaleConfirmedMessageSchema.safeParse(withoutTenant).success).toBe(false);
+  });
+});
+
+describe('sales.confirmed v3: decimal quantities', () => {
+  it('writes 2.5 m of cable and 1.25 kg of nails as decimal text the XSD takes', async () => {
+    const doc = await invoiceXml(v3['decimal-quantity']);
+
+    expect(texts(doc, 'cantidad')).toEqual(['2.5', '1.25']);
+    expect(texts(doc, 'precioUnitario')).toEqual(['0.85', '3.4']);
+    // The amounts are faclab-core's, rounded to cents
+    expect(texts(doc, 'precioTotalSinImpuesto')).toEqual(['2.13', '4.25']);
+    expect(texts(doc, 'importeTotal')).toEqual(['7.34']);
+  });
+
+  it('writes a whole quantity without decimals, as before', async () => {
+    const doc = await invoiceXml(v3['full-customer']);
+
+    expect(texts(doc, 'cantidad')).toEqual(['2', '3', '1']);
+  });
+
+  it('rejects a quantity sent as a JSON number', () => {
+    const example = structuredClone(v3['decimal-quantity']);
+    itemsOf(example)[0].quantity = 2.5;
+
+    expect(SaleConfirmedMessageSchema.safeParse(example).success).toBe(false);
+  });
+
+  it('rejects more decimals than the SRI takes', () => {
+    const example = structuredClone(v3['decimal-quantity']);
+    itemsOf(example)[0].quantity = '2.5000001';
+
+    expect(SaleConfirmedMessageSchema.safeParse(example).success).toBe(false);
   });
 });
 
@@ -235,8 +272,8 @@ describe('sales.confirmed versions', () => {
 
   it('rejects a version it does not know, so the message is kept as a dead letter', () => {
     const result = SaleConfirmedMessageSchema.safeParse({
-      ...v2['full-customer'],
-      schema_version: 3,
+      ...v3['full-customer'],
+      schema_version: 4,
     });
 
     expect(result.success).toBe(false);

@@ -21,13 +21,17 @@ import {
 } from '../helpers';
 import { loadExamples, loadSchema } from './contracts';
 
-const requested = loadExamples('credit_notes.requested');
+const requested = loadExamples('credit_notes.requested', 2);
+const requestedV1 = loadExamples('credit_notes.requested', 1);
 const results = loadExamples('credit_notes.results');
 const validateResult = new Ajv2020({ allErrors: true, strict: false }).compile(
   loadSchema('credit_notes.results'),
 );
 const validateRequested = new Ajv2020({ allErrors: true, strict: false }).compile(
-  loadSchema('credit_notes.requested'),
+  loadSchema('credit_notes.requested', 2),
+);
+const validateRequestedV1 = new Ajv2020({ allErrors: true, strict: false }).compile(
+  loadSchema('credit_notes.requested', 1),
 );
 
 const EXAMPLES_TENANT = '6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f';
@@ -81,14 +85,31 @@ async function creditNoteOf(example: unknown) {
   return stored;
 }
 
-describe('credit_notes.requested v1 contract', () => {
-  it('covers a refund, a cancelled sale, a branch without an address and a material', () => {
+describe('credit_notes.requested v2 contract', () => {
+  it('covers a refund, a cancelled sale, a branch without an address, a material and a fraction', () => {
     expect(Object.keys(requested).sort()).toEqual([
       'branch-without-address',
       'cancelled-sale',
       'construction-material',
+      'decimal-quantity',
       'refund',
     ]);
+  });
+
+  it('writes a decimal quantity as decimal text (1.25 m of cable)', async () => {
+    const stored = await creditNoteOf(requested['decimal-quantity']);
+
+    expect(stored.xml).toContain('<cantidad>1.25</cantidad>');
+    expect(stored.xml).toContain('<precioUnitario>0.85</precioUnitario>');
+  });
+
+  it('rejects a quantity sent as a JSON number', () => {
+    const example = structuredClone(requested.refund) as {
+      payload: { items: { quantity: unknown }[] };
+    };
+    example.payload.items[0].quantity = 1;
+
+    expect(CreditNoteRequestedMessageSchema.safeParse(example).success).toBe(false);
   });
 
   it('writes the code of a material in codigoAdicional and the SKU of the rest', async () => {
@@ -136,10 +157,23 @@ describe('credit_notes.requested v1 contract', () => {
   it("rejects a version it doesn't know", () => {
     const parsed = CreditNoteRequestedMessageSchema.safeParse({
       ...requested.refund,
-      schema_version: 2,
+      schema_version: 3,
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe('credit_notes.requested v1 contract, accepted while its messages are around', () => {
+  it.each(Object.keys(requestedV1))('%s matches v1', (name) => {
+    expect(validateRequestedV1(requestedV1[name]) ? [] : validateRequestedV1.errors).toEqual([]);
+  });
+
+  it.each(Object.keys(requestedV1))('%s passes the zod schema and the XSD', async (name) => {
+    const stored = await creditNoteOf(requestedV1[name]);
+
+    expect(stored.status).toBe(InvoiceStatus.CREATED);
+    expect(stored.xml).toMatch(/<cantidad>\d+<\/cantidad>/);
   });
 });
 

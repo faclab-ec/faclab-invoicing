@@ -93,8 +93,9 @@ export class InvoiceVoucher implements VoucherKind {
           constructionMaterialCode: item.construction_material_code,
           // No name means the product no longer exists in faclab-core; the SRI requires one
           description: item.product_name || `Producto ${item.product_id}`,
+          // As faclab-core sends them: written in the XML as text, never through a float
           quantity: item.quantity,
-          unitPrice: parseFloat(item.unit_price),
+          unitPrice: item.unit_price,
           discount: parseFloat(item.invoice_discount),
           taxableBase: parseFloat(item.invoice_base),
           taxCode: iva.code,

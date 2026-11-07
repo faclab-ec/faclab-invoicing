@@ -56,8 +56,9 @@ export interface VoucherItem {
   sku: string | null;
   constructionMaterialCode?: string | null;
   description: string;
-  quantity: number;
-  unitPrice: number;
+  // Decimal text as faclab-core sends it, or a number (messages before S5.1)
+  quantity: number | string;
+  unitPrice: number | string;
   discount: number; // line discount plus its share of the sale discount
   taxableBase: number; // precioTotalSinImpuesto and baseImponible
   taxCode: number;
@@ -98,6 +99,32 @@ export function formatCents(cents: number): string {
 
 export function formatMoney(amount: number): string {
   return formatCents(toCents(amount));
+}
+
+const DECIMAL_TEXT = /^(\d+)(?:\.(\d+))?$/;
+
+/**
+ * A quantity or unit price as the schema takes them (`cantidad`, `precioUnitario`: xsd:decimal,
+ * at most six decimals, not negative): plain text without trailing zeros, never an exponent
+ * (`1e-7`) nor float noise. Text is read digit by digit; more than six decimals round half up.
+ */
+export function formatDecimal6(value: number | string): string {
+  const text = typeof value === 'number' ? value.toFixed(6) : value.trim();
+  const match = DECIMAL_TEXT.exec(text);
+  if (!match) {
+    throw new Error(`Not a non-negative decimal: ${value}`);
+  }
+  let whole = match[1];
+  let fraction = match[2] ?? '';
+  if (fraction.length > 6) {
+    const roundUp = Number(fraction[6]) >= 5 ? 1n : 0n;
+    const digits = (BigInt(whole + fraction.slice(0, 6)) + roundUp).toString().padStart(7, '0');
+    whole = digits.slice(0, -6);
+    fraction = digits.slice(-6);
+  }
+  whole = whole.replace(/^0+(?=\d)/, '');
+  fraction = fraction.replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole;
 }
 
 /** One line of at most `max` characters: the schema allows no line breaks in these texts */
@@ -164,8 +191,8 @@ export function lineTotals(items: VoucherItem[]) {
 export function detalleAmounts(item: VoucherItem) {
   return {
     descripcion: fitText(item.description),
-    cantidad: item.quantity,
-    precioUnitario: item.unitPrice,
+    cantidad: formatDecimal6(item.quantity),
+    precioUnitario: formatDecimal6(item.unitPrice),
     descuento: formatMoney(item.discount),
     precioTotalSinImpuesto: formatMoney(item.taxableBase),
     impuestos: {
