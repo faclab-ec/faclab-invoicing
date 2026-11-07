@@ -14,7 +14,7 @@ contracts/
     │   ├── v2.schema.json
     │   └── examples/
     │       ├── v1/      full-customer, customer-without-contact, final-consumer, product-without-sku
-    │       └── v2/      los mismos más branch-without-address
+    │       └── v2/      los mismos más branch-without-address y construction-material
     ├── invoices/
     │   ├── v1.schema.json
     │   └── examples/
@@ -22,7 +22,7 @@ contracts/
     ├── credit_notes.requested/
     │   ├── v1.schema.json
     │   └── examples/
-    │       └── v1/      refund, cancelled-sale, branch-without-address
+    │       └── v1/      refund, cancelled-sale, branch-without-address, construction-material
     └── credit_notes.results/
         ├── v1.schema.json
         └── examples/
@@ -55,8 +55,11 @@ conocen.
 - **Ids**: los de faclab-core son enteros (`sale_id`, `product_id`); en `invoices`, `saleId` va
   como texto. `event_id`, `tenant_id` e `invoiceId` son UUID en minúsculas.
 - **Códigos SRI**: el establecimiento y el punto de emisión son texto de tres dígitos, de `001` a
-  `999`.
-- **Nulos**: solo los campos marcados como nulables aceptan `null`; ningún campo se omite.
+  `999`. `construction_material_code` es un código de la Tabla 31 del Anexo 23 de la ficha técnica
+  (`F010401`, cemento).
+- **Nulos**: solo los campos marcados como nulables aceptan `null`; ningún campo se omite, salvo
+  `construction_material_code`, que falta en los mensajes anteriores a S4.6 (el core siempre lo envía
+  desde entonces).
 
 ## `sales.confirmed` v2
 
@@ -104,6 +107,7 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 |---|---|---|---|
 | `product_id` | entero | no | |
 | `sku` | texto | **sí** | `null` si el producto no tiene SKU o ya no existe |
+| `construction_material_code` | código de la Tabla 31 | **sí** | Subcategoría del material de construcción (Anexo 23 de la ficha técnica, Res. NAC-DGERCGC24-00000013); va en `codigoAuxiliar` en lugar del SKU. `null` si el producto no es uno de esos materiales o ya no existe. Opcional: falta en los mensajes anteriores a S4.6 |
 | `product_name` | texto | **sí** | `null` si el producto ya no existe |
 | `quantity` | entero | no | |
 | `unit_price` | decimal | no | Precio unitario sin IVA, a precisión completa |
@@ -182,7 +186,8 @@ documento (`invoice_id`), que es la fuente correcta. Volver a pedirla
 | `payload.total` | decimal | no | `subtotal + tax` (`valorModificacion`) |
 | `payload.items` | lista (≥ 1) | no | |
 
-`items[]`: `product_id`, `sku` y `product_name` (nulables, como en `sales.confirmed`), `quantity`,
+`items[]`: `product_id`, `sku`, `construction_material_code` y `product_name` (nulables, como en
+`sales.confirmed`; el código va en `codigoAdicional` en lugar del SKU y es opcional), `quantity`,
 `unit_price`, `tax_code` (el de la venta: la tarifa es la de la fecha del documento de sustento, ficha
 2.34) e `invoice_discount`, `invoice_base` e `invoice_tax`, en centavos.
 

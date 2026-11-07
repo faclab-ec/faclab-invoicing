@@ -54,6 +54,7 @@ export interface VoucherIssue {
 export interface VoucherItem {
   productId: string;
   sku: string | null;
+  constructionMaterialCode?: string | null;
   description: string;
   quantity: number;
   unitPrice: number;
@@ -62,6 +63,16 @@ export interface VoucherItem {
   taxCode: number;
   taxRate: number;
   taxAmount: number;
+}
+
+/**
+ * The optional code of a line. A construction material takes the exact code of the SRI's Table 31
+ * (Anexo 23 of the technical sheet, Res. NAC-DGERCGC24-00000013); anything else, its SKU. Null when
+ * there is none or it doesn't fit: the schema admits it neither empty nor over 25 characters.
+ */
+export function auxiliaryCode(item: VoucherItem): string | null {
+  const code = item.constructionMaterialCode || item.sku;
+  return code && code.length <= MAX_CODE ? code : null;
 }
 
 export function formatDate(d: Date): string {

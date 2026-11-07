@@ -82,12 +82,26 @@ async function creditNoteOf(example: unknown) {
 }
 
 describe('credit_notes.requested v1 contract', () => {
-  it('covers a refund, a cancelled sale and a branch without an address', () => {
+  it('covers a refund, a cancelled sale, a branch without an address and a material', () => {
     expect(Object.keys(requested).sort()).toEqual([
       'branch-without-address',
       'cancelled-sale',
+      'construction-material',
       'refund',
     ]);
+  });
+
+  it('writes the code of a material in codigoAdicional and the SKU of the rest', async () => {
+    const stored = await creditNoteOf(requested['construction-material']);
+
+    expect(stored.xml).toContain('<codigoAdicional>F010401</codigoAdicional>');
+    expect(stored.xml).toContain('<codigoAdicional>MART-16OZ</codigoAdicional>');
+  });
+
+  it('keeps the SKU in a message from before S4.6, without the field', async () => {
+    const stored = await creditNoteOf(requested.refund);
+
+    expect(stored.xml).toContain('<codigoAdicional>MART-16OZ</codigoAdicional>');
   });
 
   it.each(Object.keys(requested))('%s matches the contract', (name) => {

@@ -25,6 +25,9 @@ const SaleConfirmedItemSchema = z.object({
   product_id: z.number(),
   // null when the product has no SKU or no longer exists
   sku: z.string().nullable(),
+  // Anexo 23 of the technical sheet. Any text: a new code of the SRI must not stop an invoice.
+  // Absent in messages from before S4.6
+  construction_material_code: z.string().nullable().optional(),
   product_name: z.string().nullable(),
   quantity: z.number(),
   unit_price: z.string(),
@@ -97,6 +100,7 @@ export type SaleConfirmedMessage = z.infer<typeof SaleConfirmedMessageSchema>;
 const CreditNoteItemSchema = z.object({
   product_id: z.number(),
   sku: z.string().nullable(),
+  construction_material_code: z.string().nullable().optional(),
   product_name: z.string().nullable(),
   quantity: z.number(),
   unit_price: z.string(),

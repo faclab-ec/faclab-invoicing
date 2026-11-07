@@ -4,6 +4,7 @@ import { IvaCode } from './sri-catalogs';
 export interface CreditNoteItem {
   product_id: number;
   sku: string | null;
+  construction_material_code?: string | null;
   product_name: string | null;
   quantity: number;
   unit_price: string;

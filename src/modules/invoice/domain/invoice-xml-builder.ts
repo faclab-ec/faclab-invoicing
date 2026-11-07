@@ -1,6 +1,7 @@
 import { create } from 'xmlbuilder2';
 
 import {
+  auxiliaryCode,
   buildCampoAdicional,
   detalleAmounts,
   fitText,
@@ -9,7 +10,6 @@ import {
   formatMoney,
   infoTributaria,
   lineTotals,
-  MAX_CODE,
   VoucherBuyer,
   VoucherIssue,
   VoucherItem,
@@ -68,12 +68,14 @@ function getInvoiceData(input: InvoiceXmlInput) {
         }),
       },
       detalles: {
-        detalle: input.items.map((item) => ({
-          codigoPrincipal: item.productId,
-          // Optional in the SRI schema, but never empty; left out when it doesn't fit (25 characters)
-          ...(item.sku && item.sku.length <= MAX_CODE ? { codigoAuxiliar: item.sku } : {}),
-          ...detalleAmounts(item),
-        })),
+        detalle: input.items.map((item) => {
+          const code = auxiliaryCode(item);
+          return {
+            codigoPrincipal: item.productId,
+            ...(code ? { codigoAuxiliar: code } : {}),
+            ...detalleAmounts(item),
+          };
+        }),
       },
       ...(campoAdicional.length > 0 && {
         infoAdicional: { campoAdicional },
