@@ -12,17 +12,21 @@ contracts/
     ├── sales.confirmed/
     │   ├── v1.schema.json
     │   ├── v2.schema.json
+    │   ├── v3.schema.json
     │   └── examples/
     │       ├── v1/      full-customer, customer-without-contact, final-consumer, product-without-sku
-    │       └── v2/      los mismos más branch-without-address y construction-material
+    │       ├── v2/      los mismos más branch-without-address y construction-material
+    │       └── v3/      los de v2 más decimal-quantity
     ├── invoices/
     │   ├── v1.schema.json
     │   └── examples/
     │       └── v1/      invoice-received, invoice-authorized, invoice-rejected
     ├── credit_notes.requested/
     │   ├── v1.schema.json
+    │   ├── v2.schema.json
     │   └── examples/
-    │       └── v1/      refund, cancelled-sale, branch-without-address, construction-material
+    │       ├── v1/      refund, cancelled-sale, branch-without-address, construction-material
+    │       └── v2/      los mismos más decimal-quantity
     └── credit_notes.results/
         ├── v1.schema.json
         └── examples/
@@ -31,9 +35,9 @@ contracts/
 
 | Topic | Productor | Consumidores | Versión vigente |
 |---|---|---|---|
-| `sales.confirmed` | faclab-core (`src/invoicing/infra/event_handlers.py`, vía outbox) | faclab-invoicing | 2 (acepta también 1, solo en desarrollo) |
+| `sales.confirmed` | faclab-core (`src/invoicing/infra/event_handlers.py`, vía outbox) | faclab-invoicing | 3 (acepta también 2, y 1 solo en desarrollo) |
 | `invoices` | faclab-invoicing (resultado de cada `Invoice`, desde su worker) | faclab-core (`src/invoicing/infra/invoice_messages.py`) | 1 |
-| `credit_notes.requested` | faclab-core (`src/invoicing/infra/event_handlers.py`, vía outbox) | faclab-invoicing | 1 |
+| `credit_notes.requested` | faclab-core (`src/invoicing/infra/event_handlers.py`, vía outbox) | faclab-invoicing | 2 (acepta también 1) |
 | `credit_notes.results` | faclab-invoicing (resultado de cada nota, desde su worker) | faclab-core (`src/invoicing/infra/credit_note_messages.py`) | 1 |
 
 **Clave y headers.** Todo mensaje lleva el header `faclab-tenant-id` con la empresa y usa esa misma
@@ -50,6 +54,10 @@ conocen.
 - **Montos y porcentajes**: texto decimal, nunca número JSON. Es el `str()` de un `Decimal` de
   Python y conserva su escala: `"0"`, `"10.00"`, `"3.330000"`, `"5.99400000"`. Se leen con un
   parser decimal; los campos `invoice_*` ya vienen en centavos.
+- **Cantidades** (desde `sales.confirmed` v3 y `credit_notes.requested` v2, S5.1): texto decimal con
+  hasta seis decimales, lo que admite `cantidad` en el XML 1.1.0 del SRI: `"2.000000"`,
+  `"2.500000"`. Cada unidad de medida del core limita sus decimales (0 a 6). En las versiones
+  anteriores eran enteros JSON.
 - **Fechas**: ISO 8601 en UTC con sufijo `Z`. `sales.confirmed` puede traer microsegundos
   (`2026-10-15T15:04:05.123456Z`); `invoices` trae milisegundos (`Date.toISOString()`).
 - **Ids**: los de faclab-core son enteros (`sale_id`, `product_id`); en `invoices`, `saleId` va
@@ -61,7 +69,7 @@ conocen.
   `construction_material_code`, que falta en los mensajes anteriores a S4.6 (el core siempre lo envía
   desde entonces).
 
-## `sales.confirmed` v2
+## `sales.confirmed` v3
 
 Venta confirmada en el POS (o una anterior reenviada desde el admin). Un reenvío manual
 (`POST /api/admin/sales/{id}/request-invoice`) es el mismo mensaje con otro `event_id`. Dice quién
@@ -73,7 +81,7 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 |---|---|---|---|
 | `event_id` | UUID | no | Nuevo en cada reenvío; faclab-invoicing deduplica por él |
 | `event_type` | `"SaleConfirmed"` | no | También en los reenvíos |
-| `schema_version` | `2` | no | Ver [Versiones](#versiones-y-compatibilidad) |
+| `schema_version` | `3` | no | Ver [Versiones](#versiones-y-compatibilidad) |
 | `tenant_id` | UUID | no | Empresa que emite; igual al header `faclab-tenant-id` y a la clave del mensaje |
 | `aggregate_id` | entero | no | Id de la venta |
 | `occurred_at` | fecha UTC | no | Momento del evento |
@@ -109,7 +117,7 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 | `sku` | texto | **sí** | `null` si el producto no tiene SKU o ya no existe |
 | `construction_material_code` | código de la Tabla 31 | **sí** | Subcategoría del material de construcción (Anexo 23 de la ficha técnica, Res. NAC-DGERCGC24-00000013); va en `codigoAuxiliar` en lugar del SKU. `null` si el producto no es uno de esos materiales o ya no existe. Opcional: falta en los mensajes anteriores a S4.6 |
 | `product_name` | texto | **sí** | `null` si el producto ya no existe |
-| `quantity` | entero | no | |
+| `quantity` | cantidad | no | Texto decimal con hasta seis decimales (`"2.500000"`), ver [Formatos comunes](#formatos-comunes) |
 | `unit_price` | decimal | no | Precio unitario sin IVA, a precisión completa |
 | `discount` | decimal | no | Descuento de la línea en porcentaje (0-100) |
 | `tax_code` | `VAT_0` \| `VAT_5` \| `VAT_8_TOURISM` \| `VAT_12` \| `VAT_13` \| `VAT_14` \| `VAT_15` \| `EXEMPT` \| `NOT_TAXED` | no | Código semántico de IVA (`TaxCode`) |
@@ -122,6 +130,11 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 `payments[]`: `method` (`CASH` \| `CREDIT_CARD` \| `DEBIT_CARD` \| `TRANSFER` \| `OTHER`) y `amount`
 (decimal; lo aplicado a la venta, sin el vuelto). La suma de `payments[].amount` es igual a `total`
 desde S3.3: el core guarda aparte lo entregado y el vuelto, que no viajan a facturación.
+
+### `sales.confirmed` v2
+
+Es v3 con `quantity` como entero JSON. faclab-invoicing la sigue aceptando mientras haya mensajes
+suyos en el outbox o en el topic.
 
 ### `sales.confirmed` v1
 
@@ -155,7 +168,7 @@ Este mensaje no usa todavía el envelope completo de ADR-0006 (`event_id`, `even
 (el esquema es cerrado) sino en el header `faclab-tenant-id`, con el que el core abre el contexto;
 un mensaje sin él se descarta.
 
-## `credit_notes.requested` v1
+## `credit_notes.requested` v2
 
 faclab-core pide una nota de crédito (codDoc 04) por una devolución de una venta facturada o por la
 factura autorizada de una venta anulada. Usa el envelope completo de ADR-0006. Dice qué se acredita y
@@ -167,7 +180,7 @@ documento (`invoice_id`), que es la fuente correcta. Volver a pedirla
 |---|---|---|---|
 | `event_id` | UUID | no | Nuevo cada vez que se vuelve a pedir; faclab-invoicing deduplica por él |
 | `event_type` | `"CreditNoteRequested"` | no | |
-| `schema_version` | `1` | no | |
+| `schema_version` | `2` | no | v1 es la misma con `quantity` entera; faclab-invoicing acepta las dos |
 | `tenant_id` | UUID | no | Empresa que emite; igual al header `faclab-tenant-id` y a la clave del mensaje |
 | `aggregate_id` | entero | no | Id de la nota en faclab-core |
 | `occurred_at` | fecha UTC | no | Cuándo se pidió. Con `INVOICE_EMISSION_DATE=sale` es su fecha de emisión |
@@ -187,7 +200,8 @@ documento (`invoice_id`), que es la fuente correcta. Volver a pedirla
 | `payload.items` | lista (≥ 1) | no | |
 
 `items[]`: `product_id`, `sku`, `construction_material_code` y `product_name` (nulables, como en
-`sales.confirmed`; el código va en `codigoAdicional` en lugar del SKU y es opcional), `quantity`,
+`sales.confirmed`; el código va en `codigoAdicional` en lugar del SKU y es opcional), `quantity`
+(cantidad mayor que cero),
 `unit_price`, `tax_code` (el de la venta: la tarifa es la de la fecha del documento de sustento, ficha
 2.34) e `invoice_discount`, `invoice_base` e `invoice_tax`, en centavos.
 
@@ -217,18 +231,19 @@ como facturada. Un resultado puede repetirse: el core lo aplica una sola vez.
 ## Pruebas de contrato
 
 - **faclab-core** (`tests/contract/`, paso `Contract tests` del CI):
-  - el esquema es válido y cada ejemplo lo cumple (los de v1 cumplen v1 mientras facturación la acepte);
-  - los mensajes que arma `build_sale_confirmed_message` y guarda `OutboxWriter` cumplen v2 con cliente completo, sin contacto, consumidor final, cliente o productos borrados, reenvío, venta sin número y sucursal sin dirección;
-  - un cambio incompatible (quitar o renombrar un campo, un monto como número, un campo sin documentar) rompe la validación;
+  - el esquema es válido y cada ejemplo lo cumple (los de versiones anteriores cumplen la suya mientras facturación la acepte);
+  - los mensajes que arma `build_sale_confirmed_message` y guarda `OutboxWriter` cumplen v3 con cliente completo, sin contacto, consumidor final, cliente o productos borrados, reenvío, venta sin número, sucursal sin dirección y cantidades decimales;
+  - un cambio incompatible (quitar o renombrar un campo, un monto o una cantidad como número, una cantidad con siete decimales, un campo sin documentar) rompe la validación;
   - `handle_invoice_message` procesa cada ejemplo de `invoices` (el rechazo, con su `reason`), y
     `reason` es opcional.
   - `tests/integration/postgres/test_invoicing.py` valida además el outbox de ventas POS reales;
-  - los mensajes de `credit_notes.requested` que arma y guarda el outbox cumplen v1
+  - los mensajes de `credit_notes.requested` que arma y guarda el outbox cumplen v2
     (`test_credit_notes.py`), y `handle_credit_note_message` aplica cada ejemplo de
     `credit_notes.results`.
 - **faclab-invoicing** (`test/contract/`, pasos `Contract copy matches faclab-core` y `Contract tests`):
-  - cada ejemplo de `sales.confirmed` (v1 y v2) pasa por su zod y produce el XML de la factura; con
-    v2, el XML usa el establecimiento, la dirección y el punto de emisión del mensaje;
+  - cada ejemplo de `sales.confirmed` (v1, v2 y v3) pasa por su zod y produce el XML de la factura;
+    desde v2, el XML usa el establecimiento, la dirección y el punto de emisión del mensaje, y con v3
+    la `cantidad` decimal pasa el XSD;
   - los mensajes que publica en `invoices` (solo `InvoiceAuthorized` e `InvoiceRejected`) cumplen
     `invoices/v1.schema.json`, y el rechazo lleva los mensajes del SRI en `reason`;
   - cada ejemplo de `credit_notes.requested` pasa por su zod y produce el XML de la nota contra el

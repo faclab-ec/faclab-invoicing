@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildAuthorizedXml } from '#/modules/invoice/domain/authorized-xml';
 import { buildInvoiceXml, InvoiceXmlInput } from '#/modules/invoice/domain/invoice-xml-builder';
+import { formatDecimal6 } from '#/modules/invoice/domain/voucher-xml';
 
 import { xsdValidator } from '../helpers';
 
@@ -160,6 +161,40 @@ describe('buildInvoiceXml against the SRI schema (factura 1.1.0)', () => {
     });
   });
 
+  it('writes decimal quantities and unit prices the XSD takes (S5.1)', async () => {
+    const line = input().items[0];
+    const xml = buildInvoiceXml(
+      input({
+        items: [
+          // 2.5 m of cable, as faclab-core sends it
+          {
+            ...line,
+            quantity: '2.500000',
+            unitPrice: '0.850000',
+            taxableBase: 2.13,
+            taxAmount: 0.32,
+          },
+          // the six decimals cantidad and precioUnitario admit
+          {
+            ...line,
+            quantity: '123456.123456',
+            unitPrice: '0.000001',
+            taxableBase: 0.12,
+            taxAmount: 0.02,
+          },
+          // a float that would print as 1e-7
+          { ...line, quantity: 0.0000001, unitPrice: 10, taxableBase: 0, taxAmount: 0 },
+        ],
+        total: 2.59,
+        payments: [{ formaPago: '01', amount: 2.59 }],
+      }),
+    );
+
+    await expectValid(xml);
+    expect(texts(xml, 'cantidad')).toEqual(['2.5', '123456.123456', '0']);
+    expect(texts(xml, 'precioUnitario')).toEqual(['0.85', '0.000001', '10']);
+  });
+
   it('leaves pagos out of a sale without payments', async () => {
     const xml = buildInvoiceXml(
       input({
@@ -200,5 +235,26 @@ describe('buildAuthorizedXml', () => {
     expect(texts(xml, 'ambiente')).toEqual(['PRUEBAS']);
     expect(texts(xml, 'comprobante')).toEqual([voucherXml]);
     expect(xml).toContain(`<![CDATA[${voucherXml}]]>`);
+  });
+});
+
+describe('formatDecimal6', () => {
+  it.each([
+    ['2.500000', '2.5'],
+    ['10.000000', '10'],
+    ['3', '3'],
+    ['0.000001', '0.000001'],
+    ['007.50', '7.5'],
+    ['1.2345675', '1.234568'],
+    ['0.9999995', '1'],
+    [2.5, '2.5'],
+    [0.1 + 0.2, '0.3'],
+    [1e-7, '0'],
+  ])('%s → %s', (value, text) => {
+    expect(formatDecimal6(value)).toBe(text);
+  });
+
+  it.each(['-1', '2,5', 'abc', '1e-7', -1])('rejects %s', (value) => {
+    expect(() => formatDecimal6(value)).toThrow('Not a non-negative decimal');
   });
 });

@@ -39,7 +39,8 @@ export interface SaleData {
     sku: string | null;
     construction_material_code?: string | null;
     product_name: string | null;
-    quantity: number;
+    // A number up to sales.confirmed v2, decimal text since v3: stored invoices keep either
+    quantity: number | string;
     unit_price: string;
     discount: string;
     tax_code: IvaCode;

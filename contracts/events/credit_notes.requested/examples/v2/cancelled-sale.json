@@ -1,0 +1,58 @@
+{
+  "event_id": "7c2e4f10-1a2b-4c3d-8e4f-5a6b7c8d9e02",
+  "event_type": "CreditNoteRequested",
+  "schema_version": 2,
+  "tenant_id": "6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f",
+  "aggregate_id": 32,
+  "occurred_at": "2026-11-02T16:10:00Z",
+  "payload": {
+    "credit_note_id": 32,
+    "sale_id": 1201,
+    "invoice_id": "9a7f1c52-3b8e-5d41-a6f2-1c2d3e4f5a6b",
+    "refund_id": null,
+    "refund_number": null,
+    "issuer_ruc": "1799999990001",
+    "establishment_code": "001",
+    "establishment_address": "Av. Amazonas N34-120 y Av. Atahualpa, Quito",
+    "emission_point_code": "001",
+    "reason": "Anulación de la venta V-001-000123",
+    "subtotal": "24.05",
+    "tax": "2.74",
+    "total": "26.79",
+    "items": [
+      {
+        "product_id": 101,
+        "sku": "MART-16OZ",
+        "product_name": "Martillo de uña 16 oz",
+        "quantity": "2.000000",
+        "unit_price": "8.500000",
+        "tax_code": "VAT_15",
+        "invoice_discount": "2.31",
+        "invoice_base": "14.69",
+        "invoice_tax": "2.20"
+      },
+      {
+        "product_id": 102,
+        "sku": "CLAV-2-1KG",
+        "product_name": "Clavos de 2 pulgadas (1 kg)",
+        "quantity": "3.000000",
+        "unit_price": "1.250000",
+        "tax_code": "VAT_15",
+        "invoice_discount": "0.15",
+        "invoice_base": "3.60",
+        "invoice_tax": "0.54"
+      },
+      {
+        "product_id": 103,
+        "sku": "ABON-ORG-5KG",
+        "product_name": "Abono orgánico 5 kg",
+        "quantity": "1.000000",
+        "unit_price": "6.000000",
+        "tax_code": "VAT_0",
+        "invoice_discount": "0.24",
+        "invoice_base": "5.76",
+        "invoice_tax": "0.00"
+      }
+    ]
+  }
+}

@@ -98,6 +98,28 @@ describe('buildCreditNoteXml: the notaCredito 1.1.0 of the SRI', () => {
     expect(text(xml, 'secuencial')).toBe('000000012');
   });
 
+  it('credits a decimal quantity as decimal text the XSD takes (S5.1)', async () => {
+    const [line] = input().items;
+    const xml = buildCreditNoteXml(
+      input({
+        items: [
+          {
+            ...line,
+            quantity: '1.250000',
+            unitPrice: '0.850000',
+            discount: 0,
+            taxableBase: 1.06,
+            taxAmount: 0.16,
+          },
+        ],
+      }),
+    );
+
+    await expectValid(xml);
+    expect(texts(xml, 'cantidad')).toEqual(['1.25']);
+    expect(texts(xml, 'precioUnitario')).toEqual(['0.85']);
+  });
+
   it('refers to the invoice it modifies, with its reason', () => {
     const xml = buildCreditNoteXml(input());
 

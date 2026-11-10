@@ -2,7 +2,7 @@
 
 Event-driven microservice that integrates with Ecuador's **SRI** (Servicio de Rentas Internas) tax authority. It listens to sale confirmation events from Kafka, generates compliant electronic invoice XML, signs it with XAdES-BES, submits it to SRI SOAP endpoints for validation and authorization, and persists the full invoice lifecycle in PostgreSQL. The consumer only stores each sale; a worker takes the invoices from a queue in PostgreSQL and talks to the SRI, so a slow SRI never holds back new sales. Each authorized invoice gets its RIDE (the printable PDF) and goes to the buyer's email with its authorized XML (S4.4).
 
-It is **multi-company**: each company (a faclab-core tenant, one RUC) has its own fiscal profile, certificates, SRI environment and sequences per establishment and emission point. A sale says which company issues it and from where (`sales.confirmed` v2), and the HTTP API only shows the company of the caller's token (`tid`).
+It is **multi-company**: each company (a faclab-core tenant, one RUC) has its own fiscal profile, certificates, SRI environment and sequences per establishment and emission point. A sale says which company issues it and from where (`sales.confirmed` v2 and v3), and the HTTP API only shows the company of the caller's token (`tid`).
 
 ## Table of Contents
 
@@ -342,8 +342,8 @@ curl -H "X-Request-ID: my-trace-id" http://localhost:3173/api/invoices
 
 | Topic | Direction | Schema |
 |-------|-----------|--------|
-| `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v2.schema.json` (and v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
-| `credit_notes.requested` | Inbound | Contract `contracts/events/credit_notes.requested/v1.schema.json`; validated with `CreditNoteRequestedMessageSchema` |
+| `sales.confirmed` | Inbound | Contracts `contracts/events/sales.confirmed/v3.schema.json` (and v2, v1); validated with `SaleConfirmedMessageSchema` (`messaging/schemas.ts`) |
+| `credit_notes.requested` | Inbound | Contract `contracts/events/credit_notes.requested/v2.schema.json` (and v1); validated with `CreditNoteRequestedMessageSchema` |
 | `credit_notes.results` | Outbound | Contract `contracts/events/credit_notes.results/v1.schema.json`; `CreditNoteAuthorized` and `CreditNoteRejected`, for faclab-core |
 | `invoices` | Outbound | Contract `contracts/events/invoices/v1.schema.json`; only the results, `InvoiceAuthorized` and `InvoiceRejected`, sent through `toInvoiceMessage`. `InvoiceRejected` carries the SRI's messages in `reason`, which faclab-core shows in the sale |
 
@@ -351,17 +351,19 @@ Until S4.2 the service also consumed `invoices` to move each invoice to its next
 
 **Partitions without a committed offset are read from the beginning** (`consumerOptions`), like faclab-core's consumer. With the default, what arrives while the service is down would be lost: the first message of a new topic, or of a company in a partition. Handlers are idempotent, so reading again is safe.
 
-**Which company, from where.** `sales.confirmed` v2 brings `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it is kept as a dead letter.
+**Which company, from where.** `sales.confirmed` v2 and v3 bring `tenant_id` (the company), `issuer_ruc`, `establishment_code`, `establishment_address` and `emission_point_code`. The invoice is issued with that company's profile, certificate and sequence, and the XML's `estab`, `ptoEmi` and `dirEstablecimiento` (left out when the address is `null`) are the message's; `dirMatriz` is the profile's main address. v1 names none of them: only a development setup invoices it, with the company in `SALES_V1_TENANT_ID`, at `001`-`001` and without checking the RUC; elsewhere it is kept as a dead letter.
 
 Each `sales.confirmed` item carries `invoice_discount`, `invoice_base` and `invoice_tax`: the line's `descuento`, `precioTotalSinImpuesto`/`baseImponible` and IVA `valor`, already rounded to cents and with the sale-level discount prorated by faclab-core. The XML uses them as they are (the SRI invoice has no sale-level discount), so the bases plus VAT add up to the sale total. Money is summed in cents and written with two decimals.
+
+**Decimal quantities (S5.1).** A hardware store sells 2.5 m of cable: since `sales.confirmed` v3 and `credit_notes.requested` v2 each `quantity` is decimal text with up to six decimals (`"2.500000"`), as faclab-core's unit of measure allows; before, a JSON integer. `cantidad` and `precioUnitario` are written with `formatDecimal6` (`voucher-xml.ts`): the message's text, never through a float, without trailing zeros (`2.5`, `10`) and never as an exponent, which `xsd:decimal` rejects. The XSD takes up to six decimals in both (factura and notaCredito 1.1.0). Invoices stored before keep their numbers and are written the same way.
 
 ### Event contracts
 
 The messages follow versioned JSON Schemas owned by faclab-core (`faclab-core/contracts/`, see its README for the field-by-field contract and the compatibility policy). `contracts/` here is a copy pinned to a faclab-core commit in `contracts/source.json`:
 
 - `npm run contracts:sync -- <commit|branch|tag>` refreshes it from GitHub (`CORE_REPO=../faclab-core` uses a local clone instead, for a branch not pushed yet). Never edit the copy by hand: CI checks it out from faclab-core at the pinned commit and fails on any difference.
-- `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example (v1 and v2) with zod and builds its invoice XML, checks that v2's XML and access code use the message's establishment, address and emission point, and validates every message this service publishes on `invoices` against its schema (ajv).
-- `sales.confirmed` is accepted in v2 and v1; `invoices` carries `schema_version: 1`. A `sales.confirmed` without `schema_version` predates v1 and is read as v1; any other version fails validation and is kept as a dead letter.
+- `npm run test:contract` (`test/contract/`) parses every `sales.confirmed` example (v1, v2 and v3) with zod and builds its invoice XML, checks that the XML and access code of v2 and v3 use the message's establishment, address and emission point, that a v3 decimal quantity reaches `cantidad` as decimal text the XSD takes, and validates every message this service publishes on `invoices` against its schema (ajv).
+- `sales.confirmed` is accepted in v3, v2 and v1, `credit_notes.requested` in v2 and v1; `invoices` carries `schema_version: 1`. A `sales.confirmed` without `schema_version` predates v1 and is read as v1; any other version fails validation and is kept as a dead letter.
 - A customer may come without `email`, `phone` or `address` (`null`): the SRI doesn't require them and the XML leaves them out (`infoAdicional` only when there is at least one). A final consumer (`customer: null`) is invoiced as `07` / `9999999999999` / `CONSUMIDOR FINAL`. An item without `sku` has no `codigoAuxiliar`; one without `product_name` (the product no longer exists in faclab-core) is described as `Producto <product_id>`.
 
 When a contract changes, deploy the consumer before the producer.

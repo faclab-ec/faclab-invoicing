@@ -1,0 +1,36 @@
+{
+  "event_id": "7c2e4f10-1a2b-4c3d-8e4f-5a6b7c8d9e03",
+  "event_type": "CreditNoteRequested",
+  "schema_version": 2,
+  "tenant_id": "6f1c2d3e-4b5a-4c7d-8e9f-0a1b2c3d4e5f",
+  "aggregate_id": 33,
+  "occurred_at": "2026-11-02T17:20:30.5Z",
+  "payload": {
+    "credit_note_id": 33,
+    "sale_id": 1305,
+    "invoice_id": "0b1c2d3e-4f5a-5b6c-8d7e-9f0a1b2c3d4e",
+    "refund_id": 46,
+    "refund_number": "D-002-000001",
+    "issuer_ruc": "1799999990001",
+    "establishment_code": "002",
+    "establishment_address": null,
+    "emission_point_code": "001",
+    "reason": "Devolución",
+    "subtotal": "10.00",
+    "tax": "1.50",
+    "total": "11.50",
+    "items": [
+      {
+        "product_id": 200,
+        "sku": null,
+        "product_name": null,
+        "quantity": "1.000000",
+        "unit_price": "10.000000",
+        "tax_code": "VAT_15",
+        "invoice_discount": "0.00",
+        "invoice_base": "10.00",
+        "invoice_tax": "1.50"
+      }
+    ]
+  }
+}

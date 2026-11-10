@@ -10,7 +10,7 @@ import { VoucherResultEvent } from '#/modules/invoice/domain/events';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { SaleData } from '#/modules/invoice/domain/sale';
 import { AuthorizationVoucher, AuthorizationVoucherStatus } from '#/modules/invoice/domain/voucher';
-import { CreditNoteRequestedMessage } from '#/modules/invoice/infra/messaging/schemas';
+import { CreditNoteRequestedV2Message } from '#/modules/invoice/infra/messaging/schemas';
 
 import {
   accessCodeOf,
@@ -68,7 +68,7 @@ function setup(sri: Parameters<typeof invoiceSteps>[2] = {}) {
 
   async function request(
     invoiceId: string,
-    overrides: Partial<CreditNoteRequestedMessage['payload']> = {},
+    overrides: Partial<CreditNoteRequestedV2Message['payload']> = {},
     eventId = EVENT_ID,
   ) {
     await handler.handle(makeCreditNoteMessage({ invoice_id: invoiceId, ...overrides }, eventId));

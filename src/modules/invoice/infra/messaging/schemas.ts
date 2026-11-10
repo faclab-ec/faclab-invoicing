@@ -21,6 +21,10 @@ const SaleConfirmedCustomerSchema = z.object({
   address: z.string().nullable(),
 });
 
+// A quantity: a JSON number up to sales.confirmed v2 and credit_notes.requested v1; decimal text with
+// at most six decimals since v3 and v2 (S5.1), what `cantidad` takes in the SRI's schema
+const QuantityTextSchema = z.string().regex(/^\d+(\.\d{1,6})?$/);
+
 const SaleConfirmedItemSchema = z.object({
   product_id: z.number(),
   // null when the product has no SKU or no longer exists
@@ -39,6 +43,10 @@ const SaleConfirmedItemSchema = z.object({
   invoice_discount: z.string(),
   invoice_base: z.string(),
   invoice_tax: z.string(),
+});
+
+const SaleConfirmedDecimalItemSchema = SaleConfirmedItemSchema.extend({
+  quantity: QuantityTextSchema,
 });
 
 const SaleConfirmedPaymentSchema = z.object({
@@ -88,13 +96,23 @@ export const SaleConfirmedV2MessageSchema = z.object({
   }),
 });
 
+// v3: v2 with each quantity as decimal text (2.5 m of cable)
+export const SaleConfirmedV3MessageSchema = SaleConfirmedV2MessageSchema.extend({
+  schema_version: z.literal(3),
+  payload: SaleConfirmedV2MessageSchema.shape.payload.extend({
+    items: z.array(SaleConfirmedDecimalItemSchema),
+  }),
+});
+
 export const SaleConfirmedMessageSchema = z.union([
+  SaleConfirmedV3MessageSchema,
   SaleConfirmedV2MessageSchema,
   SaleConfirmedV1MessageSchema,
 ]);
 
 export type SaleConfirmedV1Message = z.infer<typeof SaleConfirmedV1MessageSchema>;
 export type SaleConfirmedV2Message = z.infer<typeof SaleConfirmedV2MessageSchema>;
+export type SaleConfirmedV3Message = z.infer<typeof SaleConfirmedV3MessageSchema>;
 export type SaleConfirmedMessage = z.infer<typeof SaleConfirmedMessageSchema>;
 
 const CreditNoteItemSchema = z.object({
@@ -111,7 +129,7 @@ const CreditNoteItemSchema = z.object({
 });
 
 // v1: what to credit and from where; the buyer and the invoice's number come from the invoice
-export const CreditNoteRequestedMessageSchema = z.object({
+export const CreditNoteRequestedV1MessageSchema = z.object({
   event_id: z.string().uuid(),
   event_type: z.literal('CreditNoteRequested'),
   schema_version: z.literal(1),
@@ -136,4 +154,18 @@ export const CreditNoteRequestedMessageSchema = z.object({
   }),
 });
 
+// v2: v1 with each quantity as decimal text
+export const CreditNoteRequestedV2MessageSchema = CreditNoteRequestedV1MessageSchema.extend({
+  schema_version: z.literal(2),
+  payload: CreditNoteRequestedV1MessageSchema.shape.payload.extend({
+    items: z.array(CreditNoteItemSchema.extend({ quantity: QuantityTextSchema })).min(1),
+  }),
+});
+
+export const CreditNoteRequestedMessageSchema = z.union([
+  CreditNoteRequestedV2MessageSchema,
+  CreditNoteRequestedV1MessageSchema,
+]);
+
+export type CreditNoteRequestedV2Message = z.infer<typeof CreditNoteRequestedV2MessageSchema>;
 export type CreditNoteRequestedMessage = z.infer<typeof CreditNoteRequestedMessageSchema>;

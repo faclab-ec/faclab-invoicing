@@ -68,8 +68,8 @@ import {
 } from '#/modules/invoice/domain/voucher';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import {
-  CreditNoteRequestedMessage,
-  SaleConfirmedV2Message,
+  CreditNoteRequestedV2Message,
+  SaleConfirmedV3Message,
 } from '#/modules/invoice/infra/messaging/schemas';
 import {
   fromInvoiceRow,
@@ -155,13 +155,13 @@ export function invoiceSteps(
 
 /** A `credit_notes.requested` message of the invoice of `makeSale`, unless it says otherwise */
 export function makeCreditNoteMessage(
-  overrides: Partial<CreditNoteRequestedMessage['payload']> = {},
+  overrides: Partial<CreditNoteRequestedV2Message['payload']> = {},
   eventId = '4f1d2c3b-5a6e-4d7c-8b9a-0c1d2e3f4a5b',
-): CreditNoteRequestedMessage {
+): CreditNoteRequestedV2Message {
   return {
     event_id: eventId,
     event_type: 'CreditNoteRequested',
-    schema_version: 1,
+    schema_version: 2,
     tenant_id: TENANT_A,
     aggregate_id: overrides.credit_note_id ?? 31,
     occurred_at: REQUESTED_AT,
@@ -184,7 +184,7 @@ export function makeCreditNoteMessage(
           product_id: 7,
           sku: 'SKU-7',
           product_name: 'Producto',
-          quantity: 1,
+          quantity: '1.000000',
           unit_price: '10.000000',
           tax_code: 'VAT_15',
           invoice_discount: '0.00',
@@ -703,21 +703,23 @@ export function makePoint(overrides: Partial<IssuingPoint> = {}): IssuingPoint {
   };
 }
 
-/** The sales.confirmed v2 message of a sale made at `point` */
+/** The sales.confirmed v3 message of a sale made at `point` */
 export function makeSaleMessage(
   eventId: string,
   sale: SaleData = makeSale(),
   point: IssuingPoint = makePoint(),
-): SaleConfirmedV2Message {
+): SaleConfirmedV3Message {
   return {
     event_id: eventId,
     event_type: 'SaleConfirmed',
-    schema_version: 2,
+    schema_version: 3,
     tenant_id: point.tenantId,
     aggregate_id: sale.sale_id,
     occurred_at: REQUESTED_AT,
     payload: {
       ...sale,
+      // Decimal text, as faclab-core sends it since v3
+      items: sale.items.map((item) => ({ ...item, quantity: String(item.quantity) })),
       sale_number: null,
       issuer_ruc: point.issuerRuc ?? RUC_A,
       establishment_code: point.establishment,

@@ -3,6 +3,22 @@
 Cada versión de un mensaje, qué cambió y en qué orden se desplegó. Las reglas de compatibilidad
 están en [README.md](README.md#versiones-y-compatibilidad).
 
+## `sales.confirmed` v3 y `credit_notes.requested` v2: cantidades decimales (S5.1, 2026-11)
+
+- **Cambio de tipo, versión nueva**: `items[].quantity` pasa de entero JSON a texto decimal con hasta
+  seis decimales (`"2.500000"`), como los montos. Es lo que admite `cantidad` en el XML 1.1.0 del SRI
+  (totalDigits 18, fractionDigits 6). El core vende 2,5 m de cable o 1,25 kg de clavos: cada unidad
+  de medida dice cuántos decimales acepta (0 a 6).
+- Los montos no cambian: `invoice_discount`, `invoice_base` e `invoice_tax` siguen en centavos y
+  faclab-invoicing los usa tal cual. Ejemplos nuevos: `sales.confirmed/examples/v3/decimal-quantity`
+  y `credit_notes.requested/examples/v2/decimal-quantity`.
+- **Despliegue**: faclab-invoicing (acepta v3 y v2 de `sales.confirmed`, v2 y v1 de
+  `credit_notes.requested`, y escribe `cantidad` como texto decimal), faclab-core (publica las
+  versiones nuevas), faclab-web.
+- **Vuelta atrás**: revertir el core (su downgrade exige que no queden cantidades fraccionarias)
+  vuelve a publicar v2 y v1, que faclab-invoicing sigue aceptando. Revertir faclab-invoicing antes que
+  el core deja los mensajes nuevos en su `dead_letters`.
+
 ## `sales.confirmed` v2 y `credit_notes.requested` v1: código de material de construcción (S4.6, 2026-11)
 
 - **Campo nuevo y compatible**, sin cambio de versión: `construction_material_code` en cada línea,

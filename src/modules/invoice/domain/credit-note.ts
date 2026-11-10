@@ -6,7 +6,8 @@ export interface CreditNoteItem {
   sku: string | null;
   construction_material_code?: string | null;
   product_name: string | null;
-  quantity: number;
+  // A number in credit_notes.requested v1, decimal text since v2: stored notes keep either
+  quantity: number | string;
   unit_price: string;
   // The sale's: the rate is the one of the date of the invoice it modifies (ficha técnica 2.34)
   tax_code: IvaCode;
