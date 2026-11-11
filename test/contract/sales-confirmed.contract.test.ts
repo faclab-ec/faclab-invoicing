@@ -263,6 +263,30 @@ describe('sales.confirmed v3: decimal quantities', () => {
   });
 });
 
+describe('sales.confirmed v3: sales on credit', () => {
+  it('writes what the customer owes as formaPago 20 with its plazo in days', async () => {
+    const doc = await invoiceXml(v3['credit-sale']);
+
+    expect(texts(doc, 'formaPago')).toEqual(['01', '20']);
+    expect(texts(doc, 'total').slice(-2)).toEqual(['6.79', '20.00']);
+    expect(texts(doc, 'plazo')).toEqual(['30']);
+    expect(texts(doc, 'unidadTiempo')).toEqual(['dias']);
+  });
+
+  it('writes no plazo for the payments that are not on credit', async () => {
+    const doc = await invoiceXml(v3['full-customer']);
+
+    expect(texts(doc, 'plazo')).toEqual([]);
+  });
+
+  it('rejects terms sent as text', () => {
+    const example = structuredClone(v3['credit-sale']);
+    (example.payload as { payments: Record<string, unknown>[] }).payments[1].term_days = '30';
+
+    expect(SaleConfirmedMessageSchema.safeParse(example).success).toBe(false);
+  });
+});
+
 describe('sales.confirmed versions', () => {
   it('reads a message from before v1 as v1', () => {
     const { schema_version: _, ...legacy } = v1['full-customer'];

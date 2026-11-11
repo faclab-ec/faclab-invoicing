@@ -3,6 +3,35 @@
 Cada versión de un mensaje, qué cambió y en qué orden se desplegó. Las reglas de compatibilidad
 están en [README.md](README.md#versiones-y-compatibilidad).
 
+## `sales.confirmed` v3 enmendada: ventas a crédito (S5.5, 2026-11)
+
+- **Cambio sobre la versión vigente, sin versión nueva** (excepción de ADR-0006 hasta el piloto):
+  `payments[].method` admite `CREDIT`, lo que el cliente queda debiendo en su cuenta por cobrar, y
+  cada pago `CREDIT` lleva `term_days`, el plazo en días de las condiciones de pago del cliente
+  (obligatorio en `CREDIT`, prohibido en los demás). Los pagos siguen sumando `total`. Ejemplo nuevo:
+  `sales.confirmed/examples/v3/credit-sale`.
+- faclab-invoicing escribe el pago `CREDIT` con `formaPago` 20 ("otros con utilización del sistema
+  financiero", como suele cobrarse a un contratista: transferencia o cheque) y `plazo` y
+  `unidadTiempo` (`dias`) en el `pago` de la factura; el RIDE ya los imprime.
+- **Despliegue**: faclab-invoicing (acepta `CREDIT` y `term_days`), faclab-core (los envía),
+  faclab-web. Un core anterior nunca envía `CREDIT`, así que invoicing puede ir primero. Con
+  invoicing anterior, un `sales.confirmed` con `CREDIT` falla su validación y queda en su
+  `dead_letters`: hay que reprocesarlo después de desplegarlo.
+- **Vuelta atrás**: el downgrade del core pasa los pagos `CREDIT` a `OTHER`; los mensajes ya
+  publicados se facturaron con su plazo.
+
+## `sales.confirmed` v3 y `credit_notes.requested` v2: presentaciones (S5.2, 2026-11)
+
+- **Sin cambio de versión ni de campos**: una línea vendida en una presentación distinta de la unidad
+  del producto (caja de 100, rollo de 50 m) lleva `quantity` y `unit_price` de esa presentación
+  (2 cajas a 4.50) y `product_name` con la presentación entre paréntesis ("Tornillo 1/2 (Caja
+  x100)"), que faclab-invoicing escribe en la `descripcion` del detalle. Solo cambió la descripción
+  del campo en los esquemas.
+- **Despliegue**: solo faclab-core. La copia de los contratos en faclab-invoicing se resincroniza
+  cuando convenga: solo difiere en esa descripción.
+- **Pendiente**: `unidadMedida` en el detalle (opcional en el XSD) necesita un campo nuevo y el
+  cambio en faclab-invoicing.
+
 ## `sales.confirmed` v3 y `credit_notes.requested` v2: cantidades decimales (S5.1, 2026-11)
 
 - **Cambio de tipo, versión nueva**: `items[].quantity` pasa de entero JSON a texto decimal con hasta

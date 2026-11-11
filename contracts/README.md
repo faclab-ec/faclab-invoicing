@@ -127,9 +127,12 @@ publica: el core responde `SALE_WITHOUT_EMISSION_POINT`.
 | `invoice_base` | decimal | no | `precioTotalSinImpuesto` y `baseImponible`, en centavos |
 | `invoice_tax` | decimal | no | Valor del IVA en la factura, en centavos |
 
-`payments[]`: `method` (`CASH` \| `CREDIT_CARD` \| `DEBIT_CARD` \| `TRANSFER` \| `OTHER`) y `amount`
-(decimal; lo aplicado a la venta, sin el vuelto). La suma de `payments[].amount` es igual a `total`
-desde S3.3: el core guarda aparte lo entregado y el vuelto, que no viajan a facturación.
+`payments[]`: `method` (`CASH` \| `CREDIT_CARD` \| `DEBIT_CARD` \| `TRANSFER` \| `OTHER` \| `CREDIT`) y
+`amount` (decimal; lo aplicado a la venta, sin el vuelto). La suma de `payments[].amount` es igual a
+`total` desde S3.3: el core guarda aparte lo entregado y el vuelto, que no viajan a facturación.
+`CREDIT` (S5.5) es lo que el cliente queda debiendo en su cuenta por cobrar y lleva `term_days`
+(entero, días de plazo de sus condiciones de pago), que solo va en ese método. faclab-invoicing lo
+escribe con `formaPago` 20, `plazo` y `unidadTiempo` `dias`.
 
 ### `sales.confirmed` v2
 

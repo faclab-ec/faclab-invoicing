@@ -18,7 +18,8 @@ import {
 export interface InvoiceXmlInput extends VoucherIssue {
   customer: VoucherBuyer;
   total: number;
-  payments: Array<{ formaPago: string; amount: number }>;
+  // termDays: the plazo of a sale on credit, in days (S5.5)
+  payments: Array<{ formaPago: string; amount: number; termDays?: number | null }>;
   items: VoucherItem[];
 }
 
@@ -63,6 +64,11 @@ function getInvoiceData(input: InvoiceXmlInput) {
             pago: input.payments.map((payment) => ({
               formaPago: payment.formaPago,
               total: formatMoney(payment.amount),
+              // In the XSD's order, after total
+              ...(payment.termDays != null && {
+                plazo: String(payment.termDays),
+                unidadTiempo: 'dias',
+              }),
             })),
           },
         }),

@@ -84,6 +84,7 @@ export class InvoiceVoucher implements VoucherKind {
       payments: sale.payments.map((p) => ({
         formaPago: PAYMENT_METHOD_CODES[p.method] ?? '20',
         amount: parseFloat(p.amount),
+        termDays: p.term_days ?? null,
       })),
       items: sale.items.map((item) => {
         const iva = IVA_CODES[item.tax_code];

@@ -14,13 +14,15 @@ export const FINAL_CONSUMER = {
   taxId: '9999999999999',
 } as const;
 
-// payment method (event) → SRI formaPago code (Tabla 24)
+// payment method (event) → SRI formaPago code (Tabla 24). A sale on credit (S5.5) is usually paid
+// by transfer or check: 20, with its plazo in days
 export const PAYMENT_METHOD_CODES: Record<string, string> = {
   CASH: '01',
   DEBIT_CARD: '16',
   CREDIT_CARD: '19',
   TRANSFER: '20',
   OTHER: '20',
+  CREDIT: '20',
 };
 
 // Domain IVA category (event) → SRI codigoPorcentaje (Tabla 17) + tarifa (%)
