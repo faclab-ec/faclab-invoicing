@@ -189,7 +189,7 @@
         },
         "product_name": {
           "$ref": "#/$defs/nullableText",
-          "description": "null si el producto ya no existe."
+          "description": "Descripción de la línea: el nombre del producto y, si se vendió en una presentación distinta de su unidad (S5.2), esa presentación entre paréntesis: \"Tornillo 1/2 (Caja x100)\". quantity y unit_price son de esa presentación. null si el producto ya no existe."
         },
         "quantity": {
           "$ref": "#/$defs/quantity",

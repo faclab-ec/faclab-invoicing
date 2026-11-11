@@ -198,7 +198,7 @@
         },
         "product_name": {
           "$ref": "#/$defs/nullableText",
-          "description": "null si el producto ya no existe."
+          "description": "Descripción de la línea: el nombre del producto y, si se vendió en una presentación distinta de su unidad (S5.2), esa presentación entre paréntesis: \"Tornillo 1/2 (Caja x100)\". quantity y unit_price son de esa presentación. null si el producto ya no existe."
         },
         "quantity": { "$ref": "#/$defs/quantity" },
         "unit_price": { "$ref": "#/$defs/decimal" },
@@ -246,12 +246,23 @@
       "additionalProperties": false,
       "required": ["method", "amount"],
       "properties": {
-        "method": { "enum": ["CASH", "CREDIT_CARD", "DEBIT_CARD", "TRANSFER", "OTHER"] },
+        "method": {
+          "enum": ["CASH", "CREDIT_CARD", "DEBIT_CARD", "TRANSFER", "OTHER", "CREDIT"],
+          "description": "CREDIT (S5.5) es lo que el cliente queda debiendo: su cuenta por cobrar, con el plazo de `term_days`."
+        },
         "amount": {
           "$ref": "#/$defs/decimal",
           "description": "Monto aplicado a la venta, sin el vuelto (S3.3): la suma de los pagos es igual a `total`."
+        },
+        "term_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Plazo en días de un pago CREDIT (las condiciones de pago del cliente): `plazo` y `unidadTiempo` de la factura. Solo en CREDIT (S5.5)."
         }
-      }
+      },
+      "if": { "properties": { "method": { "const": "CREDIT" } } },
+      "then": { "required": ["term_days"] },
+      "else": { "not": { "required": ["term_days"] } }
     }
   }
 }

@@ -51,7 +51,9 @@ export interface SaleData {
     invoice_tax: string;
   }[];
   payments: {
-    method: 'CASH' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'TRANSFER' | 'OTHER';
+    method: 'CASH' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'TRANSFER' | 'OTHER' | 'CREDIT';
     amount: string;
+    // Days the customer has to pay a CREDIT payment: the pago's plazo (S5.5)
+    term_days?: number;
   }[];
 }

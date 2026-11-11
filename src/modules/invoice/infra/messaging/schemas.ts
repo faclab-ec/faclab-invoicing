@@ -50,8 +50,10 @@ const SaleConfirmedDecimalItemSchema = SaleConfirmedItemSchema.extend({
 });
 
 const SaleConfirmedPaymentSchema = z.object({
-  method: z.enum(['CASH', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'OTHER']),
+  // CREDIT (S5.5): what the customer owes on its account, with its terms in days
+  method: z.enum(['CASH', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'OTHER', 'CREDIT']),
   amount: z.string(),
+  term_days: z.number().int().min(0).optional(),
 });
 
 const SaleConfirmedPayloadSchema = z.object({

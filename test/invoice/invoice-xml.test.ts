@@ -195,6 +195,22 @@ describe('buildInvoiceXml against the SRI schema (factura 1.1.0)', () => {
     expect(texts(xml, 'precioUnitario')).toEqual(['0.85', '0.000001', '10']);
   });
 
+  it('writes the plazo of a sale on credit after its total, in days', async () => {
+    const xml = buildInvoiceXml(
+      input({
+        payments: [
+          { formaPago: '01', amount: 1.5, termDays: null },
+          { formaPago: '20', amount: 10, termDays: 30 },
+        ],
+      }),
+    );
+
+    await expectValid(xml);
+    expect(texts(xml, 'formaPago')).toEqual(['01', '20']);
+    expect(texts(xml, 'plazo')).toEqual(['30']);
+    expect(texts(xml, 'unidadTiempo')).toEqual(['dias']);
+  });
+
   it('leaves pagos out of a sale without payments', async () => {
     const xml = buildInvoiceXml(
       input({
