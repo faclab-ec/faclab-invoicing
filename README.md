@@ -423,9 +423,10 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `KAFKA_BROKERS` | `localhost:29092` | **Required** | Comma-separated brokers. A container on `faclab_network` uses `kafka:9092` |
 | `DATABASE_URL` | `postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing` | **Required** | PostgreSQL connection string (`postgres://` or `postgresql://`). A container on `faclab_network` uses `invoicing-db:5432` |
 | `CORS_ORIGINS` | `http://localhost:5173` | **Required**, without `*` | Comma-separated origins allowed to call the API (faclab-web) |
-| `JWT_SECRET` | `dev-only-change-me`, same as faclab-core | **Required**, 32+ characters | faclab-core's `JWT_SECRET` |
+| `JWT_JWKS_URL` | `http://localhost:3000/.well-known/jwks.json` (faclab-core's `make dev`) | **Required**, an http(s) URL | faclab-core's public keys, which verify the access tokens. A container on `faclab_network` uses `http://api:3000/.well-known/jwks.json` |
 | `CERTIFICATE_PASSWORD_KEY` | Fixed dev key | **Required** | 32 random bytes in base64 (`openssl rand -base64 32`); encrypts the certificate files and passwords. Losing or changing it makes stored certificates unreadable: upload them again |
 | `JWT_ISSUER` | `faclab-core` | Optional | faclab-core's `JWT_ISSUER` |
+| `JWT_AUDIENCE` | `faclab-invoicing` | Optional | This service's name, which an access token's `aud` must list (faclab-core's `JWT_SERVICE_AUDIENCES`) |
 | `HTTP_PORT` | `3173` | Optional | HTTP server port; the worker serves its `/health` on it (locally, give the worker another one: `HTTP_PORT=3174 npm run dev:worker`) |
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
@@ -457,7 +458,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 
 ### Authentication
 
-Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ...`); `/health` and `/docs` are public. Tokens are verified with the shared `JWT_SECRET` (HS256), `JWT_ISSUER` and `typ=access`; the token's `tid` is the company the request works on (a token without it gets 401 `TENANT_REQUIRED`, like in faclab-core), and the route's permission must be in its `perms` claim:
+Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ...`); `/health` and `/docs` are public. faclab-core signs them with its Ed25519 key (`EdDSA`) and this service verifies them with the public keys faclab-core publishes at `JWT_JWKS_URL`, by the token's `kid`: it holds no secret that could issue a token (S6.1). The key set is kept in memory and fetched again after 10 minutes, and right away (at most every 30 seconds) for a `kid` it doesn't know, so a key rotation in faclab-core needs nothing here; if faclab-core can't be reached the keys already read keep working, and without any the request gets 503 `AUTH_UNAVAILABLE`. Besides the signature, a token needs `JWT_ISSUER`, this service in its `aud` (`JWT_AUDIENCE`; refresh tokens don't have it) and `typ=access`; the token's `tid` is the company the request works on (a token without it gets 401 `TENANT_REQUIRED`, like in faclab-core), and the route's permission must be in its `perms` claim:
 
 | Routes | Permission |
 |--------|------------|
@@ -465,7 +466,7 @@ Every `/api/*` route needs a faclab-core access token (`Authorization: Bearer ..
 | `GET /api/invoices` (and `/:id/authorized-xml`, `/:id/ride`, `/:id/emails`), `GET /api/invoicing/status` | `sale:read` |
 | `POST /api/invoices/retry`, `POST /api/invoices/:id/retry`, `POST /api/invoices/:id/email` | `sale:write` |
 
-Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` / `TENANT_REQUIRED` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403).
+Errors use faclab-core's codes so faclab-web handles them the same way: `TOKEN_EXPIRED` / `INVALID_TOKEN` / `TENANT_REQUIRED` (401), `PERMISSION_DENIED` / `PASSWORD_CHANGE_REQUIRED` (403), plus `AUTH_UNAVAILABLE` (503) while faclab-core's keys can't be read.
 
 ### SRI environment
 
@@ -582,7 +583,7 @@ TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/fa
 Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions:
 
 - `checks` (Node 22, with a `postgres:17` service and `TEST_DATABASE_URL`, so `test/postgres` runs): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
-- `image`: builds the production image without publishing it, and checks that it refuses to start without `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_SECRET`.
+- `image`: builds the production image without publishing it, and checks that it refuses to start without `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_JWKS_URL`.
 
 `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
 
@@ -654,13 +655,13 @@ docker run --rm --network faclab_network -p 3173:3173 \
   -e KAFKA_BROKERS=kafka:9092 \
   -e DATABASE_URL=$DATABASE_URL \
   -e CORS_ORIGINS=http://localhost:5173 \
-  -e JWT_SECRET='<faclab-core JWT_SECRET>' \
+  -e JWT_JWKS_URL=http://api:3000/.well-known/jwks.json \
   -e CERTIFICATE_PASSWORD_KEY='<32 bytes in base64>' \
   -e OTEL_SDK_DISABLED=true \
   faclab-invoicing
 ```
 
-To run it next to a local faclab-core, use the local defaults instead, including the dev keys and the same `JWT_SECRET`. Pass only `-e NODE_ENV=local`, `KAFKA_BROKERS` and `DATABASE_URL`.
+To run it next to a local faclab-core, use the local defaults instead, including the dev keys. Pass only `-e NODE_ENV=local`, `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_JWKS_URL` (faclab-core's `api` container: `http://api:3000/.well-known/jwks.json`).
 
 ---
 

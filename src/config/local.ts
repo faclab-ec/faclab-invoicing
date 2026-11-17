@@ -12,8 +12,8 @@ export const LOCAL_DEFAULTS: EnvDefaults = {
   // faclab-infra's invoicing-db; development-only password
   DATABASE_URL: 'postgres://faclab_invoicing:faclab_invoicing@localhost:5434/faclab_invoicing',
   CORS_ORIGINS: 'http://localhost:5173',
-  // Same default as faclab-core in local
-  JWT_SECRET: 'dev-only-change-me',
+  // faclab-core's public keys, from `make dev` on the host
+  JWT_JWKS_URL: 'http://localhost:3000/.well-known/jwks.json',
   CERTIFICATE_PASSWORD_KEY: DEV_PASSWORD_KEY,
   LOG_LEVEL: 'debug',
   // faclab-infra's object-storage (Garage) and its development-only key

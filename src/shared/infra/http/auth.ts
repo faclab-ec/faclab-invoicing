@@ -1,16 +1,22 @@
-import { createHmac, timingSafeEqual } from 'crypto';
+import { verify } from 'crypto';
 import { FastifyRequest, preHandlerAsyncHookHandler } from 'fastify';
 
 import { AppError } from '#/shared/errors/app-error';
 
-// Access tokens are issued by faclab-core (HS256, shared JWT_SECRET). The
-// error codes match faclab-core's, so faclab-web reacts the same way
-// (refresh on TOKEN_EXPIRED, sign out on INVALID_TOKEN, etc.). Their `tid` is
-// the company the request acts for: every route reads and writes only its data.
+import { KeyStore } from './jwks';
+
+// Access tokens are issued by faclab-core, signed with its Ed25519 key (EdDSA, S6.1) and
+// checked here with the public keys it publishes (`keys`): this service can't issue one.
+// The error codes match faclab-core's, so faclab-web reacts the same way (refresh on
+// TOKEN_EXPIRED, sign out on INVALID_TOKEN, etc.). Their `tid` is the company the request
+// acts for: every route reads and writes only its data.
 
 export interface AuthConfig {
-  jwtSecret: string;
-  jwtIssuer: string;
+  // faclab-core's JWT_ISSUER
+  issuer: string;
+  // This service's name, which the token's `aud` must list
+  audience: string;
+  keys: KeyStore;
 }
 
 export interface AccessClaims {
@@ -50,22 +56,31 @@ function decodeSegment(segment: string): Record<string, unknown> {
   throw invalidToken('malformed');
 }
 
-export function verifyAccessToken(
+const ED25519_SIGNATURE_BYTES = 64;
+
+const listsAudience = (aud: unknown, audience: string) =>
+  aud === audience || (Array.isArray(aud) && aud.includes(audience));
+
+export async function verifyAccessToken(
   token: string,
-  { jwtSecret, jwtIssuer }: AuthConfig,
+  { issuer, audience, keys }: AuthConfig,
   now: number = Date.now(),
-): AccessClaims {
+): Promise<AccessClaims> {
   const parts = token.split('.');
   if (parts.length !== 3) throw invalidToken('malformed');
   const [headerSegment, payloadSegment, signatureSegment] = parts;
 
-  if (decodeSegment(headerSegment).alg !== 'HS256') throw invalidToken('unsupported algorithm');
+  // Only EdDSA: a token that picks another algorithm (HS256 keyed with the public key, none)
+  // is refused before any key is looked at
+  const header = decodeSegment(headerSegment);
+  if (header.alg !== 'EdDSA') throw invalidToken('unsupported algorithm');
+  if (typeof header.kid !== 'string') throw invalidToken('missing kid');
 
-  const expected = createHmac('sha256', jwtSecret)
-    .update(`${headerSegment}.${payloadSegment}`)
-    .digest();
+  const key = await keys.key(header.kid);
+  if (!key) throw invalidToken('unknown key');
   const signature = Buffer.from(signatureSegment, 'base64url');
-  if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) {
+  const signed = Buffer.from(`${headerSegment}.${payloadSegment}`);
+  if (signature.length !== ED25519_SIGNATURE_BYTES || !verify(null, signed, key, signature)) {
     throw invalidToken('bad signature');
   }
 
@@ -74,7 +89,9 @@ export function verifyAccessToken(
   if (payload.exp * 1000 <= now) {
     throw new AuthError(401, 'TOKEN_EXPIRED', 'access token expired');
   }
-  if (payload.iss !== jwtIssuer) throw invalidToken('wrong issuer');
+  if (payload.iss !== issuer) throw invalidToken('wrong issuer');
+  // A token faclab-core issued only for itself (a refresh token) isn't good here
+  if (!listsAudience(payload.aud, audience)) throw invalidToken('wrong audience');
   if (payload.typ !== 'access') throw invalidToken('not an access token');
   // Same answer as faclab-core for a token from before companies existed
   if (typeof payload.tid !== 'string' || !UUID.test(payload.tid)) {
@@ -107,7 +124,7 @@ export function createAuthorize(config: AuthConfig): Authorize {
     const token = bearerToken(request);
     if (!token) throw new AuthError(403, 'PERMISSION_DENIED', 'authentication required');
 
-    const claims = verifyAccessToken(token, config);
+    const claims = await verifyAccessToken(token, config);
     if (claims.mustChangePassword) {
       throw new AuthError(
         403,

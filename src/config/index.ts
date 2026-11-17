@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { LOCAL_DEFAULTS } from './local';
-import { MIN_JWT_SECRET_LENGTH, PRODUCTION_DEFAULTS } from './production';
+import { PRODUCTION_DEFAULTS } from './production';
 import { SRI_ENDPOINTS, SriEndpoints, SriEnvironment } from './sri';
 
 export interface AppConfig {
@@ -89,10 +89,15 @@ export interface AppConfig {
     // RUC of the invoicing system's provider, written in every invoice (Anexo 26)
     providerRuc: string | null;
   };
+  // Access tokens are faclab-core's, checked with the public keys it publishes (S6.1):
+  // this service holds nothing that could issue one
   auth: {
-    // faclab-core's JWT_SECRET and JWT_ISSUER: access tokens are checked here
-    jwtSecret: string;
-    jwtIssuer: string;
+    // faclab-core's /.well-known/jwks.json
+    jwksUrl: string;
+    // faclab-core's JWT_ISSUER
+    issuer: string;
+    // This service's name in the tokens' aud
+    audience: string;
   };
   timezone: string;
   environment: AppEnvironment;
@@ -109,8 +114,9 @@ const ENV_VARS = [
   'KAFKA_BROKERS',
   'DATABASE_URL',
   'CORS_ORIGINS',
-  'JWT_SECRET',
+  'JWT_JWKS_URL',
   'JWT_ISSUER',
+  'JWT_AUDIENCE',
   'CERTIFICATE_PASSWORD_KEY',
   'HTTP_PORT',
   'LOG_LEVEL',
@@ -148,6 +154,7 @@ export type EnvDefaults = Partial<Record<EnvVar, string>>;
 const DEFAULTS: EnvDefaults = {
   HTTP_PORT: '3173',
   JWT_ISSUER: 'faclab-core',
+  JWT_AUDIENCE: 'faclab-invoicing',
   SRI_TIMEOUT_MS: '30000',
   INVOICE_RETRY_INTERVAL_MS: '60000',
   INVOICE_WORKER_CONCURRENCY: '4',
@@ -236,15 +243,9 @@ function schemaFor(environment: AppEnvironment) {
         .transform(commaList)
         .pipe(z.array(z.string()).nonempty('must list at least one origin'))
         .refine((origins) => !production || !origins.includes('*'), "can't be * outside local"),
-      JWT_SECRET: production
-        ? z
-            .string()
-            .min(
-              MIN_JWT_SECRET_LENGTH,
-              `must be faclab-core's secret (at least ${MIN_JWT_SECRET_LENGTH} characters)`,
-            )
-        : z.string(),
+      JWT_JWKS_URL: z.string().refine(isHttpUrl, 'must be an http:// or https:// URL'),
       JWT_ISSUER: z.string(),
+      JWT_AUDIENCE: z.string().min(1),
       // Losing or changing it makes every stored certificate unreadable
       CERTIFICATE_PASSWORD_KEY: z
         .string()
@@ -437,8 +438,9 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       providerRuc: values.INVOICING_PROVIDER_RUC ?? null,
     },
     auth: {
-      jwtSecret: values.JWT_SECRET,
-      jwtIssuer: values.JWT_ISSUER,
+      jwksUrl: values.JWT_JWKS_URL,
+      issuer: values.JWT_ISSUER,
+      audience: values.JWT_AUDIENCE,
     },
     timezone: 'America/Guayaquil',
     environment,
