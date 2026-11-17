@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ConfigError, parseConfig } from '#/config';
 
-const JWT_SECRET = randomBytes(32).toString('hex');
+const JWT_JWKS_URL = 'http://faclab-core:8080/.well-known/jwks.json';
 const CERTIFICATE_PASSWORD_KEY = randomBytes(32).toString('base64');
 const DATABASE_URL = `postgres://faclab_invoicing:${randomBytes(8).toString('hex')}@db:5432/faclab_invoicing`;
 const STORAGE_SECRET = randomBytes(32).toString('hex');
@@ -14,7 +14,7 @@ const production = (overrides: Record<string, string | undefined> = {}) => ({
   KAFKA_BROKERS: 'kafka-1:9092,kafka-2:9092',
   DATABASE_URL,
   CORS_ORIGINS: 'https://app.faclab.test',
-  JWT_SECRET,
+  JWT_JWKS_URL,
   CERTIFICATE_PASSWORD_KEY,
   OBJECT_STORAGE_ENDPOINT: 'http://object-storage:3900',
   OBJECT_STORAGE_REGION: 'garage',
@@ -58,6 +58,12 @@ describe('parseConfig in local', () => {
       corsOrigins: ['http://localhost:5173'],
     });
     expect(config.logger.level).toBe('debug');
+    // faclab-core's keys from `make dev`; no secret of faclab-core here (S6.1)
+    expect(config.auth).toEqual({
+      jwksUrl: 'http://localhost:3000/.well-known/jwks.json',
+      issuer: 'faclab-core',
+      audience: 'faclab-invoicing',
+    });
     // faclab-infra's object-storage
     expect(config.objectStorage).toMatchObject({
       endpoint: 'http://localhost:3900',
@@ -267,7 +273,11 @@ describe('parseConfig in production', () => {
     expect(config.kafka.brokers).toEqual(['kafka-1:9092', 'kafka-2:9092']);
     expect(config.database).toEqual({ url: DATABASE_URL });
     expect(config.http.corsOrigins).toEqual(['https://app.faclab.test']);
-    expect(config.auth).toEqual({ jwtSecret: JWT_SECRET, jwtIssuer: 'faclab-core' });
+    expect(config.auth).toEqual({
+      jwksUrl: JWT_JWKS_URL,
+      issuer: 'faclab-core',
+      audience: 'faclab-invoicing',
+    });
     expect(config.logger.level).toBe('info');
     expect(config.objectStorage).toEqual({
       endpoint: 'http://object-storage:3900',
@@ -312,7 +322,7 @@ describe('parseConfig in production', () => {
       'KAFKA_BROKERS',
       'DATABASE_URL',
       'CORS_ORIGINS',
-      'JWT_SECRET',
+      'JWT_JWKS_URL',
       'CERTIFICATE_PASSWORD_KEY',
       'OBJECT_STORAGE_REGION',
       'OBJECT_STORAGE_BUCKET',
@@ -325,17 +335,32 @@ describe('parseConfig in production', () => {
     expect(errorOf(production({ OBJECT_STORAGE_BUCKET: '' }))).not.toContain(STORAGE_SECRET);
   });
 
-  it('rejects a short JWT_SECRET and a bad CERTIFICATE_PASSWORD_KEY without echoing them', () => {
-    const shortSecret = 'too-short-secret';
+  it('rejects a bad CERTIFICATE_PASSWORD_KEY without echoing it', () => {
     const badKey = randomBytes(16).toString('base64');
-    const message = errorOf(
-      production({ JWT_SECRET: shortSecret, CERTIFICATE_PASSWORD_KEY: badKey }),
-    );
+    const message = errorOf(production({ CERTIFICATE_PASSWORD_KEY: badKey }));
 
-    expect(message).toContain("JWT_SECRET must be faclab-core's secret (at least 32 characters)");
     expect(message).toContain('CERTIFICATE_PASSWORD_KEY must be 32 random bytes in base64');
-    expect(message).not.toContain(shortSecret);
     expect(message).not.toContain(badKey);
+  });
+
+  it("refuses a JWT_JWKS_URL that is not a URL and takes faclab-core's audience settings", () => {
+    expect(errorOf(production({ JWT_JWKS_URL: 'faclab-core:8080/jwks' }))).toContain(
+      'JWT_JWKS_URL must be an http:// or https:// URL',
+    );
+    const config = parseConfig(
+      production({ JWT_ISSUER: 'faclab-core-staging', JWT_AUDIENCE: 'faclab-invoicing-2' }),
+    );
+    expect(config.auth).toMatchObject({
+      issuer: 'faclab-core-staging',
+      audience: 'faclab-invoicing-2',
+    });
+  });
+
+  it('knows no JWT secret: faclab-core keeps the only key that signs (S6.1)', () => {
+    const config = parseConfig(production({ JWT_SECRET: randomBytes(32).toString('hex') }));
+
+    expect(JSON.stringify(config.auth)).not.toMatch(/secret/i);
+    expect(Object.keys(config.auth).sort()).toEqual(['audience', 'issuer', 'jwksUrl']);
   });
 
   it('rejects * in CORS_ORIGINS', () => {

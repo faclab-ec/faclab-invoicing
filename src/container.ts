@@ -100,6 +100,7 @@ import {
   PgDeadLetterStore,
 } from '#/shared/infra/dead-letters';
 import { createAuthorize } from '#/shared/infra/http/auth';
+import { JwksKeyStore } from '#/shared/infra/http/jwks';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { consumerOptions } from '#/shared/infra/kafka';
 import { QueueWorker } from '#/shared/infra/queue-worker';
@@ -256,7 +257,11 @@ export function createContainer(config: AppConfig): Container {
       serviceVersion: config.serviceVersion,
     });
 
-    const authorize = createAuthorize(config.auth);
+    const authorize = createAuthorize({
+      issuer: config.auth.issuer,
+      audience: config.auth.audience,
+      keys: new JwksKeyStore({ url: config.auth.jwksUrl }),
+    });
 
     // Certificate module
     registerCertificateRoutes(
