@@ -19,6 +19,15 @@ export interface AuthConfig {
   keys: KeyStore;
 }
 
+/** An integration client of faclab-core (S6.2): a system of the company, with scopes */
+export interface IntegrationClaims {
+  // Its OAuth client_id (`azp`): fl_live_… or fl_test_…
+  clientId: string;
+  scopes: string[];
+  // The branches of faclab-core it may see; null, every one (`bids`)
+  branchIds: number[] | null;
+}
+
 export interface AccessClaims {
   userId: string;
   username: string;
@@ -26,6 +35,8 @@ export interface AccessClaims {
   tenantId: string;
   permissions: string[];
   mustChangePassword: boolean;
+  // An integration client's token (S6.3): scopes instead of permissions; null for a person
+  integration: IntegrationClaims | null;
 }
 
 /** Who calls and for which company; set by `authorize` on every protected route */
@@ -60,6 +71,21 @@ const ED25519_SIGNATURE_BYTES = 64;
 
 const listsAudience = (aud: unknown, audience: string) =>
   aud === audience || (Array.isArray(aud) && aud.includes(audience));
+
+// faclab-core's subject of an integration client's token: `client:<client_id>`
+const CLIENT_SUBJECT_PREFIX = 'client:';
+
+function integrationOf(payload: Record<string, unknown>): IntegrationClaims | null {
+  if (typeof payload.sub !== 'string' || !payload.sub.startsWith(CLIENT_SUBJECT_PREFIX)) {
+    return null;
+  }
+  if (typeof payload.azp !== 'string') throw invalidToken('missing azp');
+  const scopes = typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [];
+  const branchIds = Array.isArray(payload.bids)
+    ? payload.bids.filter((id): id is number => Number.isInteger(id))
+    : null;
+  return { clientId: payload.azp, scopes, branchIds };
+}
 
 export async function verifyAccessToken(
   token: string,
@@ -98,15 +124,23 @@ export async function verifyAccessToken(
     throw new AuthError(401, 'TENANT_REQUIRED', 'the access token has no company (tid)');
   }
 
-  const permissions = Array.isArray(payload.perms)
-    ? payload.perms.filter((p): p is string => typeof p === 'string')
-    : [];
+  const integration = integrationOf(payload);
+  // An integration never carries permissions: only the scopes of its client
+  const permissions =
+    !integration && Array.isArray(payload.perms)
+      ? payload.perms.filter((p): p is string => typeof p === 'string')
+      : [];
   return {
     userId: String(payload.sub),
-    username: typeof payload.username === 'string' ? payload.username : '',
+    username: integration
+      ? integration.clientId
+      : typeof payload.username === 'string'
+        ? payload.username
+        : '',
     tenantId: payload.tid.toLowerCase(),
     permissions,
     mustChangePassword: payload.mcp === true,
+    integration,
   };
 }
 
@@ -125,6 +159,14 @@ export function createAuthorize(config: AuthConfig): Authorize {
     if (!token) throw new AuthError(403, 'PERMISSION_DENIED', 'authentication required');
 
     const claims = await verifyAccessToken(token, config);
+    // The internal API is faclab-web's contract: integrations use /api/v1 (S6.3)
+    if (claims.integration) {
+      throw new AuthError(
+        403,
+        'INTEGRATION_NOT_ALLOWED',
+        'integration credentials only work on the public API (/api/v1)',
+      );
+    }
     if (claims.mustChangePassword) {
       throw new AuthError(
         403,
@@ -140,8 +182,43 @@ export function createAuthorize(config: AuthConfig): Authorize {
       username: claims.username,
       tenantId: claims.tenantId,
       permissions: claims.permissions,
+      integration: null,
     };
   };
+}
+
+/** preHandler of the public API: an integration client's token with `scope` (S6.3) */
+export type RequireScope = (scope: string) => preHandlerAsyncHookHandler;
+
+export function createRequireScope(config: AuthConfig): RequireScope {
+  return (scope) => async (request) => {
+    const token = bearerToken(request);
+    if (!token) throw new AuthError(403, 'PERMISSION_DENIED', 'authentication required');
+
+    const claims = await verifyAccessToken(token, config);
+    if (!claims.integration) {
+      throw new AuthError(403, 'PERMISSION_DENIED', 'this route takes integration credentials');
+    }
+    if (!claims.integration.scopes.includes(scope)) {
+      throw new AuthError(403, 'INSUFFICIENT_SCOPE', `missing scopes: ['${scope}']`);
+    }
+    request.auth = {
+      userId: claims.userId,
+      username: claims.username,
+      tenantId: claims.tenantId,
+      permissions: [],
+      integration: claims.integration,
+    };
+  };
+}
+
+/** The integration client of a request of the public API */
+export function integrationOfRequest(request: FastifyRequest): IntegrationClaims {
+  const integration = request.auth?.integration;
+  if (!integration) {
+    throw new AuthError(403, 'PERMISSION_DENIED', 'this route takes integration credentials');
+  }
+  return integration;
 }
 
 /** The company of the request; only on routes behind `authorize` */

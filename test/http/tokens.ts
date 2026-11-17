@@ -63,3 +63,25 @@ export function accessToken(
 
 /** The Authorization header of a user of the company `tid` */
 export const bearer = (tid: string) => ({ authorization: `Bearer ${accessToken({ tid })}` });
+
+/** An integration client's access token (S6.2), as faclab-core issues it: scopes, no perms */
+export function integrationToken(
+  tid: string,
+  { scope = 'invoices:read', bids }: { scope?: string; bids?: number[] } = {},
+): string {
+  return accessToken({
+    sub: 'client:fl_test_0123456789ab',
+    azp: 'fl_test_0123456789ab',
+    tid,
+    scope,
+    perms: undefined,
+    username: undefined,
+    cred: 41,
+    ...(bids ? { bids } : {}),
+  });
+}
+
+/** The Authorization header of an integration client of the company `tid` */
+export const integrationBearer = (tid: string, options?: { scope?: string; bids?: number[] }) => ({
+  authorization: `Bearer ${integrationToken(tid, options)}`,
+});

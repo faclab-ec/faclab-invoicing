@@ -13,6 +13,7 @@ import {
   InvoiceFilter,
   InvoicePage,
   InvoiceRepository,
+  InvoiceSortField,
   PageRequest,
 } from '../../domain/repository';
 import { fromInvoiceRow, InvoiceRow, toInvoiceEventRows, toInvoiceRow } from './invoice.mapper';
@@ -56,10 +57,10 @@ export class PgInvoiceRepository implements InvoiceRepository {
            issue_code, issue_message, issue_at, attempts, next_attempt_at, created_at,
            updated_at, version, requested_at, numeric_code, authorization_number, authorized_at,
            authorized_xml_key, result_published_at, trace_context, doc_type, credit_note,
-           source_invoice_id, request_id
+           source_invoice_id, request_id, branch_id
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33
          )
          ON CONFLICT DO NOTHING`,
         [
@@ -95,6 +96,7 @@ export class PgInvoiceRepository implements InvoiceRepository {
           row.credit_note,
           row.source_invoice_id,
           row.request_id,
+          row.branch_id,
         ],
       );
       if (result.rowCount === 0) return false;
@@ -201,9 +203,11 @@ export class PgInvoiceRepository implements InvoiceRepository {
 
   async findPage(tenantId: string, filter: InvoiceFilter, page: PageRequest): Promise<InvoicePage> {
     const { where, params } = whereClause(tenantId, filter);
-    const order = filter.attention
-      ? 'i.updated_at DESC, i.id DESC'
-      : 'i.created_at DESC, i.id DESC';
+    const order = page.sort
+      ? orderOf(page.sort)
+      : filter.attention
+        ? 'i.updated_at DESC, i.id DESC'
+        : 'i.created_at DESC, i.id DESC';
     const [rows, count] = await Promise.all([
       this.pool.query<InvoiceRow>(
         `${SELECT_INVOICES} ${where} ORDER BY ${order}
@@ -298,5 +302,22 @@ function whereClause(
   if (filter.attention) {
     conditions.push(`i.status = ANY(${param(IN_FLIGHT_STATUSES)}) AND ${NEEDS_ATTENTION}`);
   }
+  if (filter.statuses) conditions.push(`i.status = ANY(${param(filter.statuses)})`);
+  if (filter.saleId) conditions.push(`i.sale_id = ${param(filter.saleId)}`);
+  if (filter.branchId !== undefined) conditions.push(`i.branch_id = ${param(filter.branchId)}`);
+  if (filter.branchIds) conditions.push(`i.branch_id = ANY(${param(filter.branchIds)}::int[])`);
+  if (filter.updatedSince) conditions.push(`i.updated_at >= ${param(filter.updatedSince)}`);
   return { where: `WHERE ${conditions.join(' AND ')}`, params };
+}
+
+const SORT_COLUMNS: Record<InvoiceSortField, string> = {
+  createdAt: 'i.created_at',
+  updatedAt: 'i.updated_at',
+  id: 'i.id',
+};
+
+function orderOf(sort: NonNullable<PageRequest['sort']>): string {
+  const direction = sort.descending ? 'DESC' : 'ASC';
+  const column = SORT_COLUMNS[sort.field];
+  return column === 'i.id' ? `i.id ${direction}` : `${column} ${direction}, i.id ${direction}`;
 }

@@ -14,6 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The public API's contract (S6.3): docs/public-api/openapi-v1.json against the base branch's.
+  # Removing or renaming a field, changing a type or making a field required fails here: that
+  # needs /api/v2. That the file is the code's contract is checked by test/http/public-openapi
+  public-api-compat:
+    name: public-api-compat
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compare the public OpenAPI with the base branch's
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SPEC: docs/public-api/openapi-v1.json
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          if ! git show "$BASE:$SPEC" > "$RUNNER_TEMP/base/openapi-v1.json" 2>/dev/null; then
+            echo "No public OpenAPI at $BASE yet: nothing to compare"
+            exit 0
+          fi
+          docker run --rm \
+            -v "$RUNNER_TEMP/base:/base:ro" \
+            -v "$PWD/docs/public-api:/revision:ro" \
+            tufin/oasdiff:v1.34.1 breaking \
+            /base/openapi-v1.json /revision/openapi-v1.json \
+            --fail-on ERR --format githubactions
+
   checks:
     name: checks
     runs-on: ubuntu-24.04

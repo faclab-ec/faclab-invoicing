@@ -38,13 +38,20 @@ import {
   ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import {
+  GetPublicInvoiceQuery,
+  ListPublicInvoicesQuery,
+} from '#/modules/invoice/app/queries/public-invoice.queries';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
 import { RideService } from '#/modules/invoice/app/services/ride-service';
 import { Invoice } from '#/modules/invoice/domain/invoice';
 import { PdfKitRideRenderer } from '#/modules/invoice/infra/adapters/pdfkit-ride-renderer';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
-import { createAuthorize } from '#/shared/infra/http/auth';
+import { registerPublicInvoiceRoutes } from '#/modules/invoice/infra/http/v1/public-invoice.routes';
+import { createAuthorize, createRequireScope } from '#/shared/infra/http/auth';
+import { publicApiEnabled } from '#/shared/infra/http/public-api';
+import { createRateLimit } from '#/shared/infra/http/rate-limit';
 import { createHttpServer } from '#/shared/infra/http-server';
 
 import {
@@ -66,7 +73,7 @@ import {
   TENANT_B,
 } from '../helpers';
 import { LOGO_PNG, makePng } from '../pdf-text';
-import { accessToken, AUTH, bearer } from './tokens';
+import { accessToken, AUTH, bearer, integrationBearer } from './tokens';
 
 // Two companies with the same data: an invoice of sale 42, a profile, a certificate and a counter;
 // B's invoice is authorized, with its XML kept
@@ -153,6 +160,27 @@ describe('API isolation between companies', () => {
         deliveries: new ListInvoiceDeliveriesQuery(invoices, invoices.deliveries),
       },
       authorize,
+    );
+    // The public API (S6.3), without rate limits
+    registerPublicInvoiceRoutes(
+      app,
+      {
+        list: new ListPublicInvoicesQuery(invoices),
+        get: new GetPublicInvoiceQuery(invoices),
+        authorizedXml: new GetAuthorizedXmlQuery(invoices, storage),
+        ride: new GetRideQuery(
+          invoices,
+          new RideService(storage, configs, new PdfKitRideRenderer(), 'America/Guayaquil'),
+        ),
+      },
+      {
+        enabled: publicApiEnabled(true),
+        requireScope: createRequireScope(AUTH),
+        rateLimit: createRateLimit(null, {
+          client: { perMinute: 600, burst: 50 },
+          tenant: { perMinute: 1200, burst: 100 },
+        }),
+      },
     );
     registerCompanyConfigRoutes(
       app,
@@ -385,5 +413,19 @@ describe('API isolation between companies', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json().errors[0].code).toBe('SEQUENCE_CANNOT_GO_BACK');
+  });
+
+  it("shows an integration client only its company's documents (/api/v1)", async () => {
+    const asA = (url: string) =>
+      app.inject({ method: 'GET', url, headers: integrationBearer(TENANT_A) });
+    const asB = (url: string) =>
+      app.inject({ method: 'GET', url, headers: integrationBearer(TENANT_B) });
+
+    expect(ids((await asA('/api/v1/invoices')).json())).toEqual([INVOICE_A]);
+    expect(ids((await asB('/api/v1/invoices')).json())).toEqual([INVOICE_B]);
+    for (const path of ['', '/xml', '/ride']) {
+      expect((await asA(`/api/v1/invoices/${INVOICE_B}${path}`)).statusCode).toBe(404);
+      expect((await asB(`/api/v1/invoices/${INVOICE_B}${path}`)).statusCode).toBe(200);
+    }
   });
 });

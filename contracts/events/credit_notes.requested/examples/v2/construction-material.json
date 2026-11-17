@@ -11,6 +11,7 @@
     "invoice_id": "4b8e2d63-7c1f-5a92-b3e4-2d3e4f5a6b7c",
     "refund_id": 47,
     "refund_number": "D-002-000047",
+    "branch_id": 2,
     "issuer_ruc": "1799999990001",
     "establishment_code": "002",
     "establishment_address": "Av. de la Prensa N58-12, Quito",

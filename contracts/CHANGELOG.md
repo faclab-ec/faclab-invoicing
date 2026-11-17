@@ -3,6 +3,19 @@
 Cada versión de un mensaje, qué cambió y en qué orden se desplegó. Las reglas de compatibilidad
 están en [README.md](README.md#versiones-y-compatibilidad).
 
+## `sales.confirmed` v3 y `credit_notes.requested` v2 enmendadas: API pública (S6.3, 2026-11)
+
+- **Cambio compatible sobre las versiones vigentes, sin versión nueva**: el payload lleva
+  `branch_id`, el id de la sucursal en faclab-core (opcional y nulo en los esquemas: los mensajes
+  anteriores no lo traen), y `source` de `sales.confirmed` admite `api`, una venta creada por un
+  cliente de integración en `POST /api/v1/sales`. Ejemplo nuevo: `sales.confirmed/examples/v3/api-sale`.
+- faclab-invoicing guarda `branch_id` en cada comprobante para que `/api/v1/invoices` filtre por
+  sucursal y respete las sucursales de un cliente de integración. Los comprobantes de mensajes
+  anteriores quedan sin sucursal: solo los ve un cliente sin límite de sucursales.
+- **Despliegue**: faclab-core primero (su zod no es estricto: un invoicing anterior ignora
+  `branch_id` y acepta cualquier `source`), después faclab-invoicing con la copia resincronizada.
+- **Vuelta atrás**: ninguna acción; un consumidor sin el campo lo ignora.
+
 ## `sales.confirmed` v3 enmendada: ventas a crédito (S5.5, 2026-11)
 
 - **Cambio sobre la versión vigente, sin versión nueva** (excepción de ADR-0006 hasta el piloto):

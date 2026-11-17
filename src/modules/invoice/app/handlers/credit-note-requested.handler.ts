@@ -4,6 +4,7 @@ import { ReceiveCreditNoteCommand, ReceivedCreditNote } from '../commands/receiv
 /** The credit note and who issues it, as the message says */
 export function toReceivedCreditNote(message: CreditNoteRequestedMessage): ReceivedCreditNote {
   const {
+    branch_id,
     issuer_ruc,
     establishment_code,
     establishment_address,
@@ -19,6 +20,7 @@ export function toReceivedCreditNote(message: CreditNoteRequestedMessage): Recei
       establishment: establishment_code,
       emissionPoint: emission_point_code,
       establishmentAddress: establishment_address,
+      branchId: branch_id ?? null,
     },
     creditNote,
   };

@@ -31,9 +31,10 @@ async function responsePlugin(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Fastify schema validation errors carry a `validation` array
+      // Fastify schema validation errors carry a `validation` array. The public API answers them
+      // 422, as faclab-core's (S6.3)
       if (error.validation !== undefined) {
-        return reply.status(400).send({
+        return reply.status(request.url.startsWith('/api/v1') ? 422 : 400).send({
           errors: [{ code: 'VALIDATION_ERROR', message: error.message }],
           meta,
         });

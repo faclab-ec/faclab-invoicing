@@ -20,11 +20,24 @@ export interface InvoiceFilter {
   createdBefore?: Date;
   // Only unfinished invoices that are stuck or waiting to start, most recently updated first
   attention?: boolean;
+  // The public API's filters (S6.3)
+  statuses?: InvoiceStatus[];
+  saleId?: string;
+  branchId?: number;
+  // The branches an integration client may see; absent, every one. A document without a branch
+  // (received before S6.3) is only seen without a limit
+  branchIds?: number[] | null;
+  // Changed at or after it
+  updatedSince?: Date;
 }
+
+export type InvoiceSortField = 'createdAt' | 'updatedAt' | 'id';
 
 export interface PageRequest {
   limit: number;
   offset: number;
+  // A stable order of the public API: the field, then the id in the same direction
+  sort?: { field: InvoiceSortField; descending: boolean };
 }
 
 export interface InvoicePage {

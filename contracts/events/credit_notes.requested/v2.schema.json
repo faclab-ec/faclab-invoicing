@@ -73,6 +73,11 @@
           "$ref": "#/$defs/nullableText",
           "description": "Número interno de la devolución (D-001-000045); null si no hay devolución. No es el secuencial de la nota, que asigna faclab-invoicing."
         },
+        "branch_id": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Id de la sucursal de la venta en faclab-core, con el que la API pública filtra los comprobantes por sucursal (S6.3). null o ausente en mensajes anteriores."
+        },
         "issuer_ruc": {
           "type": "string",
           "pattern": "^\\d{13}$",

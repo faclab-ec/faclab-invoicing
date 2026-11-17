@@ -11,6 +11,7 @@
     "invoice_id": "9a7f1c52-3b8e-5d41-a6f2-1c2d3e4f5a6b",
     "refund_id": null,
     "refund_number": null,
+    "branch_id": 2,
     "issuer_ruc": "1799999990001",
     "establishment_code": "001",
     "establishment_address": "Av. Amazonas N34-120 y Av. Atahualpa, Quito",

@@ -19,6 +19,7 @@ export function toReceivedSale(
   if (message.schema_version === 2 || message.schema_version === 3) {
     const {
       sale_number: _number,
+      branch_id,
       issuer_ruc,
       establishment_code,
       establishment_address,
@@ -34,6 +35,7 @@ export function toReceivedSale(
         establishment: establishment_code,
         emissionPoint: emission_point_code,
         establishmentAddress: establishment_address,
+        branchId: branch_id ?? null,
       },
       sale,
     };

@@ -55,6 +55,10 @@ import {
   ListInvoiceDeliveriesQuery,
   ListInvoicesQuery,
 } from '#/modules/invoice/app/queries/invoice.queries';
+import {
+  GetPublicInvoiceQuery,
+  ListPublicInvoicesQuery,
+} from '#/modules/invoice/app/queries/public-invoice.queries';
 import { InvoiceDeliveryProcessor } from '#/modules/invoice/app/services/invoice-delivery-processor';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { InvoiceRecoveryService } from '#/modules/invoice/app/services/invoice-recovery';
@@ -70,6 +74,7 @@ import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
+import { registerPublicInvoiceRoutes } from '#/modules/invoice/infra/http/v1/public-invoice.routes';
 import {
   creditNoteTenant,
   toCreditNoteResultMessage,
@@ -99,8 +104,10 @@ import {
   DeadLetterStore,
   PgDeadLetterStore,
 } from '#/shared/infra/dead-letters';
-import { createAuthorize } from '#/shared/infra/http/auth';
+import { createAuthorize, createRequireScope } from '#/shared/infra/http/auth';
 import { JwksKeyStore } from '#/shared/infra/http/jwks';
+import { publicApiEnabled } from '#/shared/infra/http/public-api';
+import { createRateLimit, PgRateLimiter, purgeRateLimits } from '#/shared/infra/http/rate-limit';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { consumerOptions } from '#/shared/infra/kafka';
 import { QueueWorker } from '#/shared/infra/queue-worker';
@@ -130,6 +137,9 @@ export interface Container {
   /** Processes dead letters again with the consumer's handlers, without Kafka (the CLI) */
   createDeadLetterReprocessor(): DeadLetterReprocessor;
 }
+
+// The rate limit counters of the public API are purged this often (S6.3)
+const RATE_LIMIT_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
 export function createContainer(config: AppConfig): Container {
   const pool = createPool(config.database.url);
@@ -257,11 +267,12 @@ export function createContainer(config: AppConfig): Container {
       serviceVersion: config.serviceVersion,
     });
 
-    const authorize = createAuthorize({
+    const authConfig = {
       issuer: config.auth.issuer,
       audience: config.auth.audience,
       keys: new JwksKeyStore({ url: config.auth.jwksUrl }),
-    });
+    };
+    const authorize = createAuthorize(authConfig);
 
     // Certificate module
     registerCertificateRoutes(
@@ -330,6 +341,26 @@ export function createContainer(config: AppConfig): Container {
         deliveries: new ListInvoiceDeliveriesQuery(invoiceRepository, deliveryRepository),
       },
       authorize,
+    );
+
+    // The public API for integration clients (S6.3), with faclab-core's tokens and scopes
+    const { rateLimit } = config.publicApi;
+    registerPublicInvoiceRoutes(
+      httpServer,
+      {
+        list: new ListPublicInvoicesQuery(invoiceRepository),
+        get: new GetPublicInvoiceQuery(invoiceRepository),
+        authorizedXml: new GetAuthorizedXmlQuery(invoiceRepository, documentStorage),
+        ride: new GetRideQuery(invoiceRepository, rideService),
+      },
+      {
+        enabled: publicApiEnabled(config.publicApi.enabled),
+        requireScope: createRequireScope(authConfig),
+        rateLimit: createRateLimit(rateLimit.enabled ? new PgRateLimiter(pool) : null, {
+          client: rateLimit.client,
+          tenant: rateLimit.tenant,
+        }),
+      },
     );
 
     return httpServer;
@@ -435,6 +466,7 @@ export function createContainer(config: AppConfig): Container {
       invoiceRecovery,
       config.invoiceRecovery.intervalMs,
     );
+    let rateLimitPurge: ReturnType<typeof setInterval> | undefined;
 
     return {
       health: allHealthy(invoiceHealth, deliveryHealth),
@@ -444,6 +476,13 @@ export function createContainer(config: AppConfig): Container {
         worker.start();
         deliveryWorker.start();
         recoveryScheduler.start();
+        // The public API's rate limit counters whose bucket is full again (S6.3), hourly
+        rateLimitPurge = setInterval(() => {
+          purgeRateLimits(pool)
+            .then((deleted) => logger.info({ deleted }, 'Rate limit counters purged'))
+            .catch((error) => logger.error({ err: error }, 'Purging rate limit counters failed'));
+        }, RATE_LIMIT_PURGE_INTERVAL_MS);
+        rateLimitPurge.unref();
       },
       async stop() {
         await kafkaConsumer.stop();
@@ -451,6 +490,7 @@ export function createContainer(config: AppConfig): Container {
         await deliveryWorker.stop();
         mailer?.close();
         recoveryScheduler.stop();
+        if (rateLimitPurge) clearInterval(rateLimitPurge);
         await invoiceResults.disconnect();
       },
     };
