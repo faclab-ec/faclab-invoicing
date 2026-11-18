@@ -1,11 +1,25 @@
 import { createHmac } from 'crypto';
+import { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import { describe, expect, it } from 'vitest';
 
-import { AuthError, verifyAccessToken } from '#/shared/infra/http/auth';
+import {
+  AuthError,
+  createAuthorize,
+  createRequireScope,
+  verifyAccessToken,
+} from '#/shared/infra/http/auth';
 import { JwksKeyStore } from '#/shared/infra/http/jwks';
 
 import { TENANT_A } from '../helpers';
-import { accessToken, AUTH, CORE_KEY, jwkOf, publishedKeys, signingKey } from './tokens';
+import {
+  accessToken,
+  AUTH,
+  CORE_KEY,
+  integrationToken,
+  jwkOf,
+  publishedKeys,
+  signingKey,
+} from './tokens';
 
 const invalid = (reason: string) =>
   expect.objectContaining({
@@ -152,5 +166,63 @@ describe('verifyAccessToken', () => {
 
     const claims = await verifyAccessToken(accessToken({ tid: TENANT_A }, { key: current }), auth);
     expect(claims.tenantId).toBe(TENANT_A);
+  });
+});
+
+describe('integration clients (S6.3)', () => {
+  it('reads the client, its scopes and branches instead of permissions', async () => {
+    const claims = await verifyAccessToken(
+      integrationToken(TENANT_A, { scope: 'invoices:read sales:read', bids: [12, 15] }),
+      AUTH,
+    );
+
+    expect(claims).toMatchObject({
+      tenantId: TENANT_A,
+      username: 'fl_test_0123456789ab',
+      permissions: [],
+      integration: {
+        clientId: 'fl_test_0123456789ab',
+        scopes: ['invoices:read', 'sales:read'],
+        branchIds: [12, 15],
+      },
+    });
+  });
+
+  it('never takes permissions from an integration token', async () => {
+    const claims = await verifyAccessToken(
+      accessToken({
+        sub: 'client:fl_test_x',
+        azp: 'fl_test_x',
+        tid: TENANT_A,
+        perms: ['sale:read'],
+      }),
+      AUTH,
+    );
+
+    expect(claims.permissions).toEqual([]);
+    expect(claims.integration?.branchIds).toBeNull();
+  });
+
+  it("refuses an integration on the internal API and a person's token on the public one", async () => {
+    const app = {} as FastifyInstance;
+    const run = (handler: preHandlerAsyncHookHandler, token: string) =>
+      handler.call(
+        app,
+        { headers: { authorization: `Bearer ${token}` }, auth: null } as never,
+        {} as never,
+      );
+
+    await expect(
+      run(createAuthorize(AUTH)('sale:read'), integrationToken(TENANT_A)),
+    ).rejects.toMatchObject({ statusCode: 403, code: 'INTEGRATION_NOT_ALLOWED' });
+    await expect(
+      run(createRequireScope(AUTH)('invoices:read'), accessToken({ tid: TENANT_A })),
+    ).rejects.toMatchObject({ statusCode: 403, code: 'PERMISSION_DENIED' });
+    await expect(
+      run(
+        createRequireScope(AUTH)('invoices:read'),
+        integrationToken(TENANT_A, { scope: 'sales:read' }),
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: 'INSUFFICIENT_SCOPE' });
   });
 });

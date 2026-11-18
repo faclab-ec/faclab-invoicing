@@ -57,9 +57,14 @@
           "$ref": "#/$defs/nullableText",
           "description": "Número interno de la venta en su sucursal (V-001-000123). null en ventas sin número (anteriores a S2.6). No es el secuencial de la factura, que asigna faclab-invoicing."
         },
+        "branch_id": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Id de la sucursal (establecimiento) en faclab-core, con el que la API pública filtra los comprobantes por sucursal (S6.3). null o ausente en mensajes anteriores."
+        },
         "source": {
-          "enum": ["admin", "pos"],
-          "description": "Origen de la venta."
+          "enum": ["admin", "pos", "api"],
+          "description": "Origen de la venta: el POS, la administración o la API pública (`api`, S6.3)."
         },
         "issuer_ruc": {
           "type": "string",

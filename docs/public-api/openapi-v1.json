@@ -1,0 +1,1779 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Faclab API — invoices",
+    "version": "1.0.0",
+    "description": "The electronic documents of faclab-core's public API (`/api/v1/invoices`), served by faclab-invoicing behind the same domain and token. Same conventions: camelCase JSON, money as decimal strings, `{data, meta}` and `{errors, meta}`, stable order with `sort` and `updatedSince`, rate limits with `RateLimit-*` headers and 429 `RATE_LIMITED` with `Retry-After`."
+  },
+  "tags": [
+    {
+      "name": "Invoices",
+      "description": "Invoices and credit notes of the sales."
+    }
+  ],
+  "paths": {
+    "/api/v1/invoices": {
+      "get": {
+        "summary": "List invoices and credit notes",
+        "tags": [
+          "Invoices"
+        ],
+        "description": "The electronic documents of the company's sales in the branches this client may see. Sync them with `updatedSince` (ordered by `updatedAt`, then id); `from` and `to` filter by when they were created. `sort`: `createdAt`, `updatedAt` or `id`, with a leading `-` descending.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "-createdAt",
+                "updatedAt",
+                "-updatedAt",
+                "id",
+                "-id"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "in": "query",
+            "name": "saleId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PROCESSING",
+                "AUTHORIZED",
+                "REJECTED"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "INVOICE",
+                "CREDIT_NOTE"
+              ]
+            },
+            "in": "query",
+            "name": "documentType",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "in": "query",
+            "name": "branchId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "from",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "to",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "in": "query",
+            "name": "updatedSince",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "clientCredentials": [
+              "invoices:read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "The document."
+                          },
+                          "documentType": {
+                            "type": "string",
+                            "enum": [
+                              "INVOICE",
+                              "CREDIT_NOTE"
+                            ],
+                            "description": "An invoice, or a credit note of a refund or a cancelled sale."
+                          },
+                          "saleId": {
+                            "type": "integer",
+                            "description": "The sale in faclab-core (`/api/v1/sales/{id}`)."
+                          },
+                          "creditedInvoiceId": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "format": "uuid",
+                            "description": "The invoice a credit note modifies; null in an invoice."
+                          },
+                          "branchId": {
+                            "type": [
+                              "null",
+                              "integer"
+                            ],
+                            "description": "The sale's branch in faclab-core; null in documents from before it was kept."
+                          },
+                          "establishment": {
+                            "type": "string",
+                            "description": "SRI establishment code (001)."
+                          },
+                          "emissionPoint": {
+                            "type": "string",
+                            "description": "SRI emission point code (002)."
+                          },
+                          "number": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "description": "Its number, 001-002-000000123, once it has one."
+                          },
+                          "accessCode": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "description": "The 49-digit SRI access code, once it has one."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "PROCESSING",
+                              "AUTHORIZED",
+                              "REJECTED"
+                            ],
+                            "description": "PROCESSING while it is on its way to the SRI (it may wait for the issuer to be ready), AUTHORIZED or REJECTED. New values may be added."
+                          },
+                          "authorizationNumber": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "description": "The SRI's authorization."
+                          },
+                          "authorizedAt": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "format": "date-time"
+                          },
+                          "rejectionReason": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "description": "The SRI's messages, when REJECTED."
+                          },
+                          "total": {
+                            "type": [
+                              "null",
+                              "string"
+                            ],
+                            "pattern": "^\\d+(\\.\\d{1,6})?$",
+                            "description": "Its total with VAT in USD, as a decimal string."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "documentType",
+                          "saleId",
+                          "creditedInvoiceId",
+                          "branchId",
+                          "establishment",
+                          "emissionPoint",
+                          "number",
+                          "accessCode",
+                          "status",
+                          "authorizationNumber",
+                          "authorizedAt",
+                          "rejectionReason",
+                          "total",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "pagination": {
+                          "type": "object",
+                          "description": "Pagination details.",
+                          "properties": {
+                            "total": {
+                              "type": "integer",
+                              "description": "Records that match the query, in all pages."
+                            },
+                            "limit": {
+                              "type": "integer",
+                              "description": "Maximum records per page (as requested)."
+                            },
+                            "offset": {
+                              "type": "integer",
+                              "description": "Records skipped (as requested)."
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "limit",
+                            "offset"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp",
+                        "pagination"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`VALIDATION_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`VALIDATION_ERROR`."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: retry after `Retry-After`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`RATE_LIMITED`: retry after `Retry-After`."
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}": {
+      "get": {
+        "summary": "Get an invoice or credit note",
+        "tags": [
+          "Invoices"
+        ],
+        "description": "A document of a branch this client may see.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "clientCredentials": [
+              "invoices:read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "The document."
+                        },
+                        "documentType": {
+                          "type": "string",
+                          "enum": [
+                            "INVOICE",
+                            "CREDIT_NOTE"
+                          ],
+                          "description": "An invoice, or a credit note of a refund or a cancelled sale."
+                        },
+                        "saleId": {
+                          "type": "integer",
+                          "description": "The sale in faclab-core (`/api/v1/sales/{id}`)."
+                        },
+                        "creditedInvoiceId": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "format": "uuid",
+                          "description": "The invoice a credit note modifies; null in an invoice."
+                        },
+                        "branchId": {
+                          "type": [
+                            "null",
+                            "integer"
+                          ],
+                          "description": "The sale's branch in faclab-core; null in documents from before it was kept."
+                        },
+                        "establishment": {
+                          "type": "string",
+                          "description": "SRI establishment code (001)."
+                        },
+                        "emissionPoint": {
+                          "type": "string",
+                          "description": "SRI emission point code (002)."
+                        },
+                        "number": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "description": "Its number, 001-002-000000123, once it has one."
+                        },
+                        "accessCode": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "description": "The 49-digit SRI access code, once it has one."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "PROCESSING",
+                            "AUTHORIZED",
+                            "REJECTED"
+                          ],
+                          "description": "PROCESSING while it is on its way to the SRI (it may wait for the issuer to be ready), AUTHORIZED or REJECTED. New values may be added."
+                        },
+                        "authorizationNumber": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "description": "The SRI's authorization."
+                        },
+                        "authorizedAt": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "format": "date-time"
+                        },
+                        "rejectionReason": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "description": "The SRI's messages, when REJECTED."
+                        },
+                        "total": {
+                          "type": [
+                            "null",
+                            "string"
+                          ],
+                          "pattern": "^\\d+(\\.\\d{1,6})?$",
+                          "description": "Its total with VAT in USD, as a decimal string."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "documentType",
+                        "saleId",
+                        "creditedInvoiceId",
+                        "branchId",
+                        "establishment",
+                        "emissionPoint",
+                        "number",
+                        "accessCode",
+                        "status",
+                        "authorizationNumber",
+                        "authorizedAt",
+                        "rejectionReason",
+                        "total",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`NOT_FOUND`."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`VALIDATION_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`VALIDATION_ERROR`."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: retry after `Retry-After`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`RATE_LIMITED`: retry after `Retry-After`."
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}/xml": {
+      "get": {
+        "summary": "Download the authorized XML",
+        "tags": [
+          "Invoices"
+        ],
+        "description": "The authorized document as the SRI returned it (`autorizacion` with the signed voucher), as an attachment named after its access code. 404 until it is authorized.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "clientCredentials": [
+              "invoices:read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The authorized XML.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such document, or not authorized yet.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`NOT_FOUND`: no such document, or not authorized yet."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`VALIDATION_ERROR`.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`VALIDATION_ERROR`."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: retry after `Retry-After`.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`RATE_LIMITED`: retry after `Retry-After`."
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys.",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{id}/ride": {
+      "get": {
+        "summary": "Download the RIDE (PDF)",
+        "tags": [
+          "Invoices"
+        ],
+        "description": "The printable PDF of the authorized document, as an attachment named after its access code. 404 until it is authorized.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "clientCredentials": [
+              "invoices:read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The RIDE.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INVALID_TOKEN` or `TOKEN_EXPIRED`."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`INSUFFICIENT_SCOPE` without `invoices:read`, `PERMISSION_DENIED` with a token that is not an integration client's, `BRANCH_ACCESS_DENIED` for a branch it may not see."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such document, or not authorized yet.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`NOT_FOUND`: no such document, or not authorized yet."
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`VALIDATION_ERROR`.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`VALIDATION_ERROR`."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`RATE_LIMITED`: retry after `Retry-After`.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`RATE_LIMITED`: retry after `Retry-After`."
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys.",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "timestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "errors",
+                    "meta"
+                  ],
+                  "description": "`PUBLIC_API_DISABLED`, or `AUTH_UNAVAILABLE` without faclab-core's keys."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "clientCredentials": {
+        "type": "oauth2",
+        "description": "faclab-core's OAuth 2.0 client credentials (`POST /api/oauth/token` of the same domain)",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "/api/oauth/token",
+            "scopes": {
+              "invoices:read": "Read invoices and credit notes, their XML and RIDE"
+            }
+          }
+        }
+      }
+    }
+  }
+}

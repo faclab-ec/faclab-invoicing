@@ -375,11 +375,28 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
       .filter((invoice) => !filter.createdFrom || invoice.createdAt >= filter.createdFrom)
       .filter((invoice) => !filter.createdBefore || invoice.createdAt < filter.createdBefore)
       .filter((invoice) => !filter.attention || invoice.needsAttention)
-      .sort((a, b) =>
-        filter.attention
+      .filter((invoice) => !filter.statuses || filter.statuses.includes(invoice.status))
+      .filter((invoice) => !filter.saleId || invoice.saleId === filter.saleId)
+      .filter(
+        (invoice) => filter.branchId === undefined || invoice.point.branchId === filter.branchId,
+      )
+      .filter(
+        (invoice) =>
+          !filter.branchIds ||
+          (invoice.point.branchId != null && filter.branchIds.includes(invoice.point.branchId)),
+      )
+      .filter((invoice) => !filter.updatedSince || invoice.updatedAt >= filter.updatedSince)
+      .sort((a, b) => {
+        if (page.sort) {
+          const sign = page.sort.descending ? -1 : 1;
+          const key = (invoice: Invoice) =>
+            page.sort!.field === 'id' ? 0 : invoice[page.sort!.field].getTime();
+          return sign * (key(a) - key(b) || a.id.localeCompare(b.id));
+        }
+        return filter.attention
           ? b.updatedAt.getTime() - a.updatedAt.getTime()
-          : b.createdAt.getTime() - a.createdAt.getTime(),
-      );
+          : b.createdAt.getTime() - a.createdAt.getTime();
+      });
     return {
       items: matching.slice(page.offset, page.offset + page.limit),
       total: matching.length,
@@ -699,6 +716,7 @@ export function makePoint(overrides: Partial<IssuingPoint> = {}): IssuingPoint {
     establishment: '001',
     emissionPoint: '001',
     establishmentAddress: 'Av. Amazonas N34-120, Quito',
+    branchId: null,
     ...overrides,
   };
 }
@@ -961,6 +979,6 @@ export function multipartFile(
 /** Lets every request through as a user of `tenantId`, like a valid token of that company */
 export function authorizeAs(tenantId: string = TENANT_A): Authorize {
   return () => async (request) => {
-    request.auth = { userId: '1', username: 'admin', tenantId, permissions: [] };
+    request.auth = { userId: '1', username: 'admin', tenantId, permissions: [], integration: null };
   };
 }

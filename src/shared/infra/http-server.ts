@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import Fastify, { FastifyInstance } from 'fastify';
 
 import { logger } from '../logger';
+import { clientCredentialsScheme } from './http/public-api';
 import responsePlugin from './http/response.plugin';
 
 export interface HttpServerConfig {
@@ -46,6 +47,10 @@ export async function createHttpServer(config: HttpServerConfig): Promise<Fastif
         title: config.serviceName,
         version: config.serviceVersion,
         description: 'Faclab Invoicing API',
+      },
+      components: {
+        // The public API's routes (S6.3) declare their scope with it
+        securitySchemes: { clientCredentials: clientCredentialsScheme },
       },
     },
     transform: ({ schema, url, ...rest }) => {

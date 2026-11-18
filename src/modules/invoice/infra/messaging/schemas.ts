@@ -91,6 +91,8 @@ export const SaleConfirmedV2MessageSchema = z.object({
   tenant_id: z.string().uuid(),
   payload: SaleConfirmedPayloadSchema.extend({
     sale_number: z.string().nullable(),
+    // The branch in faclab-core (S6.3); absent in messages from before it
+    branch_id: z.number().int().positive().nullable().optional(),
     issuer_ruc: z.string().regex(/^\d{13}$/),
     establishment_code: SriCodeSchema,
     establishment_address: z.string().nullable(),
@@ -144,6 +146,8 @@ export const CreditNoteRequestedV1MessageSchema = z.object({
     invoice_id: z.string().uuid(),
     refund_id: z.number().nullable(),
     refund_number: z.string().nullable(),
+    // The sale's branch in faclab-core (S6.3); absent in messages from before it
+    branch_id: z.number().int().positive().nullable().optional(),
     issuer_ruc: z.string().regex(/^\d{13}$/),
     establishment_code: SriCodeSchema,
     establishment_address: z.string().nullable(),

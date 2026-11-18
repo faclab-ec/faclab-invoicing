@@ -15,6 +15,7 @@
     "format:check": "prettier --check src test",
     "test": "vitest run",
     "test:contract": "vitest run test/contract",
+    "public-openapi": "UPDATE_PUBLIC_OPENAPI=1 vitest run test/http/public-openapi.test.ts",
     "test:postgres": "vitest run test/postgres",
     "typecheck": "tsc --noEmit -p . && tsc --noEmit -p test",
     "migrate": "node --env-file-if-exists=.env node_modules/node-pg-migrate/bin/node-pg-migrate.js -m migrations",

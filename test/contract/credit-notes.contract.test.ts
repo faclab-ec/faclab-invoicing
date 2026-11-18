@@ -149,8 +149,11 @@ describe('credit_notes.requested v2 contract', () => {
       establishment: '001',
       emissionPoint: '002',
       establishmentAddress: 'Av. Amazonas N34-120 y Av. Atahualpa, Quito',
+      // The sale's branch in faclab-core, for the public API (S6.3)
+      branchId: 2,
     });
     expect(creditNote.credit_note_id).toBe(31);
+    expect(creditNote).not.toHaveProperty('branch_id');
     expect(creditNote).not.toHaveProperty('issuer_ruc');
   });
 

@@ -243,6 +243,19 @@ Interactive docs available at `http://localhost:3173/docs` (Scalar UI) when the 
 | `POST` | `/api/invoices/:id/retry` | Run the next step of an unfinished invoice now; the worker goes on with the rest |
 | `POST` | `/api/invoices/retry` | Put back in the queue every invoice that needs attention (202, `queued`: how many) |
 
+### Public API (`/api/v1/invoices`, S6.3)
+
+For faclab-core's integration clients, behind the same domain and token as faclab-core's `/api/v1` (Caddy routes `/api/v1/invoices*` here). Their access token (`sub` `client:…`, `scope`, `bids`) needs `invoices:read`; a person's token answers 403 `PERMISSION_DENIED`, and an integration's token on the routes above 403 `INTEGRATION_NOT_ALLOWED`. A client limited to some branches only sees the documents of those branches (documents received before S6.3 have no branch: only a client without a limit sees them). The contract is `docs/public-api/openapi-v1.json` (`npm run public-openapi` writes it; the CI compares it with the base branch's).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/invoices` | Invoices and credit notes (`documentType`), with `limit` (1-200, default 50), `offset`, `sort` (`createdAt`, `updatedAt`, `id`, `-` descending), `saleId`, `status` (`PROCESSING`, `AUTHORIZED`, `REJECTED`), `documentType`, `branchId`, `from`/`to` and `updatedSince` (ISO 8601) |
+| `GET` | `/api/v1/invoices/:id` | One document: number, access code, authorization, rejection reason, total |
+| `GET` | `/api/v1/invoices/:id/xml` | The authorized XML; 404 until authorized |
+| `GET` | `/api/v1/invoices/:id/ride` | The RIDE (PDF); 404 until authorized |
+
+Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `RateLimit-Policy`; over the client's or the company's limit, 429 `RATE_LIMITED` with `Retry-After` (counters in `api_rate_limits`, purged by the worker). Validation errors answer 422 here. This service can't see a client's revocation: its token works here until it expires (15 minutes at most).
+
 ### Certificates
 
 | Method | Path | Description |
@@ -451,6 +464,10 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `SMTP_TIMEOUT_MS` | `20000` | Optional | Timeout of each step with the mail server (connect, greeting, each command); `INVOICE_LOCK_TIMEOUT_MS` must be at least three times it |
 | `INVOICE_EMAIL_FROM` | `facturas@faclab.local` | **Required** while sending is on | The platform's sender address; the issuer's trade name goes as its name |
 | `INVOICE_DELIVERY_CONCURRENCY` | `2` | Optional | Deliveries each worker processes at once (1 to 4); with `INVOICE_WORKER_CONCURRENCY`, at most 8 (the database pool has 10 connections) |
+| `PUBLIC_API_ENABLED` | `true` | Optional | `false` answers 503 `PUBLIC_API_DISABLED` on `/api/v1` (the rollback switch) |
+| `PUBLIC_API_RATE_LIMIT_ENABLED` | `true` | Optional | Rate limits of `/api/v1` |
+| `PUBLIC_API_RATE_LIMIT_PER_MINUTE` / `PUBLIC_API_RATE_LIMIT_BURST` | `600` / `50` | Optional | Per integration client: sustained requests per minute and burst |
+| `PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE` / `PUBLIC_API_TENANT_RATE_LIMIT_BURST` | `1200` / `100` | Optional | Per company, every client of it |
 | `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message is kept as a dead letter |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |

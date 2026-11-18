@@ -12,6 +12,9 @@ export interface IssuingPoint {
   emissionPoint: string;
   // dirEstablecimiento; null when the branch has no address
   establishmentAddress: string | null;
+  // The branch's id in faclab-core (S6.3): the public API filters by it. Absent in messages from
+  // before it, and in documents stored before it
+  branchId?: number | null;
 }
 
 /**

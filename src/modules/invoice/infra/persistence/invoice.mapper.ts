@@ -16,6 +16,8 @@ export interface InvoiceRow {
   establishment: string;
   emission_point: string;
   establishment_address: string | null;
+  // The branch in faclab-core (S6.3); null before it
+  branch_id: number | null;
   status: string;
   sale: SaleData | null;
   credit_note: CreditNoteData | null;
@@ -63,6 +65,7 @@ export function toInvoiceRow(invoice: Invoice): Omit<InvoiceRow, 'status_history
     establishment: invoice.point.establishment,
     emission_point: invoice.point.emissionPoint,
     establishment_address: invoice.point.establishmentAddress,
+    branch_id: invoice.point.branchId ?? null,
     status: invoice.status,
     sale: invoice.sale,
     credit_note: invoice.creditNote,
@@ -111,6 +114,7 @@ export function fromInvoiceRow(row: InvoiceRow): Invoice {
       establishment: row.establishment,
       emissionPoint: row.emission_point,
       establishmentAddress: row.establishment_address,
+      branchId: row.branch_id,
     },
     status: row.status as InvoiceStatus,
     sale: row.sale,

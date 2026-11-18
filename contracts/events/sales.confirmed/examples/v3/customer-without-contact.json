@@ -8,6 +8,7 @@
   "payload": {
     "sale_id": 1202,
     "sale_number": "V-002-000045",
+    "branch_id": 2,
     "source": "pos",
     "issuer_ruc": "1799999990001",
     "establishment_code": "002",

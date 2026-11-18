@@ -80,6 +80,17 @@ export interface AppConfig {
     // Deliveries processed at the same time by each worker
     concurrency: number;
   };
+  // The public API /api/v1/invoices (S6.3), for integration clients of faclab-core
+  publicApi: {
+    // Off: every route answers 503 PUBLIC_API_DISABLED (the rollback switch)
+    enabled: boolean;
+    // Per client and per company, as in faclab-core (GCRA in PostgreSQL, D-6)
+    rateLimit: {
+      enabled: boolean;
+      client: { perMinute: number; burst: number };
+      tenant: { perMinute: number; burst: number };
+    };
+  };
   // Rules that the accountant may still change (D-4)
   invoicing: {
     // `sale`: when faclab-core asked to invoice the sale; `prepared`: when the XML is built
@@ -146,6 +157,12 @@ const ENV_VARS = [
   'SMTP_PASSWORD',
   'SMTP_TIMEOUT_MS',
   'INVOICE_DELIVERY_CONCURRENCY',
+  'PUBLIC_API_ENABLED',
+  'PUBLIC_API_RATE_LIMIT_ENABLED',
+  'PUBLIC_API_RATE_LIMIT_PER_MINUTE',
+  'PUBLIC_API_RATE_LIMIT_BURST',
+  'PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE',
+  'PUBLIC_API_TENANT_RATE_LIMIT_BURST',
 ] as const;
 type EnvVar = (typeof ENV_VARS)[number];
 export type EnvDefaults = Partial<Record<EnvVar, string>>;
@@ -174,6 +191,13 @@ const DEFAULTS: EnvDefaults = {
   SMTP_SECURE: 'false',
   SMTP_TIMEOUT_MS: '20000',
   INVOICE_DELIVERY_CONCURRENCY: '2',
+  // The public API (S6.3): the same limits as faclab-core's
+  PUBLIC_API_ENABLED: 'true',
+  PUBLIC_API_RATE_LIMIT_ENABLED: 'true',
+  PUBLIC_API_RATE_LIMIT_PER_MINUTE: '600',
+  PUBLIC_API_RATE_LIMIT_BURST: '50',
+  PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE: '1200',
+  PUBLIC_API_TENANT_RATE_LIMIT_BURST: '100',
 };
 
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -294,6 +318,12 @@ function schemaFor(environment: AppEnvironment) {
       SMTP_PASSWORD: z.string().min(1).optional(),
       SMTP_TIMEOUT_MS: positiveInt,
       INVOICE_DELIVERY_CONCURRENCY: positiveInt.max(4),
+      PUBLIC_API_ENABLED: booleanFlag,
+      PUBLIC_API_RATE_LIMIT_ENABLED: booleanFlag,
+      PUBLIC_API_RATE_LIMIT_PER_MINUTE: positiveInt,
+      PUBLIC_API_RATE_LIMIT_BURST: positiveInt,
+      PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE: positiveInt,
+      PUBLIC_API_TENANT_RATE_LIMIT_BURST: positiveInt,
     })
     .refine(
       (values) =>
@@ -431,6 +461,20 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
         timeoutMs: values.SMTP_TIMEOUT_MS,
       },
       concurrency: values.INVOICE_DELIVERY_CONCURRENCY,
+    },
+    publicApi: {
+      enabled: values.PUBLIC_API_ENABLED,
+      rateLimit: {
+        enabled: values.PUBLIC_API_RATE_LIMIT_ENABLED,
+        client: {
+          perMinute: values.PUBLIC_API_RATE_LIMIT_PER_MINUTE,
+          burst: values.PUBLIC_API_RATE_LIMIT_BURST,
+        },
+        tenant: {
+          perMinute: values.PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE,
+          burst: values.PUBLIC_API_TENANT_RATE_LIMIT_BURST,
+        },
+      },
     },
     invoicing: {
       emissionDate: values.INVOICE_EMISSION_DATE,

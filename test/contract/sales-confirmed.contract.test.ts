@@ -287,6 +287,27 @@ describe('sales.confirmed v3: sales on credit', () => {
   });
 });
 
+describe('sales.confirmed v3: the public API (S6.3)', () => {
+  it("keeps the sale's branch in faclab-core, apart from the sale", () => {
+    const received = toReceivedSale(SaleConfirmedMessageSchema.parse(v3['api-sale']), null);
+
+    expect(received.point.branchId).toBe(2);
+    expect(received.sale).not.toHaveProperty('branch_id');
+    // A sale an integration client made through faclab-core's /api/v1/sales
+    expect(received.sale.source).toBe('api');
+  });
+
+  it('reads a message from before it, without the branch', () => {
+    const { branch_id: _, ...payload } = v3['full-customer'].payload as Record<string, unknown>;
+    const received = toReceivedSale(
+      SaleConfirmedMessageSchema.parse({ ...v3['full-customer'], payload }),
+      null,
+    );
+
+    expect(received.point.branchId).toBeNull();
+  });
+});
+
 describe('sales.confirmed versions', () => {
   it('reads a message from before v1 as v1', () => {
     const { schema_version: _, ...legacy } = v1['full-customer'];

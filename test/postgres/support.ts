@@ -41,7 +41,7 @@ export function usePostgres(): () => Pool {
 
   beforeEach(async () => {
     await pool!.query(
-      'TRUNCATE invoice_deliveries, invoice_events, invoices, issuers, certificates, sequences, dead_letters',
+      'TRUNCATE invoice_deliveries, invoice_events, invoices, issuers, certificates, sequences, dead_letters, api_rate_limits',
     );
   });
 
