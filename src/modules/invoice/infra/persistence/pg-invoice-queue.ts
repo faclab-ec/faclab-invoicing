@@ -1,9 +1,17 @@
 import { Pool } from 'pg';
 import { validate as isUuid } from 'uuid';
 
-import { TraceContext } from '../../domain/invoice';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+
+import { InvoiceStatus, TraceContext } from '../../domain/invoice';
 import { InvoiceIssueCode } from '../../domain/issue';
-import { ClaimedInvoice, InvoiceQueue, WaitingInvoice } from '../../domain/queue';
+import {
+  ClaimedInvoice,
+  InvoiceQueue,
+  InvoiceQueueStats,
+  QueueStats,
+  WaitingInvoice,
+} from '../../domain/queue';
 import { IN_FLIGHT_STATUSES } from './pg-invoice.repository';
 
 /**
@@ -11,7 +19,7 @@ import { IN_FLIGHT_STATUSES } from './pg-invoice.repository';
  * `locked_by` who holds it. Times come from the service's clock, the same one that sets
  * `next_attempt_at`. None of these statements changes `version`.
  */
-export class PgInvoiceQueue implements InvoiceQueue {
+export class PgInvoiceQueue implements InvoiceQueue, InvoiceQueueStats {
   constructor(
     private readonly pool: Pool,
     private readonly now: () => Date = () => new Date(),
@@ -101,6 +109,45 @@ export class PgInvoiceQueue implements InvoiceQueue {
       [ids, at, IN_FLIGHT_STATUSES],
     );
     return result.rowCount ?? 0;
+  }
+
+  async stats(now: Date): Promise<QueueStats> {
+    const [inFlight, queue] = await Promise.all([
+      // ix_invoices_status_created_at
+      this.pool.query<{
+        status: string;
+        doc_type: string;
+        issue_code: string | null;
+        count: number;
+        oldest: Date;
+      }>(
+        `SELECT status, doc_type, issue_code, count(*)::int AS count, min(created_at) AS oldest
+         FROM invoices WHERE status = ANY($1)
+         GROUP BY status, doc_type, issue_code`,
+        [IN_FLIGHT_STATUSES],
+      ),
+      // ix_invoices_next_attempt_at: only the rows with something to do
+      this.pool.query<{ due: number; expired_leases: number }>(
+        `SELECT
+           count(*) FILTER (
+             WHERE next_attempt_at <= $1 AND (locked_until IS NULL OR locked_until < $1)
+           )::int AS due,
+           count(*) FILTER (WHERE locked_by IS NOT NULL AND locked_until < $1)::int AS expired_leases
+         FROM invoices WHERE next_attempt_at IS NOT NULL`,
+        [now],
+      ),
+    ]);
+    return {
+      inFlight: inFlight.rows.map((row) => ({
+        status: row.status as InvoiceStatus,
+        docType: row.doc_type as VoucherType,
+        issueCode: row.issue_code,
+        count: row.count,
+        oldestCreatedAt: row.oldest,
+      })),
+      due: queue.rows[0].due,
+      expiredLeases: queue.rows[0].expired_leases,
+    };
   }
 }
 

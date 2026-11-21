@@ -146,7 +146,8 @@ describe('Delivery of an authorized invoice through a mail server', () => {
   it('sends the RIDE and the authorized XML to the buyer, from the issuer, answering to it', async () => {
     const delivery = await authorized();
 
-    await processor().run(delivery.id);
+    // What it answers is what the worker counts (faclab.invoices.deliveries)
+    expect(await processor().run(delivery.id)).toBe('sent');
 
     const sent = await stored(delivery.id);
     expect(sent).toMatchObject({ status: 'sent', attempts: 0, nextAttemptAt: null });
@@ -171,7 +172,7 @@ describe('Delivery of an authorized invoice through a mail server', () => {
     const delivery = await authorized();
     smtp.state.refuse = { code: 451, message: 'Try again later' };
 
-    await processor().run(delivery.id);
+    expect(await processor().run(delivery.id)).toBe('pending');
 
     const waiting = await stored(delivery.id);
     expect(waiting).toMatchObject({ status: 'pending', attempts: 1 });
@@ -187,6 +188,8 @@ describe('Delivery of an authorized invoice through a mail server', () => {
 
     expect(await stored(delivery.id)).toMatchObject({ status: 'sent', attempts: 1 });
     expect(smtp.received).toHaveLength(1);
+    // Nothing left to do with it
+    expect(await processor().run(delivery.id)).toBeNull();
   });
 
   it('retries when the mail server cannot be reached', async () => {

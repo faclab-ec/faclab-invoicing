@@ -13,7 +13,11 @@ export class SignInvoiceCommand implements InvoiceCommand {
 
   async execute(invoice: Invoice): Promise<void> {
     logger.info({ invoiceId: invoice.id }, 'Signing invoice');
-    const signedXml = await this.invoiceSigner.signInvoice(invoice.requireXml(), invoice.tenantId);
+    const signedXml = await this.invoiceSigner.signInvoice(
+      invoice.requireXml(),
+      invoice.tenantId,
+      invoice.docType,
+    );
     invoice.sign(signedXml);
     await this.invoiceRepository.updateInvoice(invoice);
     logger.info({ invoiceId: invoice.id }, 'Invoice signed');

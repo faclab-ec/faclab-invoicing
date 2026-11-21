@@ -1,6 +1,7 @@
+import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { JobQueue } from '#/shared/infra/queue-worker';
 
-import { TraceContext } from './invoice';
+import { InvoiceStatus, TraceContext } from './invoice';
 import { InvoiceIssueCode } from './issue';
 
 /** An invoice a worker took from the queue */
@@ -52,3 +53,33 @@ export interface ClaimedDelivery {
 
 /** `invoice_deliveries` as a work queue: the pending ones, due at their `nextAttemptAt` */
 export type DeliveryQueue = JobQueue<ClaimedDelivery>;
+
+/** Documents not yet final with the same status, type and issue, across companies */
+export interface InFlightGroup {
+  status: InvoiceStatus;
+  docType: VoucherType;
+  // The code of the issue that holds them; null when nothing does
+  issueCode: string | null;
+  count: number;
+  // When the oldest of them arrived
+  oldestCreatedAt: Date;
+}
+
+/** How the queue is doing, for the metrics */
+export interface QueueStats {
+  inFlight: InFlightGroup[];
+  // In the queue, their turn came and nobody holds them
+  due: number;
+  // Held by a holder whose lease ran out: a worker that died
+  expiredLeases: number;
+}
+
+/** What the metrics read from the queue: every company */
+export interface InvoiceQueueStats {
+  stats(now: Date): Promise<QueueStats>;
+}
+
+/** What the metrics read from the deliveries: every company */
+export interface DeliveryStats {
+  countPending(): Promise<number>;
+}

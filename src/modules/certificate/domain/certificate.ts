@@ -1,5 +1,28 @@
 import { randomUUID } from 'crypto';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Where a signing certificate stands before it expires: each one is in one window at most
+export const EXPIRY_WINDOWS = ['expired', '7d', '30d'] as const;
+export type ExpiryWindow = (typeof EXPIRY_WINDOWS)[number];
+
+/**
+ * The window of a certificate valid until `validTo`: expired, expires within 7 days, within 8 to
+ * 30 days, or null when it has longer
+ */
+export function expiryWindow(validTo: Date, now: Date): ExpiryWindow | null {
+  const left = validTo.getTime() - now.getTime();
+  if (left <= 0) return 'expired';
+  if (left <= 7 * DAY_MS) return '7d';
+  if (left <= 30 * DAY_MS) return '30d';
+  return null;
+}
+
+/** Whole days until `validTo` (negative once it passed), as the readiness warning counts them */
+export function daysLeft(validTo: Date, now: Date): number {
+  return Math.floor((validTo.getTime() - now.getTime()) / DAY_MS);
+}
+
 /** Whether a certificate's RUCs or cédulas name the taxpayer with this RUC */
 export function taxIdsMatch(taxIds: readonly string[], ruc: string): boolean {
   // A natural person's RUC is their cédula followed by 001

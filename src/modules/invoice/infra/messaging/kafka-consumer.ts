@@ -3,7 +3,7 @@ import { ZodSchema } from 'zod';
 
 import { NonRetryableError } from '#/shared/errors/non-retryable.error';
 import { DeadLetterStore } from '#/shared/infra/dead-letters';
-import { BaseKafkaConsumer, RetryConfig } from '#/shared/infra/kafka';
+import { BaseKafkaConsumer, ConsumerSettings } from '#/shared/infra/kafka';
 import { logger } from '#/shared/logger';
 
 interface MessageProcessor {
@@ -51,9 +51,9 @@ export class InvoiceKafkaConsumer extends BaseKafkaConsumer {
     topics: string[],
     private processors: MessageProcessors,
     deadLetters: DeadLetterStore,
-    retryConfig?: Partial<RetryConfig>,
+    settings?: ConsumerSettings,
   ) {
-    super(consumer, topics, deadLetters, retryConfig);
+    super(consumer, topics, deadLetters, settings);
   }
 
   protected async handleMessage(topic: string, message: string): Promise<void> {

@@ -3,13 +3,7 @@ import {
   AuthorizationVoucherStatus,
   AuthorizedVoucher,
 } from '../../domain/voucher';
-
-interface MessageDTO {
-  identificador: string;
-  mensaje: string;
-  informacionAdicional?: string;
-  tipo: string;
-}
+import { firstErrorCode, SriMessageDTO as MessageDTO } from './sri-message';
 
 interface AuthorizationDTO {
   estado: 'AUTORIZADO' | 'NO AUTORIZADO' | 'EN PROCESO';
@@ -76,4 +70,14 @@ export function mapAuthorizationVoucherToDomain(
       ? authorizedVoucher(authorization)
       : null,
   );
+}
+
+/** What the SRI said of the voucher; without an authorization yet, it is still processing it */
+export function authorizationState(dto: AuthorizationVoucherResponseDTO): string {
+  return dto.autorizaciones?.autorizacion?.[0]?.estado ?? 'EN PROCESO';
+}
+
+/** The code of the SRI's first error in an authorization answer (null without messages) */
+export function authorizationErrorCode(dto: AuthorizationVoucherResponseDTO): string | null {
+  return firstErrorCode(dto.autorizaciones?.autorizacion?.[0]?.mensajes?.mensaje ?? []);
 }

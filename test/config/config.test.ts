@@ -114,6 +114,14 @@ describe('parseConfig in local', () => {
       lockTimeoutMs: 120_000,
     });
     expect(config.invoiceRecovery.intervalMs).toBe(60_000);
+    expect(config.telemetry.metricsIntervalMs).toBe(60_000);
+  });
+
+  it('samples the metrics at most as often as they are exported', () => {
+    expect(parseConfig({ WORKER_METRICS_INTERVAL_MS: '30000' }).telemetry.metricsIntervalMs).toBe(
+      30_000,
+    );
+    expect(errorOf({ WORKER_METRICS_INTERVAL_MS: '1000' })).toContain('WORKER_METRICS_INTERVAL_MS');
   });
 
   it('takes the worker settings, and leaves the background to the worker process', () => {

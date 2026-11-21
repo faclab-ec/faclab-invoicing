@@ -1,11 +1,5 @@
 import { ValidationVoucher, ValidationVoucherStatus } from '../../domain/voucher';
-
-interface MessageDTO {
-  identificador: string;
-  mensaje: string;
-  informacionAdicional?: string;
-  tipo: string;
-}
+import { firstErrorCode, SriMessageDTO as MessageDTO } from './sri-message';
 
 interface VoucherDTO {
   claveAcceso: string;
@@ -49,4 +43,9 @@ export function mapValidationVoucherToDomain(dto: ReceiptVoucherResponseDTO): Va
       messages.length > 0 &&
       messages.every((m) => ALREADY_RECEIVED_CODES.has(String(m.identificador))),
   );
+}
+
+/** The code of the SRI's first error in a reception answer (null without messages) */
+export function receptionErrorCode(dto: ReceiptVoucherResponseDTO): string | null {
+  return firstErrorCode(dto.comprobantes?.comprobante?.[0]?.mensajes?.mensaje ?? []);
 }

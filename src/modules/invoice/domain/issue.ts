@@ -1,15 +1,18 @@
 import {
   isReadinessErrorCode,
   IssuerNotReadyError,
+  READINESS_ERROR_CODES,
   ReadinessErrorCode,
 } from '#/modules/company-config/domain/readiness';
 
 // Failures that may go away by themselves: retried with a growing delay
-export type TransientIssueCode =
-  | 'SRI_UNAVAILABLE'
-  | 'SRI_PROCESSING'
-  | 'STORAGE_UNAVAILABLE'
-  | 'UNEXPECTED_ERROR';
+export const TRANSIENT_ISSUE_CODES = [
+  'SRI_UNAVAILABLE',
+  'SRI_PROCESSING',
+  'STORAGE_UNAVAILABLE',
+  'UNEXPECTED_ERROR',
+] as const;
+export type TransientIssueCode = (typeof TRANSIENT_ISSUE_CODES)[number];
 
 // The invoice itself is wrong (XML outside the SRI schema, amounts that don't add up): retrying
 // gives the same result, so only a manual retry after the fix runs it again
@@ -22,6 +25,13 @@ export type InvalidIssueCode = (typeof INVALID_ISSUE_CODES)[number];
  * are retried.
  */
 export type InvoiceIssueCode = ReadinessErrorCode | TransientIssueCode | InvalidIssueCode;
+
+// Every code an issue may have
+export const ISSUE_CODES: readonly InvoiceIssueCode[] = [
+  ...READINESS_ERROR_CODES,
+  ...TRANSIENT_ISSUE_CODES,
+  ...INVALID_ISSUE_CODES,
+];
 
 export interface InvoiceIssue {
   code: InvoiceIssueCode;
