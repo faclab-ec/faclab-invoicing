@@ -87,7 +87,7 @@ Each transition is an isolated Command. The consumer only stores the sale as a `
 
 ### Dead letters
 
-The consumer retries a failing message (3 times, with backoff) and then keeps it in the `dead_letters` table (S4.3; before, the `dlq` topic, which nothing read): consumer group, topic, partition and offset, key, headers, the message as it arrived, its company (`faclab-tenant-id`, when it is a valid id), the error, `error_type` (`NON_RETRYABLE` for malformed messages, `MAX_RETRIES_EXHAUSTED`) and the attempts. Only then is the offset committed; if the message can't be kept either (the database is down), the offset isn't committed and the message comes back once the database does. A message delivered again after a failed commit is kept once (`uq_dead_letters_message`). They count in `dlq.message.count`.
+The consumer retries a failing message (3 times, with backoff) and then keeps it in the `dead_letters` table (S4.3; before, the `dlq` topic, which nothing read): consumer group, topic, partition and offset, key, headers, the message as it arrived, its company (`faclab-tenant-id`, when it is a valid id), the error, `error_type` (`NON_RETRYABLE` for malformed messages, `MAX_RETRIES_EXHAUSTED`) and the attempts. Only then is the offset committed; if the message can't be kept either (the database is down), the offset isn't committed and the message comes back once the database does. A message delivered again after a failed commit is kept once (`uq_dead_letters_message`). The pending ones are counted by topic in `faclab.dead_letters.pending` (S7.2; before, the counter `dlq.message.count`).
 
 Processing one again is a platform task, across companies, with the CLI (`npm run cli`, on the compiled code; in the image, `docker run --rm ... faclab-invoicing npm run cli -- ...`):
 
@@ -178,7 +178,9 @@ A storage failure doesn't count as an attempt: the worker gives the delivery out
 - **Personal data:** the logs carry the delivery and invoice ids and the status, never an address nor the server's text (`email`, `recipient` and `replyTo` are redacted). The send log (`GET /api/invoices/:id/emails`) shows them to the company.
 - **Rollback:** `INVOICE_EMAIL_ENABLED=false` stops every send, also of the deliveries already pending, which end `disabled`; RIDEs are still generated.
 
-Not covered yet: bounces that arrive later (DSN or provider webhooks), limits on resends, delivery metrics, and the RIDE of other documents (credit notes, S4.5).
+Each attempt counts in `faclab.invoices.deliveries` by result (`sent`, `bounced`, `retry`, `failed`, `no_recipient`, `disabled`) and the pending ones in `faclab.invoices.pending_deliveries` (S7.2, see [Observability](#observability)).
+
+Not covered yet: bounces that arrive later (DSN or provider webhooks), limits on resends, and the RIDE of other documents (credit notes, S4.5).
 
 ---
 
@@ -448,6 +450,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `INVOICE_WORKER_CONCURRENCY` | `4` | Optional | Invoices each worker processes at once (1 to 8) |
 | `INVOICE_POLL_INTERVAL_MS` | `1000` | Optional | How often an idle worker slot looks for due invoices |
 | `INVOICE_LOCK_TIMEOUT_MS` | `120000` | Optional | How long a worker holds an invoice before another may take it (renewed after each step); at least twice `SRI_TIMEOUT_MS` |
+| `WORKER_METRICS_INTERVAL_MS` | `60000` | Optional | How often the worker samples the queue, the deliveries, the dead letters and the signing certificates for the metrics' gauges (at least 30000, the export interval) |
 | `OBJECT_STORAGE_ENDPOINT` | `http://localhost:3900` (faclab-infra) | Optional | S3-compatible service; empty means AWS S3 itself. A container on `faclab_network` uses `http://object-storage:3900` |
 | `OBJECT_STORAGE_REGION` | `garage` | **Required** | Region of the service (Garage: its `s3_region`) |
 | `OBJECT_STORAGE_BUCKET` | `faclab-invoicing` | **Required** | Bucket of the authorized invoices |
@@ -509,6 +512,27 @@ Each issuer has its environment (`environment` in the fiscal profile): it goes i
 - **Kafka traces**: consuming a message creates `process <topic>` (kind CONSUMER) as a child of the producer's span, and sending one creates `send <topic>` (kind PRODUCER) and injects that span's context. The consumer keeps the context of the message with the invoice (`trace_context`), and each job of the worker is a `process invoice` span (kind CONSUMER) child of it; the delivery of an authorized invoice keeps the authorization step's, and its job is a `deliver invoice` span. A POS sale therefore shows as one trace: faclab-core's `send sales.confirmed` → `process sales.confirmed` here → `process invoice` (one per job, with the SRI calls) → `send invoices` → faclab-core's `process invoices`.
 - **Logs**: pino, with `trace_id` and `span_id` added by the pino instrumentation. Passwords, tokens, `authorization`, cookies, secrets, `p12`, certificates, private keys, XML, signatures and the buyers' email addresses (`email`, `recipient`, `replyTo`) are replaced by `[REDACTED]` at any depth, before the line reaches stdout or OTLP (`src/shared/logger.ts`). Outside `local`, each line carries `service.name`, `service.version` and `deployment.environment.name`.
 - **Database**: each query inside a request, a Kafka message or an invoice job gets a span (`@opentelemetry/instrumentation-pg`); the worker's polling and the recovery, outside any span, don't start traces.
+- **SRI and signing spans** (S7.2): each call to the SRI is a `sri.recepcion` or `sri.autorizacion` span (kind CLIENT, child of `process invoice`) with `rpc.method`, `server.address`, `faclab.sri.environment` (`pruebas`, `produccion`), `faclab.sri.status` (RECIBIDA, DEVUELTA, AUTORIZADO, NO AUTORIZADO, EN PROCESO) and `error.type` when it got no answer (`timeout` or the error's class); signing is an `invoice.sign` span with `faclab.document.type` (`invoice`, `credit_note`) and the code of what kept it from signing. Neither the XML, the access code nor the buyer's data go into a span (`src/modules/invoice/infra/adapters/sri-call.ts`, `signer.adapter.ts`).
+- **Metrics** (S7.2, all in `src/shared/telemetry/metrics.ts`; their attributes are bounded and `test/shared/metric-attributes.test.ts` fails on a metric or an attribute outside its catalog, or on a value that looks like an id):
+
+  | Metric | Type | Attributes |
+  |---|---|---|
+  | `faclab.sri.request.duration` | Histogram, s | `faclab.sri.operation` (`recepcion`, `autorizacion`), `faclab.sri.outcome` (`ok`, `timeout`, `error`), `faclab.sri.environment` |
+  | `faclab.invoices.rejections` | Counter | `faclab.sri.message.code` (the SRI's code of its first error; `other`, `none`), `faclab.sri.operation`: DEVUELTA, except an access code the SRI already has (43, 70), and NO AUTORIZADO |
+  | `faclab.invoices.transitions` | Counter | `from`, `to`, `faclab.document.type`: each status change a step saved |
+  | `faclab.invoices.time_to_final` | Histogram, s | `result` (`authorized`, `rejected`), `faclab.document.type`: from `requested_at` (the `occurred_at` of the message: the sale's confirmation or a resend; the arrival for documents received before S4.1) to the final status |
+  | `faclab.invoices.step.duration` | Histogram, s | `faclab.invoice.step` (`prepare`, `sign`, `send`, `authorize`), `faclab.step.outcome` (`advanced`, `blocked`, `invalid`, `retry`, `conflict`, the classes of the issue it leaves), `faclab.document.type` |
+  | `faclab.invoices.pending` | Gauge | `status`, `faclab.issue.type` (the issue's code, `none`), `faclab.document.type`: documents not yet final |
+  | `faclab.invoices.oldest_age` | Gauge, s | `status`: the oldest document not yet final (0 without one) |
+  | `faclab.invoices.due`, `faclab.invoices.expired_leases` | Gauges | Queue rows whose turn came and nobody holds; held by a worker whose lease ran out |
+  | `faclab.invoices.deliveries`, `faclab.invoices.pending_deliveries` | Counter, gauge | `result` (see [Deliveries](#deliveries)) |
+  | `faclab.certificates.expiring` | Gauge | `window`: the certificate each issuer selected, `expired`, `7d` (within 7 days) or `30d` (within 8 to 30) |
+  | `messaging.process.duration` | Histogram, s | `messaging.*`, `messaging.consumer.group.name`, `error.type` when the handler failed: each attempt, like faclab-core's |
+  | `messaging.client.sent.messages` | Counter | `messaging.*`, `error.type` when Kafka refused it |
+  | `faclab.dead_letters.pending` | Gauge | `messaging.destination.name` |
+
+  Steps are measured by a decorator of the command map (`measureSteps`, `src/modules/invoice/infra/telemetry/`), so the worker and the manual retry count the same, and only what a step saved. The gauges are observable: the worker samples PostgreSQL every `WORKER_METRICS_INTERVAL_MS`, across companies, and each export (30 s) reads the last sample, which lasts three intervals. Every worker reports its own sample: aggregate them with `max`. Instruments are made on first use: the OpenTelemetry API for JS has no proxy meter, so one made before the SDK registers its provider would stay a no-op.
+- **Certificates about to expire** (G-23): the worker logs, when it starts and then daily, one line per company whose selected certificate expired (`certificate.expired`, ERROR: its documents wait) or expires within 30 days (`certificate.expiring`, WARN), with `faclab.tenant.id`, `window`, `certificateId`, `validTo` and `daysLeft`; never the certificate's subject, which names a person.
 - **Shutdown**: on SIGTERM or SIGINT the API stops taking requests; then the consumer stops, the workers take no more invoices nor deliveries and wait for those in progress (each step is bounded by `SRI_TIMEOUT_MS` or `SMTP_TIMEOUT_MS`), Kafka and the database pool close, and the telemetry still buffered is flushed (up to 5 s) with `Telemetry flushed` before exiting. The worker process does the same without HTTP.
 
 To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
@@ -716,20 +740,22 @@ src/
 │   │   │   ├── services/        # invoice-processor, invoice-recovery
 │   │   │   └── queries/         # get, list
 │   │   └── infra/
-│   │       ├── adapters/        # signer, sri-clients, sri-validation, sri-authorization,
-│   │       │                    # xsd-validator, s3-document-storage
+│   │       ├── adapters/        # signer, sri-clients, sri-call, sri-validation,
+│   │       │                    # sri-authorization, xsd-validator, s3-document-storage
 │   │       ├── http/            # routes, schemas, mappers
 │   │       ├── messaging/       # kafka consumer, producer, schemas, topics
 │   │       ├── persistence/     # PostgreSQL repo and queue, row mapper
 │   │       ├── queue/           # invoice-worker
-│   │       └── signing/         # xades-signer, p12-reader
+│   │       ├── signing/         # xades-signer, p12-reader
+│   │       └── telemetry/       # step, queue and delivery metrics
 │   ├── certificate/
 │   │   ├── domain/
-│   │   ├── app/
+│   │   ├── app/                 # commands, key loader, expiry report
 │   │   └── infra/
 │   │       ├── adapters/        # p12-parser
 │   │       ├── http/
-│   │       └── persistence/
+│   │       ├── persistence/
+│   │       └── telemetry.ts     # faclab.certificates.expiring
 │   └── company-config/
 │       ├── domain/
 │       ├── app/
@@ -738,12 +764,13 @@ src/
 │           └── persistence/
 └── shared/
     ├── logger.ts
-    ├── telemetry/               # metrics, trace-context, service-name
+    ├── telemetry/               # metrics (the catalog), attributes, trace-context, service-name
     └── infra/
         ├── database.ts          # pg pool and transactions
         ├── http-server.ts       # Fastify + Swagger setup
         ├── kafka.ts             # BaseKafkaConsumer
         ├── dead-letters.ts      # dead_letters store and reprocessor
+        ├── periodic-task.ts     # the worker's periodic tasks (metrics sampling, certificate report)
         ├── soap-client.ts       # strong-soap wrapper
         ├── worker-health.ts     # the worker's /health
         └── p12.ts               # P12 parsing utilities
