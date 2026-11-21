@@ -2,12 +2,36 @@ import { Pool } from 'pg';
 import { validate as isUuid } from 'uuid';
 
 import { Certificate } from '../../domain/certificate';
-import { CertificateRepository } from '../../domain/repository';
+import {
+  CertificateRepository,
+  SelectedCertificate,
+  SigningCertificates,
+} from '../../domain/repository';
 import { CertificateRow, fromCertificateRow, toCertificateRow } from './certificate.mapper';
 
-// Every query names the company: a certificate of another one is never read nor deleted
-export class PgCertificateRepository implements CertificateRepository {
+// Every query names the company: a certificate of another one is never read nor deleted. Only
+// listSelected, for the expiry report, reads every company's
+export class PgCertificateRepository implements CertificateRepository, SigningCertificates {
   constructor(private readonly pool: Pool) {}
+
+  async listSelected(): Promise<SelectedCertificate[]> {
+    // One per company at most: the one its issuer selected (fk_issuers_signing_cert_tenant)
+    const result = await this.pool.query<{
+      tenant_id: string;
+      certificate_id: string;
+      valid_to: Date;
+    }>(
+      `SELECT i.tenant_id, c.id AS certificate_id, c.valid_to
+       FROM issuers i
+       JOIN certificates c ON c.tenant_id = i.tenant_id AND c.id = i.signing_cert_id
+       ORDER BY c.valid_to, i.tenant_id`,
+    );
+    return result.rows.map((row) => ({
+      tenantId: row.tenant_id,
+      certificateId: row.certificate_id,
+      validTo: row.valid_to,
+    }));
+  }
 
   async save(certificate: Certificate): Promise<Certificate> {
     const row = toCertificateRow(certificate);

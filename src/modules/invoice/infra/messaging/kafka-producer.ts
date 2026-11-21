@@ -3,6 +3,8 @@ import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentele
 
 import { TENANT_HEADER } from '#/shared/infra/kafka';
 import { logger } from '#/shared/logger';
+import { errorType } from '#/shared/telemetry/attributes';
+import { messagingSentMessages } from '#/shared/telemetry/metrics';
 
 import { MessageProducer } from '../../domain/ports';
 
@@ -28,14 +30,14 @@ export class KafkaProducer<T> implements MessageProducer<T> {
   }
 
   async sendMessage(message: T): Promise<void> {
+    const metricAttributes = {
+      'messaging.system': 'kafka',
+      'messaging.operation.name': 'send',
+      'messaging.destination.name': this.topic,
+    };
     const span = tracer.startSpan(`send ${this.topic}`, {
       kind: SpanKind.PRODUCER,
-      attributes: {
-        'messaging.system': 'kafka',
-        'messaging.operation.type': 'send',
-        'messaging.operation.name': 'send',
-        'messaging.destination.name': this.topic,
-      },
+      attributes: { ...metricAttributes, 'messaging.operation.type': 'send' },
     });
 
     // The consumer continues from this span, not from whatever was active before it
@@ -49,8 +51,10 @@ export class KafkaProducer<T> implements MessageProducer<T> {
         topic: this.topic,
         messages: [{ key: tenantId, value: JSON.stringify(this.toMessage(message)), headers }],
       });
+      messagingSentMessages.add(1, metricAttributes);
       logger.debug({ topic: this.topic }, 'Message sent');
     } catch (error) {
+      messagingSentMessages.add(1, { ...metricAttributes, 'error.type': errorType(error) });
       const err = error instanceof Error ? error : new Error(String(error));
       span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       span.recordException(err);

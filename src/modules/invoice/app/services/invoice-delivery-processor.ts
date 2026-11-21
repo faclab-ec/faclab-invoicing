@@ -1,6 +1,7 @@
 import { CompanyConfigRepository } from '#/modules/company-config/domain/repository';
 import { logger } from '#/shared/logger';
 
+import { DeliveryStatus } from '../../domain/delivery';
 import { buildInvoiceEmail } from '../../domain/invoice-email';
 import { DocumentStorage, InvoiceMailer, MailRejectedError } from '../../domain/ports';
 import { InvoiceDeliveryRepository, InvoiceRepository } from '../../domain/repository';
@@ -26,9 +27,13 @@ export class InvoiceDeliveryProcessor {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async run(deliveryId: string): Promise<void> {
+  /**
+   * The delivery's status after the attempt (pending: it failed and waits for the next one); null
+   * when it wasn't pending
+   */
+  async run(deliveryId: string): Promise<DeliveryStatus | null> {
     const delivery = await this.deliveries.getById(deliveryId);
-    if (!delivery?.isPending) return;
+    if (!delivery?.isPending) return null;
     const log = { deliveryId, invoiceId: delivery.invoiceId };
 
     const invoice = await this.invoices.getInvoiceById(delivery.invoiceId);
@@ -39,7 +44,7 @@ export class InvoiceDeliveryProcessor {
       delivery.recordFailure('The invoice has no authorization to deliver', this.now());
       await this.deliveries.update(delivery);
       logger.error(log, 'Delivery of an invoice without its authorization');
-      return;
+      return delivery.status;
     }
 
     if (!this.mailer || !this.from) {
@@ -82,5 +87,6 @@ export class InvoiceDeliveryProcessor {
       { ...log, status: delivery.status, attempts: delivery.attempts },
       'Invoice delivery',
     );
+    return delivery.status;
   }
 }

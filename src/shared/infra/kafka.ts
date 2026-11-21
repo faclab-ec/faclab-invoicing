@@ -4,7 +4,8 @@ import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentele
 import { BadRequestError, ValidationError } from '../errors/app-error';
 import { NonRetryableError } from '../errors/non-retryable.error';
 import { logger } from '../logger';
-import { kafkaMessageCount, kafkaMessageDuration, kafkaRetryCount } from '../telemetry/metrics';
+import { errorType } from '../telemetry/attributes';
+import { messagingProcessDuration } from '../telemetry/metrics';
 import { DeadLetterStore, FailedMessage } from './dead-letters';
 
 // Header with the company (faclab-core tenant) of a message, the same name faclab-core uses
@@ -13,6 +14,11 @@ export const TENANT_HEADER = 'faclab-tenant-id';
 export interface RetryConfig {
   maxRetries: number;
   baseDelayMs: number;
+}
+
+export interface ConsumerSettings extends Partial<RetryConfig> {
+  // The consumer group, for messaging.consumer.group.name
+  groupId?: string;
 }
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = { maxRetries: 3, baseDelayMs: 1000 };
@@ -50,14 +56,16 @@ export const consumerOptions = (groupId: string) => ({
 
 export abstract class BaseKafkaConsumer {
   private retryConfig: RetryConfig;
+  private groupId: string | undefined;
 
   constructor(
     private consumer: KafkaJS.Consumer,
     private topics: string[],
     private deadLetters: DeadLetterStore,
-    retryConfig?: Partial<RetryConfig>,
+    { groupId, ...retryConfig }: ConsumerSettings = {},
   ) {
     this.retryConfig = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
+    this.groupId = groupId;
   }
 
   protected abstract handleMessage(topic: string, message: string): Promise<void>;
@@ -97,8 +105,6 @@ export abstract class BaseKafkaConsumer {
           parentContext,
         );
 
-        const startTime = performance.now();
-
         await context.with(trace.setSpan(parentContext, span), async () => {
           try {
             logger.debug(
@@ -127,16 +133,12 @@ export abstract class BaseKafkaConsumer {
             await this.consumer.commitOffsets([
               { topic, partition, offset: (BigInt(message.offset) + 1n).toString() },
             ]);
-
-            kafkaMessageCount.add(1, { topic, status: 'success' });
           } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error));
             span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
             span.recordException(err);
-            kafkaMessageCount.add(1, { topic, status: 'error' });
             throw error;
           } finally {
-            kafkaMessageDuration.record(performance.now() - startTime, { topic });
             span.end();
           }
         });
@@ -153,7 +155,7 @@ export abstract class BaseKafkaConsumer {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        await this.handleMessage(topic, value);
+        await this.measured(topic, () => this.handleMessage(topic, value));
         return;
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -168,7 +170,6 @@ export abstract class BaseKafkaConsumer {
         }
 
         if (attempt < maxRetries) {
-          kafkaRetryCount.add(1, { topic, attempt: attempt + 1 });
           const backoff = calculateBackoff(attempt, baseDelayMs);
           logger.warn(
             { topic, offset: failed.offset, err, attempt: attempt + 1, maxRetries, backoff },
@@ -185,6 +186,27 @@ export abstract class BaseKafkaConsumer {
         }
       }
     }
+  }
+
+  /** Records each attempt in messaging.process.duration, like faclab-core's consumer */
+  private async measured(topic: string, handle: () => Promise<void>): Promise<void> {
+    const attributes = {
+      'messaging.system': 'kafka',
+      'messaging.operation.name': 'process',
+      'messaging.destination.name': topic,
+      ...(this.groupId && { 'messaging.consumer.group.name': this.groupId }),
+    };
+    const startTime = performance.now();
+    try {
+      await handle();
+    } catch (error) {
+      messagingProcessDuration.record((performance.now() - startTime) / 1000, {
+        ...attributes,
+        'error.type': errorType(error),
+      });
+      throw error;
+    }
+    messagingProcessDuration.record((performance.now() - startTime) / 1000, attributes);
   }
 
   async stop(): Promise<void> {

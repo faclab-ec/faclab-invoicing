@@ -10,10 +10,12 @@ import {
   ListCertificatesCommand,
   UploadCertificateCommand,
 } from '#/modules/certificate/app/certificate.commands';
+import { CertificateExpiryReport } from '#/modules/certificate/app/certificate-expiry';
 import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { P12ParserAdapter } from '#/modules/certificate/infra/adapters/p12-parser.adapter';
 import { registerCertificateRoutes } from '#/modules/certificate/infra/http/certificate.routes';
 import { PgCertificateRepository } from '#/modules/certificate/infra/persistence/pg-certificate.repository';
+import { sampleCertificates } from '#/modules/certificate/infra/telemetry';
 import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
@@ -98,11 +100,18 @@ import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-q
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
 import { RecoveryScheduler } from '#/modules/invoice/infra/recovery-scheduler';
 import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
+import { recordDelivery } from '#/modules/invoice/infra/telemetry/delivery-metrics';
+import {
+  sampleInvoiceQueue,
+  samplePendingDeliveries,
+} from '#/modules/invoice/infra/telemetry/queue-metrics';
+import { measureSteps } from '#/modules/invoice/infra/telemetry/step-metrics';
 import { createPool } from '#/shared/infra/database';
 import {
   DeadLetterReprocessor,
   DeadLetterStore,
   PgDeadLetterStore,
+  sampleDeadLetters,
 } from '#/shared/infra/dead-letters';
 import { createAuthorize, createRequireScope } from '#/shared/infra/http/auth';
 import { JwksKeyStore } from '#/shared/infra/http/jwks';
@@ -110,6 +119,7 @@ import { publicApiEnabled } from '#/shared/infra/http/public-api';
 import { createRateLimit, PgRateLimiter, purgeRateLimits } from '#/shared/infra/http/rate-limit';
 import { createHttpServer } from '#/shared/infra/http-server';
 import { consumerOptions } from '#/shared/infra/kafka';
+import { PeriodicTask, runSamplers } from '#/shared/infra/periodic-task';
 import { QueueWorker } from '#/shared/infra/queue-worker';
 import { AesGcmSecretCipher } from '#/shared/infra/secret-cipher';
 import { allHealthy, HealthCheck, WorkerHealth } from '#/shared/infra/worker-health';
@@ -140,6 +150,8 @@ export interface Container {
 
 // The rate limit counters of the public API are purged this often (S6.3)
 const RATE_LIMIT_PURGE_INTERVAL_MS = 60 * 60 * 1000;
+// The certificates about to expire are logged daily (S7.2), and when the worker starts
+const CERTIFICATE_REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export function createContainer(config: AppConfig): Container {
   const pool = createPool(config.database.url);
@@ -205,13 +217,15 @@ export function createContainer(config: AppConfig): Container {
     captureTraceContext,
   );
 
-  // Command dispatch map
-  const commandMap = new Map<InvoiceStatus, InvoiceCommand>([
-    [InvoiceStatus.PENDING, prepareInvoiceCommand],
-    [InvoiceStatus.CREATED, signInvoiceCommand],
-    [InvoiceStatus.SIGNED, sendInvoiceCommand],
-    [InvoiceStatus.SENT, authorizeInvoiceCommand],
-  ]);
+  // Command dispatch map, each step measured: duration, transitions and time to the result (S7.2)
+  const commandMap = measureSteps(
+    new Map<InvoiceStatus, InvoiceCommand>([
+      [InvoiceStatus.PENDING, prepareInvoiceCommand],
+      [InvoiceStatus.CREATED, signInvoiceCommand],
+      [InvoiceStatus.SIGNED, sendInvoiceCommand],
+      [InvoiceStatus.SENT, authorizeInvoiceCommand],
+    ]),
+  );
 
   // Steps run from the API (manual retry): the worker publishes their result
   const apiProcessor = new InvoiceProcessor(
@@ -400,11 +414,13 @@ export function createContainer(config: AppConfig): Container {
         creditNoteTenant,
       ),
     );
+    const consumedTopics = [KAFKA_TOPICS.SALES_CONFIRMED, KAFKA_TOPICS.CREDIT_NOTES_REQUESTED];
     const kafkaConsumer = new InvoiceKafkaConsumer(
       consumer,
-      [KAFKA_TOPICS.SALES_CONFIRMED, KAFKA_TOPICS.CREDIT_NOTES_REQUESTED],
+      consumedTopics,
       messageProcessors(true),
       deadLetters,
+      { groupId: config.kafka.groupId },
     );
 
     const processor = new InvoiceProcessor(
@@ -446,7 +462,7 @@ export function createContainer(config: AppConfig): Container {
     const deliveryHealth = new WorkerHealth(lockTimeoutMs + 2 * pollIntervalMs);
     const deliveryWorker = new QueueWorker(
       deliveryRepository,
-      (job) => deliveryProcessor.run(job.id),
+      async (job) => recordDelivery(await deliveryProcessor.run(job.id)),
       {
         name: 'Delivery worker',
         spanName: 'deliver invoice',
@@ -468,6 +484,28 @@ export function createContainer(config: AppConfig): Container {
     );
     let rateLimitPurge: ReturnType<typeof setInterval> | undefined;
 
+    // The gauges of the metrics (S7.2), sampled across companies; a sample lasts three intervals
+    const { metricsIntervalMs } = config.telemetry;
+    const sampleAgeMs = 3 * metricsIntervalMs;
+    const certificateReport = new CertificateExpiryReport(certificateRepository);
+    const metricsSampling = new PeriodicTask({
+      name: 'Metrics sampling',
+      intervalMs: metricsIntervalMs,
+      run: () =>
+        runSamplers({
+          queue: () => sampleInvoiceQueue(invoiceQueue, new Date(), sampleAgeMs),
+          deliveries: () => samplePendingDeliveries(deliveryRepository, sampleAgeMs),
+          deadLetters: () => sampleDeadLetters(deadLetters, consumedTopics, sampleAgeMs),
+          certificates: () => sampleCertificates(certificateReport, sampleAgeMs),
+        }),
+    });
+    // One log per company whose signing certificate expired or expires within 30 days (G-23)
+    const certificateExpiry = new PeriodicTask({
+      name: 'Certificate expiry report',
+      intervalMs: CERTIFICATE_REPORT_INTERVAL_MS,
+      run: () => certificateReport.report(),
+    });
+
     return {
       health: allHealthy(invoiceHealth, deliveryHealth),
       async start() {
@@ -476,6 +514,8 @@ export function createContainer(config: AppConfig): Container {
         worker.start();
         deliveryWorker.start();
         recoveryScheduler.start();
+        metricsSampling.start();
+        certificateExpiry.start();
         // The public API's rate limit counters whose bucket is full again (S6.3), hourly
         rateLimitPurge = setInterval(() => {
           purgeRateLimits(pool)
@@ -490,6 +530,8 @@ export function createContainer(config: AppConfig): Container {
         await deliveryWorker.stop();
         mailer?.close();
         recoveryScheduler.stop();
+        await metricsSampling.stop();
+        await certificateExpiry.stop();
         if (rateLimitPurge) clearInterval(rateLimitPurge);
         await invoiceResults.disconnect();
       },

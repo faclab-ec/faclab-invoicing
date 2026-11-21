@@ -1,10 +1,17 @@
+import { SpanStatusCode, trace } from '@opentelemetry/api';
+
 import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
+import { VoucherType } from '#/modules/company-config/domain/sequence';
+import { errorType } from '#/shared/telemetry/attributes';
 
 import { InvoiceSignerPort } from '../../domain/ports';
 import { P12Reader, SigningCredentials } from '../signing/p12-reader';
 import { XadesSigner } from '../signing/xades-signer';
+import { documentTypeLabel } from '../telemetry/attributes';
+
+const tracer = trace.getTracer('faclab-invoicing.signing');
 
 export class SignerAdapter implements InvoiceSignerPort {
   // Loaded credentials by certificate id: each company signs with its own
@@ -16,9 +23,26 @@ export class SignerAdapter implements InvoiceSignerPort {
     private readonly xadesSigner: XadesSigner,
   ) {}
 
-  async signInvoice(xml: string, tenantId: string): Promise<string> {
-    const credentials = await this.getCredentials(tenantId);
-    return this.xadesSigner.sign(xml, credentials);
+  /** In an `invoice.sign` span (OBSERVABILITY.md §5.2): neither the XML nor the key go into it */
+  async signInvoice(xml: string, tenantId: string, docType: VoucherType): Promise<string> {
+    return tracer.startActiveSpan(
+      'invoice.sign',
+      { attributes: { 'faclab.document.type': documentTypeLabel(docType) } },
+      async (span) => {
+        try {
+          const credentials = await this.getCredentials(tenantId);
+          return this.xadesSigner.sign(xml, credentials);
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          span.setAttribute('error.type', errorType(error));
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+          span.recordException(err);
+          throw error;
+        } finally {
+          span.end();
+        }
+      },
+    );
   }
 
   private async getCredentials(tenantId: string): Promise<SigningCredentials> {

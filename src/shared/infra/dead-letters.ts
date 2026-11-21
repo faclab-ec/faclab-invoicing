@@ -3,7 +3,7 @@ import { validate as isUuid } from 'uuid';
 
 import { NotFoundError } from '../errors/app-error';
 import { logger } from '../logger';
-import { dlqMessageCount } from '../telemetry/metrics';
+import { deadLettersPending, Point } from '../telemetry/metrics';
 
 // Header with the company of a message, the same name faclab-core uses
 const TENANT_HEADER = 'faclab-tenant-id';
@@ -94,8 +94,33 @@ const toDeadLetter = (row: DeadLetterRow): DeadLetter => ({
   reprocessError: row.reprocess_error,
 });
 
+/** What the metrics read from the dead letters: every company */
+export interface DeadLetterStats {
+  /** The pending ones by topic (only the topics that have some) */
+  countPendingByTopic(): Promise<Map<string, number>>;
+}
+
+/**
+ * Samples the pending dead letters by topic into `faclab.dead_letters.pending`; each topic the
+ * consumer reads reports, at 0 if it has none
+ */
+export async function sampleDeadLetters(
+  source: DeadLetterStats,
+  topics: readonly string[],
+  maxAgeMs: number,
+): Promise<void> {
+  const counts = await source.countPendingByTopic();
+  const all = new Set([...topics, ...counts.keys()]);
+  deadLettersPending.replace(
+    [...all].map(
+      (topic): Point => [counts.get(topic) ?? 0, { 'messaging.destination.name': topic }],
+    ),
+    maxAgeMs,
+  );
+}
+
 /** `dead_letters` in PostgreSQL, shared by every company (a message may carry none) */
-export class PgDeadLetterStore implements DeadLetterStore {
+export class PgDeadLetterStore implements DeadLetterStore, DeadLetterStats {
   constructor(
     private readonly pool: Pool,
     private readonly consumerGroup: string,
@@ -130,7 +155,6 @@ export class PgDeadLetterStore implements DeadLetterStore {
     );
     if (result.rowCount === 0) return;
 
-    dlqMessageCount.add(1, { original_topic: message.topic, error_type: errorType });
     logger.warn(
       {
         topic: message.topic,
@@ -141,6 +165,15 @@ export class PgDeadLetterStore implements DeadLetterStore {
       },
       'Message kept as a dead letter',
     );
+  }
+
+  async countPendingByTopic(): Promise<Map<string, number>> {
+    // ix_dead_letters_pending
+    const result = await this.pool.query<{ topic: string; count: number }>(
+      `SELECT topic, count(*)::int AS count FROM dead_letters WHERE status = 'pending'
+       GROUP BY topic`,
+    );
+    return new Map(result.rows.map((row) => [row.topic, row.count]));
   }
 
   async get(id: number): Promise<DeadLetter | null> {

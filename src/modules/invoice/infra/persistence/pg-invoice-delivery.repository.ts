@@ -3,7 +3,7 @@ import { validate as isUuid } from 'uuid';
 
 import { DeliveryKind, DeliveryStatus, InvoiceDelivery } from '../../domain/delivery';
 import { TraceContext } from '../../domain/invoice';
-import { ClaimedDelivery, DeliveryQueue } from '../../domain/queue';
+import { ClaimedDelivery, DeliveryQueue, DeliveryStats } from '../../domain/queue';
 import { InvoiceDeliveryRepository } from '../../domain/repository';
 
 /** A row of `invoice_deliveries` */
@@ -88,11 +88,21 @@ export async function insertDelivery(
  * The deliveries and, over the same table, their queue: the pending ones are due at
  * `next_attempt_at`, and `locked_until` / `locked_by` say who holds one, like `invoices`.
  */
-export class PgInvoiceDeliveryRepository implements InvoiceDeliveryRepository, DeliveryQueue {
+export class PgInvoiceDeliveryRepository
+  implements InvoiceDeliveryRepository, DeliveryQueue, DeliveryStats
+{
   constructor(
     private readonly pool: Pool,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  async countPending(): Promise<number> {
+    // uq_invoice_deliveries_pending: one per invoice at most
+    const result = await this.pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM invoice_deliveries WHERE status = 'pending'",
+    );
+    return result.rows[0].count;
+  }
 
   async getById(id: string): Promise<InvoiceDelivery | null> {
     if (!isUuid(id)) return null;

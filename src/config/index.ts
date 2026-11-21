@@ -40,6 +40,11 @@ export interface AppConfig {
   };
   // Whether the API process also runs the consumer and the worker (false: only `worker.ts` does)
   runBackground: boolean;
+  // How often the worker samples the queue, the deliveries, the dead letters and the certificates
+  // for the metrics (S7.2)
+  telemetry: {
+    metricsIntervalMs: number;
+  };
   kafka: {
     brokers: string[];
     groupId: string;
@@ -137,6 +142,7 @@ const ENV_VARS = [
   'INVOICE_POLL_INTERVAL_MS',
   'INVOICE_LOCK_TIMEOUT_MS',
   'RUN_BACKGROUND',
+  'WORKER_METRICS_INTERVAL_MS',
   'SERVICE_VERSION',
   'SALES_V1_TENANT_ID',
   'OBJECT_STORAGE_ENDPOINT',
@@ -179,6 +185,7 @@ const DEFAULTS: EnvDefaults = {
   INVOICE_LOCK_TIMEOUT_MS: '120000',
   // As in faclab-core: the API runs everything unless the deployment has a worker of its own
   RUN_BACKGROUND: 'true',
+  WORKER_METRICS_INTERVAL_MS: '60000',
   // Set at build time (tag or commit SHA); instrumentation.ts reads it too
   SERVICE_VERSION: 'dev',
   OBJECT_STORAGE_FORCE_PATH_STYLE: 'true',
@@ -286,6 +293,8 @@ function schemaFor(environment: AppEnvironment) {
       INVOICE_POLL_INTERVAL_MS: positiveInt,
       INVOICE_LOCK_TIMEOUT_MS: positiveInt,
       RUN_BACKGROUND: booleanFlag,
+      // At least the metrics' export interval (30 s): sampling more often adds queries, not data
+      WORKER_METRICS_INTERVAL_MS: positiveInt.min(30_000),
       SERVICE_VERSION: z.string(),
       // sales.confirmed v1 names no company: only a development setup invoices it, with this one
       SALES_V1_TENANT_ID: z
@@ -432,6 +441,9 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       lockTimeoutMs: values.INVOICE_LOCK_TIMEOUT_MS,
     },
     runBackground: values.RUN_BACKGROUND,
+    telemetry: {
+      metricsIntervalMs: values.WORKER_METRICS_INTERVAL_MS,
+    },
     kafka: {
       brokers: values.KAFKA_BROKERS,
       groupId: 'faclab-invoicing',

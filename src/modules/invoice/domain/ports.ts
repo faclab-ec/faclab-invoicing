@@ -5,8 +5,8 @@ import { Ride } from './ride';
 import { AuthorizationVoucher, ValidationVoucher } from './voucher';
 
 export interface InvoiceSignerPort {
-  /** Signs with the certificate of the company's issuer */
-  signInvoice(xml: string, tenantId: string): Promise<string>;
+  /** Signs with the certificate of the company's issuer; `docType` says which document it is */
+  signInvoice(xml: string, tenantId: string, docType: VoucherType): Promise<string>;
 }
 
 export interface MessageProducer<T> {
