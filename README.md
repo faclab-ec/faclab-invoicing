@@ -473,7 +473,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `PUBLIC_API_TENANT_RATE_LIMIT_PER_MINUTE` / `PUBLIC_API_TENANT_RATE_LIMIT_BURST` | `1200` / `100` | Optional | Per company, every client of it |
 | `SALES_V1_TENANT_ID` | — | **Refused** | Development only: the company (faclab-core tenant id) that invoices `sales.confirmed` v1, which names none. Without it a v1 message is kept as a dead letter |
 | `SERVICE_VERSION` | `dev` | Set by the image build | Tag or commit SHA: `service.version` in logs and traces, and the API docs version |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, SigNoz's collector (see [Observability](#observability)) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Optional | OTLP gRPC endpoint for traces, metrics and logs, read by `src/instrumentation.ts`. Locally, faclab-infra's OTel Collector (see [Observability](#observability)); never SigNoz directly |
 | `OTEL_SDK_DISABLED` | — | Optional | `true` turns OpenTelemetry off |
 
 ### Authentication
@@ -535,7 +535,7 @@ Each issuer has its environment (`environment` in the fiscal profile): it goes i
 - **Certificates about to expire** (G-23): the worker logs, when it starts and then daily, one line per company whose selected certificate expired (`certificate.expired`, ERROR: its documents wait) or expires within 30 days (`certificate.expiring`, WARN), with `faclab.tenant.id`, `window`, `certificateId`, `validTo` and `daysLeft`; never the certificate's subject, which names a person.
 - **Shutdown**: on SIGTERM or SIGINT the API stops taking requests; then the consumer stops, the workers take no more invoices nor deliveries and wait for those in progress (each step is bounded by `SRI_TIMEOUT_MS` or `SMTP_TIMEOUT_MS`), Kafka and the database pool close, and the telemetry still buffered is flushed (up to 5 s) with `Telemetry flushed` before exiting. The worker process does the same without HTTP.
 
-To see it locally, start SigNoz with faclab-infra (`scripts/signoz.sh up`, UI at `http://localhost:8080`). From the host, the default endpoint (`http://localhost:4317`) already reaches its collector; a container on `faclab_network` uses `http://signoz-otel-collector:4317`.
+To see it locally, start faclab-infra's OTel Collector (`docker compose up -d collector`) and SigNoz (`scripts/signoz.sh up`, UI at `http://localhost:8080`). The collector forwards to SigNoz, adds host, container, PostgreSQL and Kafka metrics (the consumer lag of `faclab-invoicing` among them) and deletes sensitive attributes (core's S7.4). From the host, the default endpoint (`http://localhost:4317`) already reaches the collector; a container on `faclab_network` uses `http://collector:4317`.
 
 ---
 
