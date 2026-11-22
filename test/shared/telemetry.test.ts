@@ -1,8 +1,7 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
 import { SpanKind, trace } from '@opentelemetry/api';
-import { node, tracing } from '@opentelemetry/sdk-node';
 import { randomUUID } from 'crypto';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
@@ -22,23 +21,9 @@ import {
   makeReceivedSale,
   readinessStub,
 } from '../helpers';
+import { useSpans } from '../tracing';
 
-const exporter = new tracing.InMemorySpanExporter();
-
-beforeAll(() => {
-  // Global provider with W3C propagation and async context, as sdk-node sets up in the service
-  new node.NodeTracerProvider({
-    spanProcessors: [new tracing.SimpleSpanProcessor(exporter)],
-  }).register();
-});
-
-beforeEach(() => exporter.reset());
-
-const finished = (name: string) => {
-  const span = exporter.getFinishedSpans().find((s) => s.name === name);
-  if (!span) throw new Error(`No span named ${name}`);
-  return span;
-};
+const { finished } = useSpans();
 
 describe('KafkaProducer', () => {
   it('sends the context of its own span, so the consumer continues from it', async () => {

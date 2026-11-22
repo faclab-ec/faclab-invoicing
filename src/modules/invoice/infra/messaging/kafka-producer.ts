@@ -35,32 +35,44 @@ export class KafkaProducer<T> implements MessageProducer<T> {
       'messaging.operation.name': 'send',
       'messaging.destination.name': this.topic,
     };
+    // The company keys the message: its documents keep their order in one partition
+    const tenantId = this.tenantOf?.(message);
     const span = tracer.startSpan(`send ${this.topic}`, {
       kind: SpanKind.PRODUCER,
-      attributes: { ...metricAttributes, 'messaging.operation.type': 'send' },
+      attributes: {
+        ...metricAttributes,
+        'messaging.operation.type': 'send',
+        ...(tenantId && { 'messaging.kafka.message.key': tenantId }),
+      },
     });
 
-    // The consumer continues from this span, not from whatever was active before it
+    // The consumer continues from this span, not from whatever was active before it, and what is
+    // logged while sending carries it
+    const active = trace.setSpan(context.active(), span);
     const headers: Record<string, string> = {};
-    propagation.inject(trace.setSpan(context.active(), span), headers);
-    const tenantId = this.tenantOf?.(message);
+    propagation.inject(active, headers);
     if (tenantId) headers[TENANT_HEADER] = tenantId;
 
-    try {
-      await this.producer.send({
-        topic: this.topic,
-        messages: [{ key: tenantId, value: JSON.stringify(this.toMessage(message)), headers }],
-      });
-      messagingSentMessages.add(1, metricAttributes);
-      logger.debug({ topic: this.topic }, 'Message sent');
-    } catch (error) {
-      messagingSentMessages.add(1, { ...metricAttributes, 'error.type': errorType(error) });
-      const err = error instanceof Error ? error : new Error(String(error));
-      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-      span.recordException(err);
-      throw error;
-    } finally {
-      span.end();
-    }
+    await context.with(active, async () => {
+      try {
+        await this.producer.send({
+          topic: this.topic,
+          messages: [{ key: tenantId, value: JSON.stringify(this.toMessage(message)), headers }],
+        });
+        messagingSentMessages.add(1, metricAttributes);
+        logger.debug(
+          { 'event.name': 'messaging.publish.succeeded', topic: this.topic },
+          'Message sent',
+        );
+      } catch (error) {
+        messagingSentMessages.add(1, { ...metricAttributes, 'error.type': errorType(error) });
+        const err = error instanceof Error ? error : new Error(String(error));
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+        span.recordException(err);
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
   }
 }

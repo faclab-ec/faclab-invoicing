@@ -1,6 +1,8 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
+import * as forge from 'node-forge';
 import { vi } from 'vitest';
 
+import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { Certificate } from '#/modules/certificate/domain/certificate';
 import { CertificateRepository } from '#/modules/certificate/domain/repository';
 import { IssuerReadinessService, ReadyIssuer } from '#/modules/company-config/app/issuer-readiness';
@@ -40,6 +42,7 @@ import { InvoiceIssueError } from '#/modules/invoice/domain/issue';
 import {
   DocumentStorage,
   InvoiceSchemaValidator,
+  InvoiceSignerPort,
   SriAuthorizationPort,
   SriValidationPort,
 } from '#/modules/invoice/domain/ports';
@@ -66,6 +69,10 @@ import {
   ValidationVoucher,
   ValidationVoucherStatus,
 } from '#/modules/invoice/domain/voucher';
+import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
+import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
+import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
+import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import {
   CreditNoteRequestedV2Message,
@@ -77,7 +84,9 @@ import {
   toInvoiceEventRows,
   toInvoiceRow,
 } from '#/modules/invoice/infra/persistence/invoice.mapper';
+import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
 import { Authorize } from '#/shared/infra/http/auth';
+import { SoapClient } from '#/shared/infra/soap-client';
 
 // Two companies (faclab-core tenants), each with its own RUC
 export const TENANT_A = '2b3c4d5e-6f70-4a8b-9c0d-1e2f3a4b5c6d';
@@ -129,25 +138,27 @@ export const simulatedSri: SriValidationPort & SriAuthorizationPort = {
     ),
 };
 
-/** Every step of an invoice, against the simulated SRI unless `sri` replaces part of it */
+/**
+ * Every step of an invoice, against the simulated SRI unless `sri` replaces part of it, and a signer
+ * that only marks the XML unless `signer` is given (`realSigner` signs with a generated .p12)
+ */
 export function invoiceSteps(
   repo: InvoiceRepository,
   readiness: IssuerReadinessService,
   {
     sri = {},
     storage = new InMemoryDocumentStorage(),
+    signer = { signInvoice: async (xml) => `${xml}<!-- signed -->` },
   }: {
     sri?: Partial<SriValidationPort & SriAuthorizationPort>;
     storage?: DocumentStorage;
+    signer?: InvoiceSignerPort;
   } = {},
 ): Map<InvoiceStatus, InvoiceCommand> {
   const { validateXml, authorizeXml } = { ...simulatedSri, ...sri };
   return new Map<InvoiceStatus, InvoiceCommand>([
     [InvoiceStatus.PENDING, prepareCommand(readiness, repo)],
-    [
-      InvoiceStatus.CREATED,
-      new SignInvoiceCommand({ signInvoice: async (xml) => `${xml}<!-- signed -->` }, repo),
-    ],
+    [InvoiceStatus.CREATED, new SignInvoiceCommand(signer, repo)],
     [InvoiceStatus.SIGNED, new SendInvoiceCommand({ validateXml }, repo)],
     [InvoiceStatus.SENT, new AuthorizeInvoiceCommand({ authorizeXml }, repo, storage)],
   ]);
@@ -219,12 +230,17 @@ export function fakeKafkaConsumer() {
     },
     disconnect: async () => {},
   } as unknown as KafkaJS.Consumer;
-  const deliver = (topic: string, value: unknown, headers: Record<string, string> = {}) =>
+  const deliver = (
+    topic: string,
+    value: unknown,
+    headers: Record<string, string> = {},
+    key: string | null = null,
+  ) =>
     eachMessage!({
       topic,
       partition: 0,
       message: {
-        key: null,
+        key: key === null ? null : Buffer.from(key),
         value: Buffer.from(JSON.stringify(value)),
         headers: Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, Buffer.from(v)])),
         offset: String(offset++),
@@ -981,4 +997,105 @@ export function authorizeAs(tenantId: string = TENANT_A): Authorize {
   return () => async (request) => {
     request.auth = { userId: '1', username: 'admin', tenantId, permissions: [], integration: null };
   };
+}
+
+/**
+ * The SRI's web services answering `answer` to every SOAP call, for the real adapters (`callSri`, its
+ * `sri.*` spans and metrics)
+ */
+export function sriAnswering(
+  answer: (method: string, args: Record<string, unknown>) => Promise<unknown>,
+  serverAddress = 'celcer.sri.gob.ec',
+): SriClients {
+  const client = { serverAddress, callMethod: vi.fn(answer) } as unknown as SoapClient;
+  return { reception: () => client, authorization: () => client } as unknown as SriClients;
+}
+
+/**
+ * The SRI with canned SOAP responses, through the real adapters: it receives every document (error
+ * 35, DEVUELTA, for those `rejects` picks) and authorizes it
+ */
+export function simulatedSoap({
+  rejects = () => false,
+  serverAddress = 'cel.sri.gob.ec',
+}: { rejects?: (xml: string) => boolean; serverAddress?: string } = {}): SriClients {
+  return sriAnswering(async (method, args) => {
+    if (method === 'validarComprobante') {
+      const rejected = rejects(Buffer.from(String(args.xml), 'base64').toString());
+      return {
+        RespuestaRecepcionComprobante: {
+          estado: rejected ? 'DEVUELTA' : 'RECIBIDA',
+          comprobantes: {
+            comprobante: [
+              {
+                claveAcceso: 'x',
+                mensajes: {
+                  mensaje: rejected
+                    ? [{ identificador: '35', mensaje: 'NO CUMPLE', tipo: 'ERROR' }]
+                    : [],
+                },
+              },
+            ],
+          },
+        },
+      };
+    }
+    const code = String(args.claveAccesoComprobante);
+    return {
+      RespuestaAutorizacionComprobante: {
+        claveAccesoConsultada: code,
+        numeroComprobantes: '1',
+        autorizaciones: {
+          autorizacion: [
+            {
+              estado: 'AUTORIZADO',
+              numeroAutorizacion: code,
+              fechaAutorizacion: '2026-11-21T10:00:00-05:00',
+              ambiente: 'PRODUCCIÓN',
+              comprobante: '<factura/>',
+            },
+          ],
+        },
+      },
+    };
+  }, serverAddress);
+}
+
+/** The SRI's simulated SOAP services as the ports the invoice steps take */
+export function simulatedSriAdapters(clients: SriClients = simulatedSoap()) {
+  const reception = new SriValidationAdapter(clients);
+  const authorization = new SriAuthorizationAdapter(clients);
+  return {
+    validateXml: (xml: string, environment: Environment) => reception.validateXml(xml, environment),
+    authorizeXml: (code: string, environment: Environment) =>
+      authorization.authorizeXml(code, environment),
+  };
+}
+
+export const P12_PASSWORD = 'clave-del-p12';
+
+/** A .p12 good enough to sign with (1024-bit RSA: only for tests) */
+export function makeP12(): Buffer {
+  const keys = forge.pki.rsa.generateKeyPair(1024);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = '0a1b';
+  cert.validity.notBefore = new Date('2026-01-01T00:00:00Z');
+  cert.validity.notAfter = new Date('2028-01-01T00:00:00Z');
+  cert.setSubject([{ shortName: 'CN', value: 'ACME' }]);
+  cert.setIssuer([{ shortName: 'CN', value: 'AUTORIDAD DE CERTIFICACION' }]);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  const asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], P12_PASSWORD, {
+    algorithm: '3des',
+  });
+  return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
+}
+
+/** The real XAdES-BES signer (`invoice.sign`) with a .p12 generated when it first signs */
+export function realSigner(readiness: IssuerReadinessService): SignerAdapter {
+  let p12: Buffer | undefined;
+  const keyLoader = {
+    load: async () => ({ p12: (p12 ??= makeP12()), password: P12_PASSWORD }),
+  } as unknown as CertificateKeyLoader;
+  return new SignerAdapter(readiness, keyLoader, new XadesSigner('America/Guayaquil'));
 }

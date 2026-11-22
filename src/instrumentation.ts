@@ -39,7 +39,8 @@ const sdk = new NodeSDK({
     // Only queries inside a request, a Kafka message or an invoice job: the worker's polling would
     // otherwise start a trace every second
     new PgInstrumentation({ requireParentSpan: true }),
-    new PinoInstrumentation(),
+    // It sends the logs over OTLP; trace_id and span_id come from the logger's own mixin
+    new PinoInstrumentation({ disableLogCorrelation: true }),
   ],
 });
 

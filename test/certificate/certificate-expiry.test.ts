@@ -4,9 +4,9 @@ import { CertificateExpiryReport } from '#/modules/certificate/app/certificate-e
 import { daysLeft, expiryWindow } from '#/modules/certificate/domain/certificate';
 import { SelectedCertificate } from '#/modules/certificate/domain/repository';
 import { sampleCertificates } from '#/modules/certificate/infra/telemetry';
-import { initLogger } from '#/shared/logger';
 
 import { TENANT_A, TENANT_B } from '../helpers';
+import { captureLogs, silenceLogs } from '../logs';
 import { useRecordedMetrics } from '../metrics';
 
 const recorded = useRecordedMetrics();
@@ -37,31 +37,7 @@ const report = () =>
     () => NOW,
   );
 
-function captureLogs() {
-  const lines: string[] = [];
-  initLogger(
-    {
-      level: 'info',
-      serviceName: 'faclab-invoicing',
-      serviceVersion: 'test',
-      environment: 'production',
-    },
-    { write: (line: string) => lines.push(line) },
-  );
-  return () => lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-afterEach(() => {
-  initLogger(
-    {
-      level: 'silent',
-      serviceName: 'faclab-invoicing',
-      serviceVersion: 'test',
-      environment: 'production',
-    },
-    { write: () => undefined },
-  );
-});
+afterEach(silenceLogs);
 
 describe('Expiry windows of a certificate', () => {
   it('puts each certificate in one window at most', () => {

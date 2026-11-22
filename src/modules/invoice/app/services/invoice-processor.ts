@@ -47,7 +47,7 @@ export class InvoiceProcessor {
   async run(invoiceId: string, { lease, maxSteps = Infinity }: ProcessOptions = {}) {
     let invoice = await this.invoiceRepository.getInvoiceById(invoiceId);
     if (!invoice) {
-      logger.warn({ invoiceId }, 'Invoice not found');
+      logger.warn({ 'event.name': 'invoice.not_found', invoiceId }, 'Invoice not found');
       return null;
     }
 
@@ -58,7 +58,10 @@ export class InvoiceProcessor {
         return this.invoiceRepository.getInvoiceById(invoiceId);
       }
       if (lease && !(await this.queue.renew(invoiceId, lease.holder, lease.leaseMs))) {
-        logger.warn({ invoiceId }, 'Invoice lease lost, leaving it to its new holder');
+        logger.warn(
+          { 'event.name': 'invoice.lease.lost', invoiceId },
+          'Invoice lease lost, leaving it to its new holder',
+        );
         return invoice;
       }
     }
@@ -73,7 +76,10 @@ export class InvoiceProcessor {
   private async step(invoice: Invoice): Promise<boolean> {
     const command = this.commandMap.get(invoice.status);
     if (!command) {
-      logger.warn({ invoiceId: invoice.id, status: invoice.status }, 'No command for status');
+      logger.warn(
+        { 'event.name': 'invoice.step.missing', invoiceId: invoice.id, status: invoice.status },
+        'No command for status',
+      );
       return false;
     }
 
@@ -88,7 +94,10 @@ export class InvoiceProcessor {
     } catch (error) {
       if (error instanceof ConcurrentUpdateError) {
         // Someone else moved it in the meantime
-        logger.info({ invoiceId: invoice.id }, 'Invoice changed while processing, skipping');
+        logger.info(
+          { 'event.name': 'invoice.step.skipped', invoiceId: invoice.id },
+          'Invoice changed while processing, skipping',
+        );
         return false;
       }
       await this.recordIssue(invoice.id, error);
@@ -111,6 +120,7 @@ export class InvoiceProcessor {
 
     logger.warn(
       {
+        'event.name': 'invoice.step.failed',
         invoiceId,
         status: invoice.status,
         code: issue.code,
@@ -128,7 +138,7 @@ export class InvoiceProcessor {
     } catch (error) {
       const retryAt = new Date(this.now().getTime() + this.publishRetryMs);
       logger.warn(
-        { invoiceId: invoice.id, err: error, retryAt },
+        { 'event.name': 'invoice.result.failed', invoiceId: invoice.id, err: error, retryAt },
         'Invoice result not published, retrying later',
       );
       await this.queue.postpone(invoice.id, retryAt);
@@ -142,7 +152,10 @@ export class InvoiceProcessor {
       // Published already: at worst it goes out once more (core ignores the repeat)
       if (!(error instanceof ConcurrentUpdateError)) throw error;
     }
-    logger.info({ invoiceId: invoice.id, status: invoice.status }, 'Invoice result published');
+    logger.info(
+      { 'event.name': 'invoice.result.published', invoiceId: invoice.id, status: invoice.status },
+      'Invoice result published',
+    );
     return invoice;
   }
 }

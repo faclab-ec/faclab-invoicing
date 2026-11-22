@@ -1,5 +1,5 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { CertificateExpiryReport } from '#/modules/certificate/app/certificate-expiry';
 import { sampleCertificates } from '#/modules/certificate/infra/telemetry';
@@ -9,7 +9,6 @@ import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { InvoiceProcessor } from '#/modules/invoice/app/services/invoice-processor';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
-import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { KafkaProducer } from '#/modules/invoice/infra/messaging/kafka-producer';
 import { recordDelivery } from '#/modules/invoice/infra/telemetry/delivery-metrics';
@@ -21,7 +20,7 @@ import { measureSteps } from '#/modules/invoice/infra/telemetry/step-metrics';
 import { ValidationError } from '#/shared/errors/app-error';
 import { DeadLetterStore, sampleDeadLetters } from '#/shared/infra/dead-letters';
 import { BaseKafkaConsumer } from '#/shared/infra/kafka';
-import { SoapClient, SoapTimeoutError } from '#/shared/infra/soap-client';
+import { SoapTimeoutError } from '#/shared/infra/soap-client';
 
 import {
   InMemoryInvoiceRepository,
@@ -31,6 +30,8 @@ import {
   makePoint,
   makeSale,
   readinessStub,
+  simulatedSoap,
+  sriAnswering,
   TENANT_A,
 } from '../helpers';
 import { RecordedPoint, useRecordedMetrics } from '../metrics';
@@ -108,60 +109,11 @@ function expectBounded(point: RecordedPoint) {
   }
 }
 
-/** The SRI answering with canned SOAP responses through the real adapters */
-function simulatedSoap(): SriClients {
-  const respond = async (method: string, args: Record<string, unknown>) => {
-    if (method === 'validarComprobante') {
-      // The second invoice is returned with error 35
-      const rejected = Buffer.from(String(args.xml), 'base64').toString().includes('000000002');
-      return {
-        RespuestaRecepcionComprobante: {
-          estado: rejected ? 'DEVUELTA' : 'RECIBIDA',
-          comprobantes: {
-            comprobante: [
-              {
-                claveAcceso: 'x',
-                mensajes: {
-                  mensaje: rejected
-                    ? [{ identificador: '35', mensaje: 'NO CUMPLE', tipo: 'ERROR' }]
-                    : [],
-                },
-              },
-            ],
-          },
-        },
-      };
-    }
-    const code = String(args.claveAccesoComprobante);
-    return {
-      RespuestaAutorizacionComprobante: {
-        claveAccesoConsultada: code,
-        numeroComprobantes: '1',
-        autorizaciones: {
-          autorizacion: [
-            {
-              estado: 'AUTORIZADO',
-              numeroAutorizacion: code,
-              fechaAutorizacion: '2026-11-21T10:00:00-05:00',
-              ambiente: 'PRODUCCIÓN',
-              comprobante: '<factura/>',
-            },
-          ],
-        },
-      },
-    };
-  };
-  const client = {
-    serverAddress: 'cel.sri.gob.ec',
-    callMethod: vi.fn(respond),
-  } as unknown as SoapClient;
-  return { reception: () => client, authorization: () => client } as unknown as SriClients;
-}
-
 async function runPipeline() {
   const repo = new InMemoryInvoiceRepository();
   const ready = readinessStub({ config: makeConfig(), certificate: makeCertificate() });
-  const clients = simulatedSoap();
+  // The second invoice is returned with error 35
+  const clients = simulatedSoap({ rejects: (xml) => xml.includes('000000002') });
   const reception = new SriValidationAdapter(clients);
   const authorization = new SriAuthorizationAdapter(clients);
   const processorWith = (readiness: IssuerReadinessService) =>
@@ -192,13 +144,10 @@ async function runPipeline() {
   );
 
   // And an SRI that doesn't answer
-  const slow = {
-    serverAddress: 'cel.sri.gob.ec',
-    callMethod: async () => {
-      throw new SoapTimeoutError('SOAP validarComprobante', 30_000);
-    },
-  } as unknown as SoapClient;
-  await new SriValidationAdapter({ reception: () => slow } as unknown as SriClients)
+  const slow = sriAnswering(async () => {
+    throw new SoapTimeoutError('SOAP validarComprobante', 30_000);
+  }, 'cel.sri.gob.ec');
+  await new SriValidationAdapter(slow)
     .validateXml('<factura/>', makeConfig().environment)
     .catch(() => undefined);
 }

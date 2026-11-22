@@ -47,7 +47,10 @@ export class ReceiveSaleCommand {
     const { tenantId } = point;
 
     if (await this.invoiceRepository.getInvoiceById(id)) {
-      logger.info({ invoiceId: id, saleId }, 'Sale already received, ignoring');
+      logger.info(
+        { 'event.name': 'invoice.sale.duplicate', invoiceId: id, saleId },
+        'Sale already received, ignoring',
+      );
       return null;
     }
 
@@ -61,13 +64,18 @@ export class ReceiveSaleCommand {
       if (active.publishResultAgain()) {
         await this.saveIgnoringConcurrent(active);
         logger.info(
-          { saleId, invoiceId: active.id },
+          { 'event.name': 'invoice.sale.already_invoiced', saleId, invoiceId: active.id },
           'Sale already invoiced, publishing its result again',
         );
         return null;
       }
       logger.warn(
-        { saleId, invoiceId: active.id, status: active.status },
+        {
+          'event.name': 'invoice.sale.in_progress',
+          saleId,
+          invoiceId: active.id,
+          status: active.status,
+        },
         'Sale already has an active invoice, ignoring',
       );
       return null;
@@ -77,7 +85,7 @@ export class ReceiveSaleCommand {
     // A concurrent delivery or resend may have stored its invoice since the checks above
     if (!(await this.invoiceRepository.createInvoice(invoice))) {
       logger.info(
-        { invoiceId: id, saleId },
+        { 'event.name': 'invoice.sale.duplicate', invoiceId: id, saleId },
         'Sale already received or with an active invoice, ignoring',
       );
       return null;
@@ -85,6 +93,7 @@ export class ReceiveSaleCommand {
 
     logger.info(
       {
+        'event.name': 'invoice.sale.received',
         invoiceId: id,
         saleId,
         tenantId,

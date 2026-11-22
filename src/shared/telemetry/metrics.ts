@@ -172,6 +172,8 @@ export const invoicesExpiredLeases = new ObservedGauge('faclab.invoices.expired_
 
 // --- Delivery to the buyer ----------------------------------------------------------------------
 
+export const DELIVERY_RESULTS = ['sent', 'bounced', 'retry', 'failed', 'no_recipient', 'disabled'];
+
 export const invoiceDeliveries = counter('faclab.invoices.deliveries', {
   description:
     'Delivery attempts of authorized documents, by result: sent, bounced, retry (it failed and ' +
@@ -211,3 +213,15 @@ export const deadLettersPending = new ObservedGauge('faclab.dead_letters.pending
   description: 'Kafka messages the consumer kept in dead_letters, by topic',
   unit: '{message}',
 });
+
+// --- Counters that start at 0 (S7.6) ------------------------------------------------------------
+
+/**
+ * Exports 0 for every series an alert reads with `increase`, as soon as the worker starts: a series'
+ * first point has nothing before it to increase from, so the first failed delivery after a restart
+ * would not fire the alert. `faclab.invoices.rejections` can't be started like this: each SRI message
+ * code opens a series of its own. Call it once the SDK registered its meter provider.
+ */
+export function initializeCounters(): void {
+  for (const result of DELIVERY_RESULTS) invoiceDeliveries.add(0, { result });
+}

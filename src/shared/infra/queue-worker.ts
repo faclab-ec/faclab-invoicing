@@ -80,7 +80,10 @@ export class QueueWorker<J extends QueuedJob> {
     for (let slot = 1; slot <= concurrency; slot++) {
       this.slots.push(this.runSlot(`${holder}:${slot}`));
     }
-    logger.info({ concurrency, pollIntervalMs, leaseMs }, `${this.description.name} started`);
+    logger.info(
+      { 'event.name': 'queue.worker.started', concurrency, pollIntervalMs, leaseMs },
+      `${this.description.name} started`,
+    );
   }
 
   /** Takes no more jobs and waits for those in progress */
@@ -89,7 +92,7 @@ export class QueueWorker<J extends QueuedJob> {
     for (const wake of this.sleepers) wake();
     await Promise.all(this.slots);
     this.slots = [];
-    logger.info(`${this.description.name} stopped`);
+    logger.info({ 'event.name': 'queue.worker.stopped' }, `${this.description.name} stopped`);
   }
 
   private async runSlot(holder: string): Promise<void> {
@@ -104,7 +107,10 @@ export class QueueWorker<J extends QueuedJob> {
         this.heartbeat.beat();
       } catch (error) {
         // The database, most likely: wait before trying again
-        logger.error({ err: error }, `${this.description.name}: taking from the queue failed`);
+        logger.error(
+          { 'event.name': 'queue.claim.failed', err: error },
+          `${this.description.name}: taking from the queue failed`,
+        );
         busy = false;
       }
       if (!busy) await this.sleep(this.options.pollIntervalMs);
@@ -128,17 +134,27 @@ export class QueueWorker<J extends QueuedJob> {
       span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       span.recordException(err);
       logger.error(
-        { ...this.description.logFields(job), err },
+        { 'event.name': 'queue.job.failed', ...this.description.logFields(job), err },
         `${this.description.name}: job failed`,
       );
       await this.queue
         .postpone(job.id, new Date(Date.now() + errorBackoffMs))
-        .catch((postponeError) => logger.error({ err: postponeError }, 'Postponing failed'));
+        .catch((postponeError) =>
+          logger.error(
+            { 'event.name': 'queue.postpone.failed', err: postponeError },
+            'Postponing failed',
+          ),
+        );
     } finally {
       span.end();
       await this.queue
         .release(job.id, holder)
-        .catch((releaseError) => logger.error({ err: releaseError }, 'Releasing failed'));
+        .catch((releaseError) =>
+          logger.error(
+            { 'event.name': 'queue.release.failed', err: releaseError },
+            'Releasing failed',
+          ),
+        );
     }
   }
 

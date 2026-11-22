@@ -1,19 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { trace } from '@opentelemetry/api';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { initLogger } from '#/shared/logger';
+import { captureLogs, silenceLogs } from '../logs';
+import { useSpans } from '../tracing';
+
+const spans = useSpans();
+
+afterEach(silenceLogs);
 
 const capture = () => {
-  const lines: string[] = [];
-  const log = initLogger(
-    {
-      level: 'info',
-      serviceName: 'faclab-invoicing',
-      serviceVersion: '1.2.3',
-      environment: 'production',
-    },
-    { write: (line: string) => lines.push(line) },
-  );
-  return { log, lines };
+  const logs = captureLogs({ serviceVersion: '1.2.3' });
+  return { log: logs.log, lines: logs.raw };
 };
 
 describe('logger', () => {
@@ -78,5 +75,26 @@ describe('logger', () => {
     expect(entry['deployment.environment.name']).toBe('production');
     expect(entry.err.message).toBe('SRI unavailable');
     expect(entry.err.stack).toContain('Error: SRI unavailable');
+  });
+
+  it('carries the ids of the active span, so the log and its trace find each other', () => {
+    const { log, lines } = capture();
+
+    trace.getTracer('test').startActiveSpan('process invoice', (span) => {
+      log.info({ 'event.name': 'invoice.sale.received' }, 'Sale received for invoicing');
+      span.end();
+    });
+    log.info('Outside any span');
+
+    const job = spans.finished('process invoice');
+    const [inside, outside] = lines.map((line) => JSON.parse(line));
+    expect(inside).toMatchObject({
+      trace_id: job.spanContext().traceId,
+      span_id: job.spanContext().spanId,
+      trace_flags: '01',
+      'event.name': 'invoice.sale.received',
+    });
+    expect(outside).not.toHaveProperty('trace_id');
+    expect(outside).not.toHaveProperty('span_id');
   });
 });
