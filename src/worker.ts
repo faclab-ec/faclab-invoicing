@@ -1,5 +1,6 @@
 import { startHealthServer } from '#/shared/infra/worker-health';
 import { initLogger, logger } from '#/shared/logger';
+import { initializeCounters } from '#/shared/telemetry/metrics';
 import { serviceNameFor } from '#/shared/telemetry/service-name';
 
 import loadConfig, { ConfigError } from './config';
@@ -30,6 +31,9 @@ const main = async () => {
     serviceVersion: config.serviceVersion,
     environment: config.environment,
   });
+
+  // The SDK registered its providers when instrumentation was loaded, before this module
+  initializeCounters();
 
   const container = createContainer(config);
   const background = container.createBackground();

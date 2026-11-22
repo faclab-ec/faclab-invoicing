@@ -1,4 +1,5 @@
 import { initLogger, logger } from '#/shared/logger';
+import { initializeCounters } from '#/shared/telemetry/metrics';
 
 import loadConfig, { ConfigError } from './config';
 import { createContainer } from './container';
@@ -41,6 +42,8 @@ const main = async () => {
   const httpServer = await container.createHttpServer();
   // RUN_BACKGROUND=false leaves the consumer and the worker to `worker.ts`
   const background = config.runBackground ? container.createBackground() : null;
+  // Its deliveries are counted here, then (worker.ts does the same)
+  if (background) initializeCounters();
   await background?.start();
   await httpServer.listen({ port: config.http.port, host: config.http.host });
   logger.info(

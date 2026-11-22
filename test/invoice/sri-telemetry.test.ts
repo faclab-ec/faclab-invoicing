@@ -1,9 +1,6 @@
 import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
-import { node, tracing } from '@opentelemetry/sdk-node';
-import * as forge from 'node-forge';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { Environment } from '#/modules/company-config/domain/company-config';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 import { VoucherType } from '#/modules/company-config/domain/sequence';
@@ -13,49 +10,26 @@ import {
   AuthorizationVoucherStatus,
   ValidationVoucherStatus,
 } from '#/modules/invoice/domain/voucher';
-import { SignerAdapter } from '#/modules/invoice/infra/adapters/signer.adapter';
 import { SriAuthorizationAdapter } from '#/modules/invoice/infra/adapters/sri-authorization.adapter';
 import { rejectionCodeLabel } from '#/modules/invoice/infra/adapters/sri-call';
-import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
-import { XadesSigner } from '#/modules/invoice/infra/signing/xades-signer';
-import { SoapClient, SoapTimeoutError } from '#/shared/infra/soap-client';
+import { SoapTimeoutError } from '#/shared/infra/soap-client';
 
 import {
   fullInvoiceXmlInput,
   makeCertificate,
   makeConfig,
   readinessStub,
+  realSigner,
+  sriAnswering,
   TEST_ACCESS_CODE,
 } from '../helpers';
 import { useRecordedMetrics } from '../metrics';
+import { useSpans } from '../tracing';
 
-const exporter = new tracing.InMemorySpanExporter();
-
-beforeAll(() => {
-  new node.NodeTracerProvider({
-    spanProcessors: [new tracing.SimpleSpanProcessor(exporter)],
-  }).register();
-});
-
-beforeEach(() => exporter.reset());
+const { finished, reset } = useSpans();
 
 const recorded = useRecordedMetrics();
-
-const finished = (name: string) => {
-  const span = exporter.getFinishedSpans().find((s) => s.name === name);
-  if (!span) throw new Error(`No span named ${name}`);
-  return span;
-};
-
-/** The SRI's web services answering `answer` to every call */
-function sriAnswering(answer: () => Promise<unknown>) {
-  const client = {
-    serverAddress: 'celcer.sri.gob.ec',
-    callMethod: vi.fn(answer),
-  } as unknown as SoapClient;
-  return { reception: () => client, authorization: () => client } as unknown as SriClients;
-}
 
 const message = (identificador: string, tipo = 'ERROR') => ({
   identificador,
@@ -188,7 +162,7 @@ describe('SRI reception telemetry', () => {
       code: 'SRI_UNAVAILABLE',
     });
     const timedOut = finished('sri.recepcion');
-    exporter.reset();
+    reset();
     await expect(broken.validateXml(XML, Environment.TESTING)).rejects.toBeInstanceOf(
       InvoiceIssueError,
     );
@@ -220,7 +194,7 @@ describe('SRI authorization telemetry', () => {
       'faclab.sri.status': 'AUTORIZADO',
     });
     expectNoDocumentData(span.attributes);
-    exporter.reset();
+    reset();
     await rejected.authorizeXml(TEST_ACCESS_CODE, Environment.TESTING);
     expect(finished('sri.autorizacion').attributes['faclab.sri.status']).toBe('NO AUTORIZADO');
 
@@ -253,31 +227,9 @@ describe('SRI authorization telemetry', () => {
 });
 
 describe('Signing telemetry', () => {
-  const PASSWORD = 'clave-del-p12';
-
-  /** A .p12 good enough to sign with */
-  function p12(): Buffer {
-    const keys = forge.pki.rsa.generateKeyPair(1024);
-    const cert = forge.pki.createCertificate();
-    cert.publicKey = keys.publicKey;
-    cert.serialNumber = '0a1b';
-    cert.validity.notBefore = new Date('2026-01-01T00:00:00Z');
-    cert.validity.notAfter = new Date('2028-01-01T00:00:00Z');
-    cert.setSubject([{ shortName: 'CN', value: 'ACME' }]);
-    cert.setIssuer([{ shortName: 'CN', value: 'AUTORIDAD DE CERTIFICACION' }]);
-    cert.sign(keys.privateKey, forge.md.sha256.create());
-    const asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], PASSWORD, {
-      algorithm: '3des',
-    });
-    return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
-  }
-
   it('signs in an invoice.sign span with the type of the document', async () => {
-    const file = p12();
-    const signer = new SignerAdapter(
+    const signer = realSigner(
       readinessStub({ config: makeConfig(), certificate: makeCertificate() }),
-      { load: async () => ({ p12: file, password: PASSWORD }) } as unknown as CertificateKeyLoader,
-      new XadesSigner('America/Guayaquil'),
     );
     const xml = buildInvoiceXml(fullInvoiceXmlInput());
 
@@ -290,10 +242,8 @@ describe('Signing telemetry', () => {
   });
 
   it('marks the span with the code of what kept it from signing', async () => {
-    const signer = new SignerAdapter(
+    const signer = realSigner(
       readinessStub(new IssuerNotReadyError('CERTIFICATE_EXPIRED', 'expired')),
-      {} as CertificateKeyLoader,
-      new XadesSigner('America/Guayaquil'),
     );
 
     await expect(signer.signInvoice(XML, 'tenant', VoucherType.INVOICE)).rejects.toBeInstanceOf(

@@ -15,6 +15,7 @@ import { ConcurrentUpdateError } from '#/modules/invoice/domain/repository';
 import { ValidationVoucher, ValidationVoucherStatus } from '#/modules/invoice/domain/voucher';
 import { recordDelivery } from '#/modules/invoice/infra/telemetry/delivery-metrics';
 import { measureSteps, stepOutcome } from '#/modules/invoice/infra/telemetry/step-metrics';
+import { DELIVERY_RESULTS, initializeCounters } from '#/shared/telemetry/metrics';
 
 import {
   InMemoryInvoiceRepository,
@@ -209,5 +210,17 @@ describe('Metrics of the deliveries', () => {
     expect(points.total(deliveries, { result: 'bounced' })).toBe(1);
     expect(points.total(deliveries, { result: 'no_recipient' })).toBe(1);
     expect(points.total(deliveries)).toBe(4);
+  });
+
+  it('starts every result at 0, so the first failure after a restart is an increase', async () => {
+    initializeCounters();
+
+    const points = await recorded.collect();
+    expect(
+      points
+        .of('faclab.invoices.deliveries')
+        .map((point) => [point.attributes.result, point.value])
+        .sort(),
+    ).toEqual(DELIVERY_RESULTS.map((result) => [result, 0]).sort());
   });
 });

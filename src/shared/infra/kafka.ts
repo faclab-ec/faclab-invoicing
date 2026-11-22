@@ -100,6 +100,8 @@ export abstract class BaseKafkaConsumer {
               'messaging.destination.name': topic,
               'messaging.kafka.destination.partition': partition,
               'messaging.kafka.message.offset': message.offset,
+              // The company: the producers key by it (not personal data)
+              ...(message.key && { 'messaging.kafka.message.key': message.key.toString() }),
             },
           },
           parentContext,
@@ -109,6 +111,7 @@ export abstract class BaseKafkaConsumer {
           try {
             logger.debug(
               {
+                'event.name': 'messaging.process.received',
                 topic,
                 partition,
                 offset: message.offset,
@@ -162,7 +165,13 @@ export abstract class BaseKafkaConsumer {
 
         if (!isRetryable(error)) {
           logger.error(
-            { topic, offset: failed.offset, err, attempt },
+            {
+              'event.name': 'messaging.process.dead_lettered',
+              topic,
+              offset: failed.offset,
+              err,
+              attempt,
+            },
             'Non-retryable error, keeping the message as a dead letter',
           );
           await this.deadLetters.keep(failed, err, 'NON_RETRYABLE', attempt + 1);
@@ -172,13 +181,27 @@ export abstract class BaseKafkaConsumer {
         if (attempt < maxRetries) {
           const backoff = calculateBackoff(attempt, baseDelayMs);
           logger.warn(
-            { topic, offset: failed.offset, err, attempt: attempt + 1, maxRetries, backoff },
+            {
+              'event.name': 'messaging.process.retried',
+              topic,
+              offset: failed.offset,
+              err,
+              attempt: attempt + 1,
+              maxRetries,
+              backoff,
+            },
             'Retryable error, retrying after backoff',
           );
           await sleep(backoff);
         } else {
           logger.error(
-            { topic, offset: failed.offset, err, retriesAttempted: maxRetries },
+            {
+              'event.name': 'messaging.process.dead_lettered',
+              topic,
+              offset: failed.offset,
+              err,
+              retriesAttempted: maxRetries,
+            },
             'Max retries exhausted, keeping the message as a dead letter',
           );
           // If it can't be kept (the database is down too), this throws: no commit, it comes back

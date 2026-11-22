@@ -1,3 +1,4 @@
+import { isSpanContextValid, trace } from '@opentelemetry/api';
 import pino from 'pino';
 
 let logger: pino.Logger = pino({ level: 'silent' });
@@ -67,6 +68,22 @@ export interface LoggerConfig {
   environment: string;
 }
 
+/**
+ * The active span's ids, so each log can be found from its trace and the other way round
+ * (docs/architecture/OBSERVABILITY.md §4.1). Same keys and format as instrumentation-pino, whose own
+ * correlation is off (`disableLogCorrelation`): this one also works where the instrumentation isn't
+ * loaded, such as the tests.
+ */
+export function traceFields(): Record<string, string> {
+  const spanContext = trace.getActiveSpan()?.spanContext();
+  if (!spanContext || !isSpanContextValid(spanContext)) return {};
+  return {
+    trace_id: spanContext.traceId,
+    span_id: spanContext.spanId,
+    trace_flags: `0${spanContext.traceFlags.toString(16)}`,
+  };
+}
+
 /** `destination` replaces stdout (tests); without it local logs go through pino-pretty. */
 export function initLogger(config: LoggerConfig, destination?: pino.DestinationStream) {
   const pretty = config.environment === 'local' && !destination;
@@ -82,6 +99,7 @@ export function initLogger(config: LoggerConfig, destination?: pino.DestinationS
             'deployment.environment.name': config.environment,
           },
     timestamp: pino.stdTimeFunctions.isoTime,
+    mixin: traceFields,
     // Runs before serializing, so it also covers what instrumentation-pino sends over OTLP
     formatters: {
       log: (object) => redactSensitive(object) as Record<string, unknown>,

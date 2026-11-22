@@ -41,7 +41,10 @@ export async function dispatchMessage(
     throw new NonRetryableError(`Invalid message schema on topic ${topic}: ${issues}`);
   }
 
-  logger.debug({ topic }, 'Message validated, dispatching to handler');
+  logger.debug(
+    { 'event.name': 'messaging.process.dispatched', topic },
+    'Message validated, dispatching to handler',
+  );
   await processor.handler.handle(result.data);
 }
 
