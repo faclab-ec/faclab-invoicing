@@ -111,7 +111,7 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Builds the production image without publishing it (that comes with S8.2)
+  # Builds the production image without publishing it: a tag publishes it (release.yml, S8.2)
   image:
     name: image
     runs-on: ubuntu-24.04

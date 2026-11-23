@@ -626,7 +626,7 @@ TEST_DATABASE_URL=postgres://faclab_invoicing:faclab_invoicing@localhost:5434/fa
 Every pull request and push to `master` runs `.github/workflows/ci.yml` on GitHub Actions:
 
 - `checks` (Node 22, with a `postgres:17` service and `TEST_DATABASE_URL`, so `test/postgres` runs): `npm ci`, then `lint`, `format:check`, `typecheck`, `test` and `build`.
-- `image`: builds the production image without publishing it, and checks that it refuses to start without `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_JWKS_URL`.
+- `image`: builds the production image without publishing it (a tag publishes it: see Versions and releases), and checks that it refuses to start without `KAFKA_BROKERS`, `DATABASE_URL` and `JWT_JWKS_URL`.
 
 `package-lock.json` is versioned so `npm ci` installs exactly what was tested; commit it whenever dependencies change.
 
@@ -635,6 +635,18 @@ To run the same locally:
 ```bash
 npm ci && npm run lint && npm run format:check && npm run typecheck && npm test && npm run build
 ```
+
+### Versions and releases
+
+Since S8.2 every version is a `vX.Y.Z` tag ([semantic versioning](https://semver.org/)); until the pilot it starts with 0, so a minor version may break compatibility. `package.json` carries the same version, and [CHANGELOG.md](CHANGELOG.md) says what each one brings (in Spanish, like the rest of the platform's release notes).
+
+1. **Prepare.** On an up-to-date `master`, `scripts/release.sh minor` (or `major`, `patch`, `X.Y.Z`) creates the branch `release/vX.Y.Z` with one commit, `chore(release): vX.Y.Z`: the version's CHANGELOG section (master's commits since the previous version, grouped by conventional type) and `package.json`/`package-lock.json` at X.Y.Z. Review the section, add a **Contratos** line if a message schema changed and a **Migraciones** line if a migration can't be reverted, push it and open the PR with that title.
+2. **Tag.** Once merged, `scripts/release.sh tag X.Y.Z` creates the annotated tag on the release commit of `origin/master`; publish it with `git push origin vX.Y.Z`.
+3. **Publish.** The tag runs `.github/workflows/release.yml`: it checks that a final version comes from `master` with its CHANGELOG section and `package.json`, builds the `production` stage on one native runner per architecture (amd64 and arm64) with `SERVICE_VERSION=X.Y.Z` (the `service.version` of logs and traces), publishes `ghcr.io/faclab-ec/faclab-invoicing:X.Y.Z`, checks both platforms, `SERVICE_VERSION` and the `org.opencontainers.image.version` label, and creates the GitHub release with the CHANGELOG section.
+
+A **pre-release** (`vX.Y.Z-rc.1`) is published the same way from any pushed commit, without a GitHub release: it is for staging.
+
+Deploying a version is a PR in faclab-infra that changes `deploy/production/versions/<environment>.env`; it doesn't pass unless the combination is in the [compatibility matrix](https://github.com/faclab-ec/faclab-infra/blob/master/deploy/production/COMPATIBILITY.md), where every release of this service adds its row (what it accepts and publishes). Migrations run with the deployment, and its rollback reverts them with `node-pg-migrate down`: every migration keeps its `Down Migration`.
 
 ### First-Run Setup
 
