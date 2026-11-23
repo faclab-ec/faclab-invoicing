@@ -1,6 +1,6 @@
 {
   "name": "faclab-invoicing",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "index.js",
   "scripts": {
     "dev": "node --env-file-if-exists=.env node_modules/ts-node-dev/lib/bin.js -T --exit-child -r tsconfig-paths/register -r ./src/instrumentation.ts src/server.ts",

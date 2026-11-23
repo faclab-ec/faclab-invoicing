@@ -1,0 +1,202 @@
+name: Release
+
+# A tag vX.Y.Z publishes the production image to GitHub Container Registry, for amd64 and arm64,
+# with SERVICE_VERSION (service.version of its logs and traces) X.Y.Z (S8.2). A final version
+# comes from master with its CHANGELOG.md section and package.json at X.Y.Z (scripts/release.sh);
+# a pre-release (vX.Y.Z-rc.1) may come from any pushed commit and is only for staging.
+# README.md, "Versions and releases"
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/faclab-ec/faclab-invoicing
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read the version from the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! [[ "$TAG" =~ $semver ]]; then
+            echo "::error::$TAG isn't vX.Y.Z or vX.Y.Z-<pre-release>"
+            exit 1
+          fi
+          version="${TAG#v}"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: A final version comes from master and has its CHANGELOG section
+        if: steps.version.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::v$VERSION isn't on master: final versions come from master (pre-releases may not)"
+            exit 1
+          fi
+          if ! grep -q "^## \[${VERSION//./\\.}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no $VERSION section: scripts/release.sh writes it"
+            exit 1
+          fi
+
+      # A pre-release may come before its release commit, with the previous version
+      - name: package.json has the version
+        if: steps.version.outputs.prerelease == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          current="$(jq -r .version package.json)"
+          if [ "$current" != "$VERSION" ]; then
+            echo "::error::package.json is $current, not $VERSION: scripts/release.sh sets it"
+            exit 1
+          fi
+
+  # One native runner per platform (the arm64 ones are free for public repositories): no
+  # emulation. Each pushes its image by digest; publish joins them under the version
+  build:
+    name: build (${{ matrix.arch }})
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The OCI labels: source (links the package to this repository), revision, version...
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: type=semver,pattern={{version}}
+          flavor: latest=false
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          platforms: linux/${{ matrix.arch }}
+          build-args: SERVICE_VERSION=${{ needs.verify.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Keep the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the version for both platforms
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # shellcheck disable=SC2046 # one argument per digest
+          docker buildx imagetools create -t "$IMAGE:$VERSION" $(printf "$IMAGE@sha256:%s " *)
+
+      - name: Check the published image
+        run: |
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          platforms="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' |
+            jq -r '[.manifests[].platform | select(.os == "linux") | .architecture] | sort | join(" ")')"
+          if [ "$platforms" != "amd64 arm64" ]; then
+            echo "::error::expected amd64 and arm64, got '$platforms'"
+            exit 1
+          fi
+          docker pull --quiet "$IMAGE:$VERSION"
+          service_version="$(docker run --rm --entrypoint printenv "$IMAGE:$VERSION" SERVICE_VERSION)"
+          label="$(docker image inspect "$IMAGE:$VERSION" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+          if [ "$service_version" != "$VERSION" ] || [ "$label" != "$VERSION" ]; then
+            echo "::error::SERVICE_VERSION '$service_version' and label '$label' must be $VERSION"
+            exit 1
+          fi
+          echo "$IMAGE:$VERSION: amd64 and arm64, SERVICE_VERSION $service_version"
+
+      - name: GitHub release with the CHANGELOG section
+        if: needs.verify.outputs.prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          printf '\nImagen: %s (amd64 y arm64).\n' "\`$IMAGE:$VERSION\`" >> "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
