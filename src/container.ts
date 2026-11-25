@@ -36,6 +36,9 @@ import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
 import { PgIssuerProductionRepository } from '#/modules/company-config/infra/persistence/pg-issuer-production.repository';
 import { PgSequenceRepository } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
+import { ExportTenantData } from '#/modules/data-protection/app/export-tenant-data';
+import { OffboardTenant } from '#/modules/data-protection/app/offboard-tenant';
+import { PgTenantDataRepository } from '#/modules/data-protection/infra/pg-tenant-data.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
 import {
@@ -153,6 +156,12 @@ export interface Container {
   deadLetters: DeadLetterStore;
   /** Processes dead letters again with the consumer's handlers, without Kafka (the CLI) */
   createDeadLetterReprocessor(): DeadLetterReprocessor;
+  /** The export and the termination of a company's data (S8.7, the CLI) */
+  tenantData: {
+    repository: PgTenantDataRepository;
+    exportData: ExportTenantData;
+    offboarding: OffboardTenant;
+  };
 }
 
 // The rate limit counters of the public API are purged this often (S6.3)
@@ -207,6 +216,8 @@ export function createContainer(config: AppConfig): Container {
     new PdfKitRideRenderer(),
     config.timezone,
   );
+
+  const tenantData = new PgTenantDataRepository(pool);
 
   // Commands
   const prepareInvoiceCommand = new PrepareInvoiceCommand(
@@ -581,5 +592,10 @@ export function createContainer(config: AppConfig): Container {
     createBackground: buildBackground,
     deadLetters,
     createDeadLetterReprocessor: buildDeadLetterReprocessor,
+    tenantData: {
+      repository: tenantData,
+      exportData: new ExportTenantData(tenantData, invoiceRepository, documentStorage, rideService),
+      offboarding: new OffboardTenant(tenantData, documentStorage),
+    },
   };
 }

@@ -275,6 +275,11 @@ export class InMemoryDocumentStorage implements DocumentStorage {
     this.objects.delete(key);
   }
 
+  async list(prefix: string): Promise<string[]> {
+    this.failIfUnreachable();
+    return [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort();
+  }
+
   private failIfUnreachable(): void {
     if (this.failing) {
       throw new InvoiceIssueError('STORAGE_UNAVAILABLE', 'Object storage failed: unreachable');
