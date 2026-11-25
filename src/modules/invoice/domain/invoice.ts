@@ -5,7 +5,7 @@ import { generateNumericCode } from './access-code-generator';
 import { CreditNoteData } from './credit-note';
 import { CreditNoteResultEvent, InvoiceStatus, VoucherResultEvent } from './events';
 import { InvoiceIssue, nextAttemptAt } from './issue';
-import { IssuingPoint, SaleData } from './sale';
+import { IssuingPoint, ONBOARDING_SALE_SOURCE, SaleData } from './sale';
 
 export { InvoiceStatus } from './events';
 
@@ -123,6 +123,11 @@ export class Invoice {
 
   get tenantId(): string {
     return this.point.tenantId;
+  }
+
+  /** The test invoice of the onboarding (S8.5), not a sale of faclab-core */
+  get isOnboardingTest(): boolean {
+    return this.docType === VoucherType.INVOICE && this.sale?.source === ONBOARDING_SALE_SOURCE;
   }
 
   /** Who gets the document: the sale's customer or, in a credit note, the invoice's buyer */

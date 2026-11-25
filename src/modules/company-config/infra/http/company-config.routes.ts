@@ -10,6 +10,7 @@ import {
   SaveCompanyConfigCommand,
   SaveCompanyConfigInput,
 } from '../../app/company-config.commands';
+import { GoLiveCommand, GoLiveInput } from '../../app/go-live.command';
 import {
   DeleteIssuerLogoCommand,
   GetIssuerLogoQuery,
@@ -24,6 +25,7 @@ import {
   deleteLogoSchema,
   getCompanyConfigSchema,
   getLogoSchema,
+  goLiveSchema,
   listSequencesSchema,
   saveCompanyConfigSchema,
   setNextSequenceSchema,
@@ -38,6 +40,7 @@ export interface CompanyConfigHandlers {
   setLogo: SetIssuerLogoCommand;
   deleteLogo: DeleteIssuerLogoCommand;
   getLogo: GetIssuerLogoQuery;
+  goLive: GoLiveCommand;
 }
 
 export function registerCompanyConfigRoutes(
@@ -66,6 +69,19 @@ export function registerCompanyConfigRoutes(
         const message = error instanceof Error ? error.message : 'Unknown error';
         throw new BadRequestError(message);
       }
+    },
+  );
+
+  // POST /api/company-config/go-live — from the SRI's test environment to production (S8.5)
+  app.post(
+    '/api/company-config/go-live',
+    { schema: goLiveSchema, preHandler },
+    async (request, reply) => {
+      const config = await handlers.goLive.execute(tenantOf(request), request.body as GoLiveInput, {
+        id: String(request.auth?.userId ?? ''),
+        username: request.auth?.username ?? null,
+      });
+      return reply.success(toResponse(config));
     },
   );
 

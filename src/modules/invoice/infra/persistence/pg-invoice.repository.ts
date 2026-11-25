@@ -16,6 +16,7 @@ import {
   InvoiceSortField,
   PageRequest,
 } from '../../domain/repository';
+import { ONBOARDING_SALE_SOURCE } from '../../domain/sale';
 import { fromInvoiceRow, InvoiceRow, toInvoiceEventRows, toInvoiceRow } from './invoice.mapper';
 import { insertDelivery } from './pg-invoice-delivery.repository';
 
@@ -237,6 +238,16 @@ export class PgInvoiceRepository implements InvoiceRepository {
       `${SELECT_INVOICES}
        WHERE i.tenant_id = $1 AND i.request_id = $2 AND i.doc_type = $3 AND i.status <> $4`,
       [tenantId, creditNoteId, VoucherType.CREDIT_NOTE, InvoiceStatus.REJECTED],
+    );
+    return result.rows[0] ? fromInvoiceRow(result.rows[0]) : null;
+  }
+
+  async findOnboardingTest(tenantId: string): Promise<Invoice | null> {
+    const result = await this.pool.query<InvoiceRow>(
+      `${SELECT_INVOICES}
+       WHERE i.tenant_id = $1 AND i.doc_type = $2 AND i.sale->>'source' = $3
+       ORDER BY i.created_at DESC, i.id DESC LIMIT 1`,
+      [tenantId, VoucherType.INVOICE, ONBOARDING_SALE_SOURCE],
     );
     return result.rows[0] ? fromInvoiceRow(result.rows[0]) : null;
   }

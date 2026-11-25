@@ -1,6 +1,6 @@
 import { certificateRucMismatch } from '#/modules/certificate/app/certificate.commands';
 import { CertificateRepository } from '#/modules/certificate/domain/repository';
-import { ValidationError } from '#/shared/errors/app-error';
+import { ConflictError, ValidationError } from '#/shared/errors/app-error';
 
 import { CompanyConfig, EmissionType, Environment, RimpeRegime } from '../domain/company-config';
 import { IssuerChangeListener } from '../domain/readiness';
@@ -35,6 +35,17 @@ export class SaveCompanyConfigCommand {
    * saving it never moves a counter.
    */
   async execute(tenantId: string, input: SaveCompanyConfigInput): Promise<CompanyConfig> {
+    // Production is entered with POST /api/company-config/go-live (confirmed and audited): saving
+    // the profile never moves a company there (S8.5)
+    if (input.environment === Environment.PRODUCTION) {
+      const current = await this.repository.find(tenantId);
+      if (current?.environment !== Environment.PRODUCTION) {
+        throw new ConflictError(
+          'USE_GO_LIVE',
+          'Use POST /api/company-config/go-live to move the company to production',
+        );
+      }
+    }
     if (input.signingCertId) {
       const certificate = await this.certificateRepository.findById(tenantId, input.signingCertId);
       if (!certificate) {

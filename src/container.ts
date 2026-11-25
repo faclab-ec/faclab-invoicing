@@ -20,6 +20,7 @@ import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
+import { GoLiveCommand } from '#/modules/company-config/app/go-live.command';
 import {
   DeleteIssuerLogoCommand,
   GetIssuerLogoQuery,
@@ -33,9 +34,14 @@ import {
 import { IssuerChangeListener } from '#/modules/company-config/domain/readiness';
 import { registerCompanyConfigRoutes } from '#/modules/company-config/infra/http/company-config.routes';
 import { PgCompanyConfigRepository } from '#/modules/company-config/infra/persistence/pg-company-config.repository';
+import { PgIssuerProductionRepository } from '#/modules/company-config/infra/persistence/pg-issuer-production.repository';
 import { PgSequenceRepository } from '#/modules/company-config/infra/persistence/pg-sequence.repository';
 import { AuthorizeInvoiceCommand } from '#/modules/invoice/app/commands/authorize-invoice';
 import { InvoiceCommand } from '#/modules/invoice/app/commands/command';
+import {
+  GetTestInvoiceQuery,
+  SubmitTestInvoiceCommand,
+} from '#/modules/invoice/app/commands/onboarding-test-invoice';
 import { PrepareInvoiceCommand } from '#/modules/invoice/app/commands/prepare-invoice';
 import { ReceiveCreditNoteCommand } from '#/modules/invoice/app/commands/receive-credit-note';
 import { ReceiveSaleCommand } from '#/modules/invoice/app/commands/receive-sale';
@@ -76,6 +82,7 @@ import { SriClients } from '#/modules/invoice/infra/adapters/sri-clients';
 import { SriValidationAdapter } from '#/modules/invoice/infra/adapters/sri-validation.adapter';
 import { XsdInvoiceSchemaValidator } from '#/modules/invoice/infra/adapters/xsd-validator.adapter';
 import { registerInvoiceRoutes } from '#/modules/invoice/infra/http/invoice.routes';
+import { registerOnboardingRoutes } from '#/modules/invoice/infra/http/onboarding.routes';
 import { registerPublicInvoiceRoutes } from '#/modules/invoice/infra/http/v1/public-invoice.routes';
 import {
   creditNoteTenant,
@@ -325,6 +332,29 @@ export function createContainer(config: AppConfig): Container {
         setLogo: new SetIssuerLogoCommand(companyConfigRepository, documentStorage),
         deleteLogo: new DeleteIssuerLogoCommand(companyConfigRepository, documentStorage),
         getLogo: new GetIssuerLogoQuery(companyConfigRepository, documentStorage),
+        goLive: new GoLiveCommand(
+          companyConfigRepository,
+          issuerReadiness,
+          invoiceRepository,
+          new PgIssuerProductionRepository(pool),
+          issuerListener,
+          config.externalServices.sriProductionAllowed,
+        ),
+      },
+      authorize,
+    );
+
+    // The test invoice of the onboarding (S8.5)
+    registerOnboardingRoutes(
+      httpServer,
+      {
+        submitTestInvoice: new SubmitTestInvoiceCommand(
+          companyConfigRepository,
+          issuerReadiness,
+          new ReceiveSaleCommand(invoiceRepository, captureTraceContext),
+          invoiceRepository,
+        ),
+        getTestInvoice: new GetTestInvoiceQuery(invoiceRepository),
       },
       authorize,
     );

@@ -271,7 +271,10 @@ Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Rese
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `PUT` | `/api/company-config` | Create or update the company's fiscal profile (`branchCode`, `salePointCode`, `branchAddress` and `invoiceSequence` are ignored) |
+| `PUT` | `/api/company-config` | Create or update the company's fiscal profile (`branchCode`, `salePointCode`, `branchAddress` and `invoiceSequence` are ignored). `environment: 2` is refused (`USE_GO_LIVE`): production is entered with `go-live` |
+| `POST` | `/api/company-config/go-live` | Move the company from the SRI's test environment to production (S8.5): `{ "confirmRuc", "acknowledge": true }`, a ready issuer and an authorized test invoice; forgets the test invoices, gives their numbers back to the counters (when they are the last ones) and records it in `issuer_audit`. Only where `NODE_ENV=production` |
+| `POST` | `/api/invoicing/test-invoice` | Issue the onboarding's test invoice (S8.5): 1 cent to the final consumer through the whole pipeline against the SRI's test environment; its result isn't published to faclab-core. Body `{ establishment?, emissionPoint? }` (default `001`/`001`). Answers the one in progress or authorized instead of a second |
+| `GET` | `/api/invoicing/test-invoice` | Its status (`NONE`, `PROCESSING`, `AUTHORIZED`, `REJECTED`), number and the SRI's reason |
 | `GET` | `/api/company-config` | Get the company's fiscal profile, with its `email` and `hasLogo` |
 | `PUT` | `/api/company-config/logo` | Upload the logo of its RIDEs (`multipart/form-data`, field `file`: PNG or JPEG, 300 KB, 2000 × 2000 px) |
 | `GET` | `/api/company-config/logo` | The logo as uploaded; 404 without one |

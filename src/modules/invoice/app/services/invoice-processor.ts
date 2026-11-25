@@ -133,6 +133,16 @@ export class InvoiceProcessor {
   }
 
   private async publishResult(invoice: Invoice): Promise<Invoice> {
+    // The test invoice of the onboarding (S8.5) isn't a sale of faclab-core: nobody waits for it
+    if (invoice.isOnboardingTest) {
+      invoice.markResultPublished(this.now());
+      try {
+        await this.invoiceRepository.updateInvoice(invoice);
+      } catch (error) {
+        if (!(error instanceof ConcurrentUpdateError)) throw error;
+      }
+      return invoice;
+    }
     try {
       await this.resultProducer!.sendMessage(invoice.resultEvent()!);
     } catch (error) {
