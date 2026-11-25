@@ -1,6 +1,13 @@
 import { IvaCode } from './sri-catalogs';
 
 /**
+ * `SaleData.source` of the test invoice of the onboarding (S8.5): it goes through the whole
+ * pipeline against the SRI's test environment but isn't a sale of faclab-core, so its result is
+ * not published and it is forgotten when the company goes to production.
+ */
+export const ONBOARDING_SALE_SOURCE = 'onboarding';
+
+/**
  * Who issues the invoice of a sale and from where, as `sales.confirmed` v2 says: the company
  * (faclab-core tenant), its RUC and the establishment and emission point of the sale.
  */

@@ -438,6 +438,14 @@ export class InMemoryInvoiceRepository implements InvoiceRepository, InvoiceQueu
     return active ?? null;
   }
 
+  async findOnboardingTest(tenantId: string): Promise<Invoice | null> {
+    const tests = (await this.all()).filter(
+      (invoice) => invoice.tenantId === tenantId && invoice.isOnboardingTest,
+    );
+    tests.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return tests[0] ?? null;
+  }
+
   async countInFlight(tenantId: string): Promise<InFlightCounts> {
     const inFlight = (await this.all()).filter(
       (invoice) => !invoice.isFinal && invoice.tenantId === tenantId,

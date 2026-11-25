@@ -87,6 +87,42 @@ const companyConfigObjectSchema = {
   properties: companyConfigResponseProperties,
 } as const;
 
+export const goLiveSchema = {
+  tags: ['Company Config'],
+  summary: "Move the company to the SRI's production environment",
+  description:
+    "The only way to leave the SRI's test environment (`PUT /api/company-config` refuses `environment: 2`). Needs the company RUC typed again in `confirmRuc` and `acknowledge: true`, a ready issuer and an authorized test invoice (`POST /api/invoicing/test-invoice`). The test invoices are forgotten and the numbers they took go back to the counters, so production starts where the counters were. It is audited and has no way back.",
+  body: {
+    type: 'object',
+    required: ['confirmRuc', 'acknowledge'],
+    additionalProperties: false,
+    properties: {
+      confirmRuc: {
+        type: 'string',
+        pattern: '^\\d{13}$',
+        description: 'The RUC of the company, typed again.',
+      },
+      acknowledge: {
+        type: 'boolean',
+        const: true,
+        description: 'The operator knows the invoices that follow are real and can not be undone.',
+      },
+    },
+  },
+  response: {
+    200: {
+      ...successSchema(companyConfigObjectSchema),
+      description: 'The profile, in production.',
+    },
+    409: {
+      ...errorResponseSchema,
+      description:
+        '`ISSUER_NOT_CONFIGURED`, `ALREADY_IN_PRODUCTION`, `ENVIRONMENT_NOT_ALLOWED` (this deployment only reaches the test environment), `ISSUER_NOT_READY`, `TEST_INVOICE_REQUIRED`.',
+    },
+    422: { ...errorResponseSchema, description: '`CONFIRMATION_MISMATCH`.' },
+  },
+} as const;
+
 export const saveCompanyConfigSchema = {
   tags: ['Company Config'],
   summary: "Create or update the company's fiscal configuration",

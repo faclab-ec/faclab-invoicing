@@ -12,6 +12,7 @@ import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
+import { GoLiveCommand } from '#/modules/company-config/app/go-live.command';
 import {
   DeleteIssuerLogoCommand,
   GetIssuerLogoQuery,
@@ -192,6 +193,7 @@ describe('API isolation between companies', () => {
         setLogo: new SetIssuerLogoCommand(configs, storage),
         deleteLogo: new DeleteIssuerLogoCommand(configs, storage),
         getLogo: new GetIssuerLogoQuery(configs, storage),
+        goLive: vi.fn() as unknown as GoLiveCommand,
       },
       authorize,
     );

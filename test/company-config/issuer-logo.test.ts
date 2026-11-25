@@ -5,6 +5,7 @@ import {
   GetCompanyConfigQuery,
   SaveCompanyConfigCommand,
 } from '#/modules/company-config/app/company-config.commands';
+import { GoLiveCommand } from '#/modules/company-config/app/go-live.command';
 import {
   DeleteIssuerLogoCommand,
   GetIssuerLogoQuery,
@@ -59,6 +60,7 @@ describe('the issuer logo of the RIDE', () => {
         setLogo: new SetIssuerLogoCommand(configs, storage),
         deleteLogo: new DeleteIssuerLogoCommand(configs, storage),
         getLogo: new GetIssuerLogoQuery(configs, storage),
+        goLive: vi.fn() as unknown as GoLiveCommand,
       },
       authorizeAs(TENANT_A),
     );

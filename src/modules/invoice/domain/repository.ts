@@ -89,6 +89,8 @@ export interface InvoiceRepository {
   /** The document of a credit note of faclab-core that isn't rejected, if any */
   findActiveCreditNote(tenantId: string, creditNoteId: number): Promise<Invoice | null>;
   countInFlight(tenantId: string): Promise<InFlightCounts>;
+  /** The company's latest test invoice of the onboarding (S8.5), whatever its status */
+  findOnboardingTest(tenantId: string): Promise<Invoice | null>;
 }
 
 /**
