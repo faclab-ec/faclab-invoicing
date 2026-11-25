@@ -16,7 +16,11 @@ import { SaleConfirmedMessageSchema } from '#/modules/invoice/infra/messaging/sc
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 import { PgInvoiceQueue } from '#/modules/invoice/infra/persistence/pg-invoice-queue';
 import { InvoiceWorker } from '#/modules/invoice/infra/queue/invoice-worker';
-import { DeadLetterReprocessor, PgDeadLetterStore } from '#/shared/infra/dead-letters';
+import {
+  DeadLetterReprocessor,
+  PgDeadLetterStore,
+  purgeReprocessedDeadLetters,
+} from '#/shared/infra/dead-letters';
 
 import {
   fakeKafkaConsumer,
@@ -155,5 +159,32 @@ describePostgres('Dead letters on PostgreSQL', () => {
       tenantId: null,
       headers: { 'faclab-tenant-id': 'not-a-company' },
     });
+  });
+});
+
+// S8.7: a message carries the sale with its buyer; once processed again it is kept 30 days
+describePostgres('dead letters retention', () => {
+  const pool = usePostgres();
+
+  const keep = (offset: number, status: string, reprocessedDaysAgo: number | null) =>
+    pool().query(
+      `INSERT INTO dead_letters (consumer_group, topic, kafka_partition, kafka_offset, value,
+                                 error, error_type, attempts, status, reprocessed_at)
+       VALUES ('g', 'sales.confirmed', 0, $1, '{"customer":{"name":"x"}}', 'boom',
+               'NON_RETRYABLE', 1, $2,
+               CASE WHEN $3::int IS NULL THEN NULL ELSE now() - make_interval(days => $3) END)`,
+      [offset, status, reprocessedDaysAgo],
+    );
+
+  it('deletes the ones reprocessed long ago and keeps the recent and the pending', async () => {
+    await keep(1, 'reprocessed', 45);
+    await keep(2, 'reprocessed', 3);
+    await keep(3, 'pending', null);
+
+    expect(await purgeReprocessedDeadLetters(pool())).toBe(1);
+
+    const left = await pool().query('SELECT kafka_offset FROM dead_letters ORDER BY 1');
+    expect(left.rows.map((row) => row.kafka_offset)).toEqual(['2', '3']);
+    expect(await purgeReprocessedDeadLetters(pool())).toBe(0);
   });
 });

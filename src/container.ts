@@ -121,6 +121,7 @@ import {
   DeadLetterReprocessor,
   DeadLetterStore,
   PgDeadLetterStore,
+  purgeReprocessedDeadLetters,
   sampleDeadLetters,
 } from '#/shared/infra/dead-letters';
 import { createAuthorize, createRequireScope } from '#/shared/infra/http/auth';
@@ -562,6 +563,10 @@ export function createContainer(config: AppConfig): Container {
           purgeRateLimits(pool)
             .then((deleted) => logger.info({ deleted }, 'Rate limit counters purged'))
             .catch((error) => logger.error({ err: error }, 'Purging rate limit counters failed'));
+          // The reprocessed dead letters carry a buyer's data: they go after their retention (S8.7)
+          purgeReprocessedDeadLetters(pool)
+            .then((deleted) => logger.info({ deleted }, 'Reprocessed dead letters purged'))
+            .catch((error) => logger.error({ err: error }, 'Purging dead letters failed'));
         }, RATE_LIMIT_PURGE_INTERVAL_MS);
         rateLimitPurge.unref();
       },

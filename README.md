@@ -99,6 +99,28 @@ npm run cli -- dead-letter-reprocess --all --by ana            # every pending o
 
 The message goes through the same handler as in the consumer: a `sales.confirmed` becomes a `pending` invoice and the worker invoices it. It is safe to repeat (the same `event_id` gives the same invoice). `--by` is required and stays on the row (`reprocessed_by`, `reprocessed_at`, `status = reprocessed`) and in the log; a message that fails again stays `pending` with `reprocess_error`, and the command exits with 1. Fix the cause first: a malformed message fails the same way; a v1 one needs `SALES_V1_TENANT_ID`.
 
+A reprocessed dead letter keeps the whole message (a sale with its buyer) for 30 days (`DEAD_LETTER_RETENTION_DAYS`) and the worker then deletes it, hourly (S8.7); the pending ones stay until somebody reprocesses them.
+
+### Personal data: export and termination of a company (S8.7)
+
+The buyers' data is the company's: it can take it out and, when its contract ends, what the law doesn't require us to keep is deleted. The procedure for both services, with the same RUC and in this order, is in faclab-core's `docs/offboarding-runbook.md`; the policy and its dates, in `docs/data-protection.md`. Platform CLI, on the compiled code, `--by` is who does it:
+
+```bash
+npm run cli -- tenant-export --ruc R --out DIR --by ana        # a folder: CSVs, issuer.json, xml/, ride/, manifest.json
+npm run cli -- tenant-offboard-plan --ruc R                    # what anonymizing would do and what stays
+npm run cli -- tenant-offboard-start --ruc R --by ana [--grace-days 30] [--retention-ends 2033-11-25]
+npm run cli -- tenant-offboard-cancel --ruc R --by ana         # only before anonymizing
+npm run cli -- tenant-anonymize --ruc R --by ana [--execute] [--skip-grace]   # without --execute: the plan
+npm run cli -- tenant-purge --ruc R --by ana --confirm-ruc R [--execute]      # after the tax retention
+```
+
+- **Export:** the authorized XML and the RIDE of each authorized document (the RIDEs not generated yet are drawn then), the documents with the buyer's data (`invoices.csv`), the deliveries, the sequences, the audit log and the fiscal profile. The certificate comes as metadata (never the `.p12` nor its password). Nothing of another company. The folder is zipped by hand (`zip -r`): no dependency was added for it.
+- **Start:** `tenant_offboarding` keeps the dates (grace period, end of the tax retention; core's `retentionEndsAt` goes in `--retention-ends` so both agree) and who started it.
+- **Anonymize** (after the grace period, with no document or delivery still in the queue): clears the buyer's email and phone from `invoices.sale` and `credit_note`, the deliveries' address and mail server answers, the SRI's free text, the dead letters, the issuer's email and logo, and the names in `issuer_audit`; deletes the certificates (the private key). **The signed XML and the RIDE are the legal record: never edited.** The invoices, their numbers and the buyer's identification stay.
+- **Purge** (after the retention, `--confirm-ruc`): deletes every row of the company and its objects under `tenants/<id>/`; `tenant_offboarding` stays with `purged_at` as the proof of erasure. With the bucket's Object Lock (compliance) a delete only adds a marker: the locked versions go with their own date.
+- `issuer_audit` stays append-only for the service: the offboarding's transaction sets `faclab.offboarding = 'on'` (`SET LOCAL`), the only case its trigger lets an entry change.
+- **Logs and spans** never carry the buyer's data: `customer`, `buyer`, `address`, `phone`, `taxId` and `email` are redacted by key, and the messages of errors (the SRI's, the XSD's, zod's) lose their emails and identifications (`scrubMessage`, `failSpan`).
+
 ### Numbering
 
 The access code's numeric code (8 digits, ficha técnica 5.2) is random (`crypto.randomInt`), drawn when the sequence is assigned and kept with the invoice (`numeric_code`): the code says nothing of the sale and a retry builds the same one.
@@ -397,6 +419,7 @@ PostgreSQL, in a database of its own (`faclab_invoicing`; locally faclab-infra's
 |-------|----------|
 | `invoices` | One row per invoice: company (`tenant_id`), sale, RUC, establishment, address and emission point of the sale, when faclab-core asked to invoice it (`requested_at`), status, sequence and the access code's `numeric_code` (`ck_invoices_numbered_numeric_code`: together), access code, XML, the SRI's `authorization_number` and `authorized_at` and the `authorized_xml_key` in the object storage, current issue, `version`, and the queue's columns: `next_attempt_at`, the lease (`locked_until`, `locked_by`), `result_published_at` and the `trace_context` of the message that brought the sale. Indexes by company and sale, status and creation date, and `ix_invoices_next_attempt_at` (only rows with something to do) for the worker; `uq_invoices_active_sale` allows one invoice that isn't `rejected` per company and sale; `uq_invoices_tenant_number` one invoice per number of an emission point |
 | `invoice_events` | Status history of each invoice, in order (append-only) |
+| `tenant_offboarding` | The termination of a company's contract (S8.7): started, grace period, end of the tax retention, anonymized and purged, and who (kept after the purge as the proof) |
 | `issuers` | The fiscal profile of each company (key `tenant_id`), with its `email` and where its logo is (`logo_key`, `logo_content_type`) |
 | `invoice_deliveries` | The deliveries of each authorized invoice to its buyer, and their queue: kind (`authorization`, `resend`), recipient, who asked, status, attempts, `next_attempt_at`, lease, last error, the mail server's answer and message id. One per authorization (`uq_invoice_deliveries_authorization`) and at most one pending per invoice (`uq_invoice_deliveries_pending`). See [Deliveries](#deliveries) |
 | `sequences` | Last number issued per company, establishment, emission point and document type (`'01'` = factura). See [Numbering](#numbering) |
