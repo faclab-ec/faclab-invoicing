@@ -1,6 +1,7 @@
-import { Attributes, context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { Attributes, context, SpanKind, trace } from '@opentelemetry/api';
 
 import { logger } from '#/shared/logger';
+import { failSpan } from '#/shared/telemetry/spans';
 import { contextFrom, TraceCarrier } from '#/shared/telemetry/trace-context';
 
 /** A row a worker took from a queue table */
@@ -131,8 +132,7 @@ export class QueueWorker<J extends QueuedJob> {
     } catch (error) {
       // A failed run is recorded on its row: only storage errors get here. Not right away again
       const err = error instanceof Error ? error : new Error(String(error));
-      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-      span.recordException(err);
+      failSpan(span, err);
       logger.error(
         { 'event.name': 'queue.job.failed', ...this.description.logFields(job), err },
         `${this.description.name}: job failed`,

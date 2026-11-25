@@ -1,5 +1,7 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
-import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, propagation, SpanKind, trace } from '@opentelemetry/api';
+
+import { failSpan } from '#/shared/telemetry/spans';
 
 import { BadRequestError, ValidationError } from '../errors/app-error';
 import { NonRetryableError } from '../errors/non-retryable.error';
@@ -137,9 +139,7 @@ export abstract class BaseKafkaConsumer {
               { topic, partition, offset: (BigInt(message.offset) + 1n).toString() },
             ]);
           } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-            span.recordException(err);
+            failSpan(span, error);
             throw error;
           } finally {
             span.end();

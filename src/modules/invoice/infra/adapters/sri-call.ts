@@ -1,9 +1,10 @@
-import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, SpanKind, trace } from '@opentelemetry/api';
 
 import { Environment } from '#/modules/company-config/domain/company-config';
 import { isTimeout, SoapClient } from '#/shared/infra/soap-client';
 import { errorType } from '#/shared/telemetry/attributes';
 import { invoiceRejections, sriRequestDuration } from '#/shared/telemetry/metrics';
+import { failSpan } from '#/shared/telemetry/spans';
 
 import { InvoiceIssueError } from '../../domain/issue';
 
@@ -103,9 +104,7 @@ export async function callSri<R, T>(call: SriCall, read: (response: R) => SriAns
       }
       return answer.result;
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-      span.recordException(err);
+      failSpan(span, error);
       throw error;
     } finally {
       span.end();

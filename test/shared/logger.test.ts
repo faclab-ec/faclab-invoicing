@@ -97,4 +97,42 @@ describe('logger', () => {
     expect(outside).not.toHaveProperty('trace_id');
     expect(outside).not.toHaveProperty('span_id');
   });
+
+  // S8.7 (LOPDP): the data of the people the company invoices never reaches a log or a span
+  it("never writes a buyer's identification, address, phone nor the customer object", () => {
+    const { log, lines } = capture();
+
+    log.info(
+      {
+        saleId: 42,
+        customer: { name: 'Construcciones Andinas', tax_id: '1790012345001' },
+        buyer: { address: 'Av. Amazonas N34-120', Phone: '0999111222' },
+        taxId: '1790012345001',
+      },
+      'Sale received',
+    );
+
+    const [line] = lines;
+    for (const personal of ['Construcciones', '1790012345001', 'Amazonas', '0999111222']) {
+      expect(line).not.toContain(personal);
+    }
+    expect(JSON.parse(line).saleId).toBe(42);
+  });
+
+  it('scrubs the emails and identifications an error message quotes', () => {
+    const { log, lines } = capture();
+
+    log.error(
+      { err: new Error('Invalid value 1790012345001 for ana@andinas.ec (cédula 1710034065)') },
+      'Validation failed',
+    );
+
+    const [line] = lines;
+    for (const personal of ['1790012345001', 'ana@andinas.ec', '1710034065']) {
+      expect(line).not.toContain(personal);
+    }
+    const entry = JSON.parse(line);
+    expect(entry.err.message).toBe('Invalid value 17*********01 for [email] (cédula 17******65)');
+    expect(entry.err.stack).not.toContain('ana@andinas.ec');
+  });
 });
