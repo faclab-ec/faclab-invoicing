@@ -471,6 +471,7 @@ npm run migrate create <name> -- -j sql              # new SQL migration in migr
 | `HTTP_PORT` | `3173` | Optional | HTTP server port; the worker serves its `/health` on it (locally, give the worker another one: `HTTP_PORT=3174 npm run dev:worker`) |
 | `LOG_LEVEL` | `debug` | Optional (`info`) | pino level |
 | `SRI_TIMEOUT_MS` | `30000` | Optional | Timeout for each SRI SOAP call |
+| `SRI_TEST_RECEPTION_WSDL`, `SRI_TEST_AUTHORIZATION_WSDL` | celcer | Optional | Only for end-to-end tests: the WSDL of an SRI simulator in place of the test environment, both or neither; refused with `NODE_ENV=production` |
 | `INVOICE_RETRY_INTERVAL_MS` | `60000` | Optional | How often the worker's recovery runs; also how long a result that couldn't be published, or a job that broke, waits |
 | `RUN_BACKGROUND` | `true` | Optional | `true`: the API process also runs the consumer, the worker and the recovery. `false`: only `worker.ts` does (a deployment with a worker of its own) |
 | `INVOICE_WORKER_CONCURRENCY` | `4` | Optional | Invoices each worker processes at once (1 to 8) |

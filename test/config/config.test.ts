@@ -152,6 +152,30 @@ describe('parseConfig in local', () => {
     );
   });
 
+  it('points the test environment, and only it, at an SRI simulator (S9.1)', () => {
+    const config = parseConfig({
+      SRI_TEST_RECEPTION_WSDL: 'http://sri:8081/recepcion?wsdl',
+      SRI_TEST_AUTHORIZATION_WSDL: 'http://sri:8081/autorizacion?wsdl',
+    });
+
+    expect(config.externalServices.sriEndpoints.test).toEqual({
+      receptionWsdl: 'http://sri:8081/recepcion?wsdl',
+      authorizationWsdl: 'http://sri:8081/autorizacion?wsdl',
+    });
+    expect(new URL(config.externalServices.sriEndpoints.production.receptionWsdl).host).toBe(
+      'cel.sri.gob.ec',
+    );
+  });
+
+  it('refuses half a simulator and a WSDL that is not a URL', () => {
+    expect(errorOf({ SRI_TEST_RECEPTION_WSDL: 'http://sri:8081/recepcion?wsdl' })).toContain(
+      'SRI_TEST_AUTHORIZATION_WSDL must be set together with SRI_TEST_RECEPTION_WSDL',
+    );
+    expect(
+      errorOf({ SRI_TEST_RECEPTION_WSDL: 'sri', SRI_TEST_AUTHORIZATION_WSDL: 'sri' }),
+    ).toContain('SRI_TEST_RECEPTION_WSDL must be an http:// or https:// URL');
+  });
+
   it('takes overrides, such as a container on faclab_network', () => {
     const config = parseConfig({
       KAFKA_BROKERS: ' kafka:9092 , ,other:9092,',
@@ -315,6 +339,18 @@ describe('parseConfig in production', () => {
     expect(message).toContain('NODE_ENV=production');
     expect(message).toContain('DATABASE_URL is required');
     expect(message).toContain('KAFKA_BROKERS is required');
+  });
+
+  it('refuses an SRI simulator', () => {
+    const message = errorOf(
+      production({
+        SRI_TEST_RECEPTION_WSDL: 'http://sri:8081/recepcion?wsdl',
+        SRI_TEST_AUTHORIZATION_WSDL: 'http://sri:8081/autorizacion?wsdl',
+      }),
+    );
+
+    expect(message).toContain("SRI_TEST_RECEPTION_WSDL can't be set in production");
+    expect(message).toContain("SRI_TEST_AUTHORIZATION_WSDL can't be set in production");
   });
 
   it('refuses a default issuer for sales.confirmed v1', () => {
