@@ -42,6 +42,8 @@ export interface DocumentStorage {
   getBytes(key: string): Promise<Buffer | null>;
   /** Removes what is under the key, if anything */
   delete(key: string): Promise<void>;
+  /** Every key that starts with the prefix, in order (S8.7: what a company's folder holds) */
+  list(prefix: string): Promise<string[]>;
 }
 
 /** Draws the RIDE as a PDF, with the issuer's logo when it has one */

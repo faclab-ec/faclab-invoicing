@@ -29,6 +29,15 @@ const SENSITIVE_KEYS = new Set([
   'recipient',
   'replyto',
   'smtppassword',
+  // Personal data of the buyers and issuers (S8.7, LOPDP): never in the logs. Not `name`: the
+  // issuer's trade name and a certificate's file name are not a person's
+  'taxid',
+  'address',
+  'phone',
+  'customer',
+  'buyer',
+  'identification',
+  'fullname',
 ]);
 const REDACTED = '[REDACTED]';
 
@@ -60,6 +69,33 @@ export function redactSensitive(value: unknown, seen = new WeakSet<object>()): u
   }
   return value;
 }
+
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// A cédula (10 digits), a RUC (13) or an access code (49) quoted in a message
+const IDENTIFICATION = /\b\d{10}(?:\d{3})?\b|\b\d{49}\b/g;
+
+/**
+ * An error's text without the data it may quote: the SRI, the XSD and zod repeat the value that
+ * failed, and that can be a buyer's email, cédula or RUC (S8.7). Emails go whole, identifications
+ * keep their first two and last two digits (OBSERVABILITY.md §4.6).
+ */
+export function scrubMessage(text: string): string {
+  return text
+    .replace(EMAIL, '[email]')
+    .replace(
+      IDENTIFICATION,
+      (id) => `${id.slice(0, 2)}${'*'.repeat(id.length - 4)}${id.slice(-2)}`,
+    );
+}
+
+const scrubError = (error: Error) => {
+  const serialized = pino.stdSerializers.err(error);
+  return {
+    ...serialized,
+    message: scrubMessage(serialized.message),
+    stack: serialized.stack ? scrubMessage(serialized.stack) : serialized.stack,
+  };
+};
 
 export interface LoggerConfig {
   level: string;
@@ -100,6 +136,7 @@ export function initLogger(config: LoggerConfig, destination?: pino.DestinationS
           },
     timestamp: pino.stdTimeFunctions.isoTime,
     mixin: traceFields,
+    serializers: { err: scrubError },
     // Runs before serializing, so it also covers what instrumentation-pino sends over OTLP
     formatters: {
       log: (object) => redactSensitive(object) as Record<string, unknown>,

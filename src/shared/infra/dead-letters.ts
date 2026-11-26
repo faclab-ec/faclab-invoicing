@@ -54,6 +54,26 @@ export interface DeadLetterStore {
   recordReprocessFailure(id: number, error: string): Promise<void>;
 }
 
+/** A message that was processed again keeps its raw payload (a sale with its buyer) this long */
+export const DEAD_LETTER_RETENTION_DAYS = 30;
+
+/**
+ * Deletes the dead letters that were reprocessed more than `retentionDays` ago (S8.7, LOPDP): the
+ * message carries the whole sale or credit note with its buyer's data. The pending ones stay until
+ * somebody reprocesses them; they are counted by `faclab.dead_letters`. Returns how many it deleted.
+ */
+export async function purgeReprocessedDeadLetters(
+  pool: Pool,
+  retentionDays = DEAD_LETTER_RETENTION_DAYS,
+): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM dead_letters
+     WHERE status = 'reprocessed' AND reprocessed_at < now() - make_interval(days => $1)`,
+    [retentionDays],
+  );
+  return result.rowCount ?? 0;
+}
+
 interface DeadLetterRow {
   id: string;
   consumer_group: string;

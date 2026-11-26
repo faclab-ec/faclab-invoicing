@@ -1,10 +1,11 @@
-import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { trace } from '@opentelemetry/api';
 
 import { CertificateKeyLoader } from '#/modules/certificate/app/certificate-key-loader';
 import { IssuerReadinessService } from '#/modules/company-config/app/issuer-readiness';
 import { IssuerNotReadyError } from '#/modules/company-config/domain/readiness';
 import { VoucherType } from '#/modules/company-config/domain/sequence';
 import { errorType } from '#/shared/telemetry/attributes';
+import { failSpan } from '#/shared/telemetry/spans';
 
 import { InvoiceSignerPort } from '../../domain/ports';
 import { P12Reader, SigningCredentials } from '../signing/p12-reader';
@@ -33,10 +34,8 @@ export class SignerAdapter implements InvoiceSignerPort {
           const credentials = await this.getCredentials(tenantId);
           return this.xadesSigner.sign(xml, credentials);
         } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error));
           span.setAttribute('error.type', errorType(error));
-          span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
-          span.recordException(err);
+          failSpan(span, error);
           throw error;
         } finally {
           span.end();

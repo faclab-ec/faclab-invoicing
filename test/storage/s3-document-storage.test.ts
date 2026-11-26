@@ -47,6 +47,23 @@ describe.skipIf(!ENDPOINT)('S3DocumentStorage against an S3-compatible service',
     storage.destroy();
   });
 
+  it('lists the keys under a prefix, in order, and none for another prefix', async () => {
+    const storage = new S3DocumentStorage(config);
+    const folder = `tests/${randomUUID()}`;
+    for (const name of ['invoices/2026/b.xml', 'invoices/2026/a.xml', 'issuer/logo']) {
+      await storage.put(`${folder}/${name}`, 'x', 'application/xml');
+    }
+
+    expect(await storage.list(`${folder}/`)).toEqual([
+      `${folder}/invoices/2026/a.xml`,
+      `${folder}/invoices/2026/b.xml`,
+      `${folder}/issuer/logo`,
+    ]);
+    expect(await storage.list(`tests/${randomUUID()}/`)).toEqual([]);
+    for (const key of await storage.list(`${folder}/`)) await storage.delete(key);
+    storage.destroy();
+  });
+
   it('answers null for a key without a document', async () => {
     const storage = new S3DocumentStorage(config);
 

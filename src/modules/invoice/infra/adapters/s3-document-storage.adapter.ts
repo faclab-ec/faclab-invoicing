@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   NoSuchKey,
   PutObjectCommand,
   S3Client,
@@ -81,6 +82,28 @@ export class S3DocumentStorage implements DocumentStorage {
       const reason = error instanceof Error ? error.message : String(error);
       throw new InvoiceIssueError('STORAGE_UNAVAILABLE', `Object storage failed: ${reason}`);
     }
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
+    try {
+      let token: string | undefined;
+      do {
+        const page = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: this.config.bucket,
+            Prefix: prefix,
+            ContinuationToken: token,
+          }),
+        );
+        keys.push(...(page.Contents ?? []).flatMap((object) => (object.Key ? [object.Key] : [])));
+        token = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (token);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new InvoiceIssueError('STORAGE_UNAVAILABLE', `Object storage failed: ${reason}`);
+    }
+    return keys.sort();
   }
 
   destroy(): void {
