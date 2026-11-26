@@ -137,6 +137,8 @@ const ENV_VARS = [
   'HTTP_PORT',
   'LOG_LEVEL',
   'SRI_TIMEOUT_MS',
+  'SRI_TEST_RECEPTION_WSDL',
+  'SRI_TEST_AUTHORIZATION_WSDL',
   'INVOICE_RETRY_INTERVAL_MS',
   'INVOICE_WORKER_CONCURRENCY',
   'INVOICE_POLL_INTERVAL_MS',
@@ -258,6 +260,13 @@ const isPostgresUrl = (value: string) => {
   }
 };
 
+const sriSimulatorWsdl = (production: boolean) =>
+  z
+    .string()
+    .refine(isHttpUrl, 'must be an http:// or https:// URL')
+    .optional()
+    .refine((value) => !production || value === undefined, "can't be set in production");
+
 function schemaFor(environment: AppEnvironment) {
   const production = environment === 'production';
   return z
@@ -287,6 +296,9 @@ function schemaFor(environment: AppEnvironment) {
       HTTP_PORT: z.coerce.number().int().min(1).max(65535),
       LOG_LEVEL: z.enum(LOG_LEVELS),
       SRI_TIMEOUT_MS: positiveInt,
+      // A simulator in place of celcer, for end-to-end tests (S9.1); never in production
+      SRI_TEST_RECEPTION_WSDL: sriSimulatorWsdl(production),
+      SRI_TEST_AUTHORIZATION_WSDL: sriSimulatorWsdl(production),
       INVOICE_RETRY_INTERVAL_MS: positiveInt,
       // Each slot holds a database connection while it saves: keep it under the pool's 10
       INVOICE_WORKER_CONCURRENCY: positiveInt.max(8),
@@ -369,7 +381,17 @@ function schemaFor(environment: AppEnvironment) {
     .refine((values) => (values.SMTP_USER === undefined) === (values.SMTP_PASSWORD === undefined), {
       message: 'must be set together with SMTP_USER',
       path: ['SMTP_PASSWORD'],
-    });
+    })
+    .refine(
+      (values) =>
+        (values.SRI_TEST_RECEPTION_WSDL === undefined) ===
+        (values.SRI_TEST_AUTHORIZATION_WSDL === undefined),
+      {
+        // Half a simulator would send to one service and ask the other
+        message: 'must be set together with SRI_TEST_RECEPTION_WSDL',
+        path: ['SRI_TEST_AUTHORIZATION_WSDL'],
+      },
+    );
 }
 
 // Messages name the variable but never echo its value, which may be a secret
@@ -425,7 +447,14 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
       corsOrigins: values.CORS_ORIGINS,
     },
     externalServices: {
-      sriEndpoints: SRI_ENDPOINTS,
+      sriEndpoints: {
+        ...SRI_ENDPOINTS,
+        test: {
+          receptionWsdl: values.SRI_TEST_RECEPTION_WSDL ?? SRI_ENDPOINTS.test.receptionWsdl,
+          authorizationWsdl:
+            values.SRI_TEST_AUTHORIZATION_WSDL ?? SRI_ENDPOINTS.test.authorizationWsdl,
+        },
+      },
       sriProductionAllowed: environment === 'production',
       sriTimeoutMs: values.SRI_TIMEOUT_MS,
     },
