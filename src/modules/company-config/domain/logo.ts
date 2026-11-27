@@ -71,10 +71,12 @@ function inspectPng(bytes: Buffer): LogoInfo | null {
   }
   if (!ended || !fits(width, height) || bitsPerPixel === 0 || data.length === 0) return null;
 
-  // Each row: its filter type (0 to 4), then its pixels
+  // Each row: its filter type (0 to 4), then its pixels. zlib stops at what the header says the
+  // image takes: 300 KB of zeros inflated to 300 MB, the whole memory of the service (S9.3)
   const rowBytes = Math.ceil((width * bitsPerPixel) / 8);
-  const pixels = inflateSync(Buffer.concat(data));
-  if (pixels.length !== height * (rowBytes + 1)) return null;
+  const expected = height * (rowBytes + 1);
+  const pixels = inflateSync(Buffer.concat(data), { maxOutputLength: expected });
+  if (pixels.length !== expected) return null;
   for (let row = 0; row < height; row++) {
     if (pixels[row * (rowBytes + 1)] > 4) return null;
   }
