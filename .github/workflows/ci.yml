@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -39,7 +39,7 @@ jobs:
           docker run --rm \
             -v "$RUNNER_TEMP/base:/base:ro" \
             -v "$PWD/docs/public-api:/revision:ro" \
-            tufin/oasdiff:v1.34.1 breaking \
+            tufin/oasdiff:v1.34.1@sha256:67a23cfea7d251e2ae34ee703ac8733c5d96bc2e7b90fd0f4d475ec99367b85f breaking \
             /base/openapi-v1.json /revision/openapi-v1.json \
             --fail-on ERR --format githubactions
 
@@ -65,9 +65,9 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://faclab_invoicing:faclab_invoicing@localhost:5432/faclab_invoicing_test
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -90,7 +90,7 @@ jobs:
         id: contracts
         run: echo "commit=$(jq -r .commit contracts/source.json)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: faclab-ec/faclab-api
           ref: ${{ steps.contracts.outputs.commit }}
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build --target production --build-arg SERVICE_VERSION=${{ github.sha }} -t faclab-invoicing:ci .
