@@ -32,7 +32,9 @@ const sdk = new NodeSDK({
     exportIntervalMillis: 30_000,
   }),
 
-  logRecordProcessor: new BatchLogRecordProcessor(new OTLPLogExporter({ url: endpoint })),
+  logRecordProcessor: new BatchLogRecordProcessor({
+    exporter: new OTLPLogExporter({ url: endpoint }),
+  }),
 
   instrumentations: [
     new HttpInstrumentation(),
