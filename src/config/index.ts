@@ -394,15 +394,12 @@ function schemaFor(environment: AppEnvironment) {
     );
 }
 
-// Messages name the variable but never echo its value, which may be a secret
-const errorMap: z.ZodErrorMap = (issue, ctx) => {
-  if (issue.code === z.ZodIssueCode.invalid_type && issue.received === z.ZodParsedType.undefined) {
-    return { message: 'is required' };
-  }
-  if (issue.code === z.ZodIssueCode.invalid_enum_value) {
-    return { message: `must be one of: ${issue.options.join(', ')}` };
-  }
-  return { message: ctx.defaultError };
+// Messages name the variable but never echo its value, which may be a secret (zod's own don't
+// either)
+const errorMap: z.ZodErrorMap = (issue) => {
+  if (issue.code === 'invalid_type' && issue.input === undefined) return 'is required';
+  if (issue.code === 'invalid_value') return `must be one of: ${issue.values.join(', ')}`;
+  return undefined;
 };
 
 /**
@@ -426,7 +423,7 @@ export function parseConfig(env: Record<string, string | undefined>): AppConfig 
     }),
   );
 
-  const result = schemaFor(environment).safeParse(raw, { errorMap });
+  const result = schemaFor(environment).safeParse(raw, { error: errorMap });
   if (!result.success) {
     throw new ConfigError(
       environment,

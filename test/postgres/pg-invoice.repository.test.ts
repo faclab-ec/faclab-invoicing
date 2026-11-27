@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { AccessCode } from '#/modules/invoice/domain/access-code';
 import { Invoice, InvoiceStatus } from '#/modules/invoice/domain/invoice';
 import { ConcurrentUpdateError } from '#/modules/invoice/domain/repository';
+import { ONBOARDING_SALE_SOURCE } from '#/modules/invoice/domain/sale';
 import { PgInvoiceRepository } from '#/modules/invoice/infra/persistence/pg-invoice.repository';
 
 import { makePoint, makeSale, RUC_B, TENANT_A, TENANT_B } from '../helpers';
@@ -229,6 +230,25 @@ describePostgres('PgInvoiceRepository', () => {
       });
       // The pipeline moves every company's invoices
       expect((await repo().getInvoiceById(ofB.id))?.tenantId).toBe(TENANT_B);
+    });
+
+    it("finds only the company's own onboarding test invoice (S9.3)", async () => {
+      const test = (point = makePoint()) =>
+        Invoice.receive(
+          randomUUID(),
+          point,
+          makeSale({ sale_id: -1, source: ONBOARDING_SALE_SOURCE }),
+          new Date(),
+        );
+      const ofB = test(pointB);
+      await repo().createInvoice(ofB);
+
+      expect(await repo().findOnboardingTest(TENANT_A)).toBeNull();
+
+      const ofA = test();
+      await repo().createInvoice(ofA);
+      expect((await repo().findOnboardingTest(TENANT_A))?.id).toBe(ofA.id);
+      expect((await repo().findOnboardingTest(TENANT_B))?.id).toBe(ofB.id);
     });
   });
 

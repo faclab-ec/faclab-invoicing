@@ -1,5 +1,6 @@
 .*
 !.github/
+!.trivyignore.yaml
 !.dockerignore
 !.env.example
 /node_modules

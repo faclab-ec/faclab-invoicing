@@ -29,6 +29,11 @@ FROM base AS production
 
 ENV NODE_ENV=production
 
+# The security fixes the base image doesn't have yet: the image scan fails on a HIGH or CRITICAL
+# with a fix (S9.3). npm is only for `npm run migrate` and the CLI; the service runs with node
+RUN apt-get update -y && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* && \
+    npm install -g npm@11 && npm cache clean --force
+
 RUN groupadd --system --gid 10001 app && \
     useradd --system --uid 10001 --gid app --no-create-home --home-dir /app app
 

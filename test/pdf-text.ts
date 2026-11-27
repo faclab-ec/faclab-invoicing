@@ -35,7 +35,13 @@ export const pdfImageCount = (pdf: Buffer) =>
  * A PNG of `width` × `height` red pixels with transparency (RGBA), as a logo; valid unless `filter`
  * (the filter type of each row) is over 4
  */
-export function makePng(width: number, height: number, filter: number = 0): Buffer {
+/** A PNG of that size; `pixels` replaces the image data its header promises */
+export function makePng(
+  width: number,
+  height: number,
+  filter: number = 0,
+  pixels?: Buffer,
+): Buffer {
   const chunk = (type: string, data: Buffer) => {
     const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
     const length = Buffer.alloc(4);
@@ -56,7 +62,7 @@ export function makePng(width: number, height: number, filter: number = 0): Buff
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', header),
-    chunk('IDAT', deflateSync(Buffer.concat(Array(height).fill(row)))),
+    chunk('IDAT', deflateSync(pixels ?? Buffer.concat(Array(height).fill(row)))),
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }

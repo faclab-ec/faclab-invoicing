@@ -31,6 +31,16 @@ function jpegHeader(width: number, height: number): Buffer {
 }
 
 describe('inspectLogo: only PNG and JPEG images the RIDE can draw', () => {
+  it('inflates no more than the header promises (S9.3)', () => {
+    // 64 MiB of zeros compress to ~64 KB: before, all of it was inflated
+    const bomb = makePng(10, 10, 0, Buffer.alloc(64 * 1024 * 1024));
+    expect(bomb.length).toBeLessThan(300 * 1024);
+
+    const started = performance.now();
+    expect(inspectLogo(bomb)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it('reads the type and size of a PNG, decoding it completely', () => {
     expect(inspectLogo(makePng(40, 20))).toEqual({
       contentType: 'image/png',
