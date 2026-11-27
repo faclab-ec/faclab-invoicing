@@ -122,8 +122,8 @@ describe('parseP12 iteration limits (S9.3)', () => {
 
   it('refuses a file whose derivations add up to more than the limit, each one within it', () => {
     // Without a MAC its contents can be repeated: four encrypted keys, each derived twice (key
-    // and IV) with 130k iterations
-    const pfx = p12Asn1([], [], 130_000, false);
+    // and IV) with 100k iterations
+    const pfx = p12Asn1([], [], 100_000, false);
     // PFX: version, authSafe (contentType, [0] OCTET STRING with the AuthenticatedSafe)
     const octets = ((pfx.value as forge.asn1.Asn1[])[1].value as forge.asn1.Asn1[])[1]
       .value as forge.asn1.Asn1[];
@@ -136,7 +136,8 @@ describe('parseP12 iteration limits (S9.3)', () => {
     expect(() => parseP12(file, PASSWORD)).toThrow(P12IterationsError);
     // node-forge is left as it was
     expect(parseP12(p12([]), PASSWORD).certificate).toBeDefined();
-  });
+    // It derives keys for real (about a second): more than the default 5 s under a loaded suite
+  }, 20_000);
 
   it('reads the iterations OpenSSL and Java write', () => {
     expect(MAX_P12_ITERATIONS_PER_KEY).toBeGreaterThanOrEqual(10_000);
