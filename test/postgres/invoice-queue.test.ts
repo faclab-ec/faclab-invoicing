@@ -209,7 +209,7 @@ describePostgres('Invoice queue on PostgreSQL', () => {
       answer = resolve;
     });
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
-    const validateXml = vi.fn<Parameters<SriValidationPort['validateXml']>>(async (...args) => {
+    const validateXml = vi.fn<SriValidationPort['validateXml']>(async (...args) => {
       await Promise.race([
         answered,
         new Promise((resolve) => {

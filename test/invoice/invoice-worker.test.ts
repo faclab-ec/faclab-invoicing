@@ -41,7 +41,7 @@ function hangingReception() {
   const answered = new Promise<void>((resolve) => {
     answer = resolve;
   });
-  const validateXml = vi.fn<Parameters<SriValidationPort['validateXml']>>(async (...args) => {
+  const validateXml = vi.fn<SriValidationPort['validateXml']>(async (...args) => {
     await answered;
     return simulatedSri.validateXml(...args);
   });
