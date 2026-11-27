@@ -1,6 +1,6 @@
 /* global Document, Element, Node */
 import { DOMImplementation, DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { createHash, createPrivateKey, createSign } from 'crypto';
+import { createHash, createPrivateKey, createSign, randomInt } from 'crypto';
 import { DateTime } from 'luxon';
 import { C14nCanonicalization } from 'xml-crypto';
 
@@ -35,7 +35,7 @@ interface SignatureIds {
 }
 
 function generateToken(): number {
-  return Math.floor(Math.random() * 100000) + 1;
+  return randomInt(1, 100001);
 }
 
 function buildIdentifiers(): SignatureIds {
