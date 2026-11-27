@@ -84,10 +84,70 @@ export function certificateTaxIds(certificate: forge.pki.Certificate): string[] 
   return [...new Set(found.filter((id) => (id.length === 13 ? id.endsWith('001') : isCedula(id))))];
 }
 
+/**
+ * node-forge takes from the file how many times to iterate each key derivation (the MAC's and
+ * those of the encrypted bags, which only show once their container is decrypted) and runs them in
+ * JavaScript on the service's only thread: a certificate asking for a billion iterations stopped the
+ * service for every company, when uploaded, at each readiness check and at each signature (S9.3).
+ * One iteration of the PKCS#12 derivation takes ~1.6 µs, so a file costs at most about a second.
+ * OpenSSL writes 2048 and Java's keytool 10000
+ */
+export const MAX_P12_ITERATIONS_PER_KEY = 200_000;
+export const MAX_P12_ITERATIONS_PER_FILE = 600_000;
+
+export class P12IterationsError extends Error {
+  constructor(iterations: number) {
+    super(
+      `The certificate asks for ${iterations} key derivation iterations; at most ` +
+        `${MAX_P12_ITERATIONS_PER_KEY} per key and ${MAX_P12_ITERATIONS_PER_FILE} per file`,
+    );
+    this.name = 'P12IterationsError';
+  }
+}
+
+type Kdf = (...args: unknown[]) => unknown;
+type KdfOwner = Record<string, Kdf>;
+
+// Where node-forge looks each derivation up when it calls it, and which argument is the count:
+// the MAC (pkcs12.generateKey), the PKCS#12 PBE bags (pki.pbe.generatePkcs12Key, a different
+// reference to the same function) and the PBES2 ones (pkcs5.pbkdf2)
+const DERIVATIONS: [KdfOwner, string, number][] = [
+  [forge.pkcs12 as unknown as KdfOwner, 'generateKey', 3],
+  [(forge.pki as unknown as { pbe: KdfOwner }).pbe, 'generatePkcs12Key', 3],
+  [forge.pkcs5 as unknown as KdfOwner, 'pbkdf2', 2],
+];
+
+/** Runs `parse` with every derivation of node-forge counted against the limits */
+function withIterationLimits<T>(parse: () => T): T {
+  let total = 0;
+  const originals = DERIVATIONS.map(([owner, name]) => owner[name]);
+  DERIVATIONS.forEach(([owner, name, position], i) => {
+    owner[name] = (...args: unknown[]) => {
+      const iterations = Number(args[position]);
+      total += iterations;
+      if (
+        !Number.isSafeInteger(iterations) ||
+        iterations > MAX_P12_ITERATIONS_PER_KEY ||
+        total > MAX_P12_ITERATIONS_PER_FILE
+      ) {
+        throw new P12IterationsError(iterations);
+      }
+      return originals[i](...args);
+    };
+  });
+  try {
+    return parse();
+  } finally {
+    DERIVATIONS.forEach(([owner, name], i) => {
+      owner[name] = originals[i];
+    });
+  }
+}
+
 export function parseP12(buffer: Buffer, password: string): P12Container {
   const p12Der = forge.util.decode64(buffer.toString('base64'));
   const p12Asn1 = forge.asn1.fromDer(p12Der);
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
+  const p12 = withIterationLimits(() => forge.pkcs12.pkcs12FromAsn1(p12Asn1, password));
 
   const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
   const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });

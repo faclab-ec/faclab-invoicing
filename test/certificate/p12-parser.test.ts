@@ -2,7 +2,12 @@ import * as forge from 'node-forge';
 import { describe, expect, it } from 'vitest';
 
 import { P12ParserAdapter } from '#/modules/certificate/infra/adapters/p12-parser.adapter';
-import { isCedula } from '#/shared/infra/p12';
+import {
+  isCedula,
+  MAX_P12_ITERATIONS_PER_KEY,
+  P12IterationsError,
+  parseP12,
+} from '#/shared/infra/p12';
 
 const PASSWORD = 'clave-del-p12';
 // One key for every certificate of the file: generating it is the slow part
@@ -15,7 +20,17 @@ const text = (value: string, type = forge.asn1.Type.UTF8) =>
 function p12(
   subject: forge.pki.CertificateField[],
   extensions: { id: string; value: forge.asn1.Asn1 }[] = [],
+  count = 2048,
 ): Buffer {
+  return Buffer.from(forge.asn1.toDer(p12Asn1(subject, extensions, count)).getBytes(), 'binary');
+}
+
+function p12Asn1(
+  subject: forge.pki.CertificateField[],
+  extensions: { id: string; value: forge.asn1.Asn1 }[] = [],
+  count = 2048,
+  useMac = true,
+): forge.asn1.Asn1 {
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '0a1b';
@@ -25,8 +40,11 @@ function p12(
   cert.setIssuer([{ shortName: 'CN', value: 'AUTORIDAD DE CERTIFICACION' }]);
   cert.setExtensions(extensions);
   cert.sign(keys.privateKey, forge.md.sha256.create());
-  const asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], PASSWORD, { algorithm: '3des' });
-  return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
+  return forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], PASSWORD, {
+    algorithm: '3des',
+    count,
+    useMac,
+  });
 }
 
 const taxIds = (file: Buffer) => new P12ParserAdapter().parse(file, PASSWORD).taxIds;
@@ -84,6 +102,45 @@ describe('P12ParserAdapter tax ids', () => {
     );
 
     expect(taxIds(file)).toEqual([]);
+  });
+});
+
+describe('parseP12 iteration limits (S9.3)', () => {
+  it('refuses a MAC that asks for more iterations than a key may take, without running them', () => {
+    const pfx = p12Asn1([]);
+    // PFX: version, authSafe, macData (mac, salt, iterations)
+    const macData = (pfx.value as forge.asn1.Asn1[])[2];
+    (macData.value as forge.asn1.Asn1[])[2].value = forge.asn1
+      .integerToDer(2_000_000_000)
+      .getBytes();
+    const file = Buffer.from(forge.asn1.toDer(pfx).getBytes(), 'binary');
+
+    const started = performance.now();
+    expect(() => parseP12(file, PASSWORD)).toThrow(P12IterationsError);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it('refuses a file whose derivations add up to more than the limit, each one within it', () => {
+    // Without a MAC its contents can be repeated: four encrypted keys, each derived twice (key
+    // and IV) with 130k iterations
+    const pfx = p12Asn1([], [], 130_000, false);
+    // PFX: version, authSafe (contentType, [0] OCTET STRING with the AuthenticatedSafe)
+    const octets = ((pfx.value as forge.asn1.Asn1[])[1].value as forge.asn1.Asn1[])[1]
+      .value as forge.asn1.Asn1[];
+    const authenticatedSafe = forge.asn1.fromDer(octets[0].value as string);
+    const contents = authenticatedSafe.value as forge.asn1.Asn1[];
+    contents.push(...contents, ...contents, ...contents);
+    octets[0].value = forge.asn1.toDer(authenticatedSafe).getBytes();
+    const file = Buffer.from(forge.asn1.toDer(pfx).getBytes(), 'binary');
+
+    expect(() => parseP12(file, PASSWORD)).toThrow(P12IterationsError);
+    // node-forge is left as it was
+    expect(parseP12(p12([]), PASSWORD).certificate).toBeDefined();
+  });
+
+  it('reads the iterations OpenSSL and Java write', () => {
+    expect(MAX_P12_ITERATIONS_PER_KEY).toBeGreaterThanOrEqual(10_000);
+    expect(parseP12(p12([], [], 10_000), PASSWORD).privateKey).toBeDefined();
   });
 });
 

@@ -23,6 +23,9 @@ import {
   uploadCertificateSchema,
 } from './certificate.schemas';
 
+/** A .p12 is a few KB (the key and its chain); the multipart limit (10 MiB) is far above (S9.3) */
+export const MAX_CERTIFICATE_BYTES = 64 * 1024;
+
 export interface CertificateCommands {
   upload: UploadCertificateCommand;
   get: GetCertificateCommand;
@@ -44,7 +47,7 @@ export function registerCertificateRoutes(
     '/api/certificates',
     { schema: uploadCertificateSchema, preHandler },
     async (request, reply) => {
-      const data = await request.file();
+      const data = await request.file({ limits: { fileSize: MAX_CERTIFICATE_BYTES } });
       if (!data) {
         throw new BadRequestError('No file uploaded');
       }
@@ -53,10 +56,20 @@ export function registerCertificateRoutes(
         throw new BadRequestError('Only .p12 files are accepted');
       }
 
+      const tooLarge = new BadRequestError(
+        `The certificate file is larger than ${MAX_CERTIFICATE_BYTES / 1024} KB`,
+      );
       const chunks: Buffer[] = [];
-      for await (const chunk of data.file) {
-        chunks.push(chunk);
+      try {
+        for await (const chunk of data.file) {
+          chunks.push(chunk);
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') throw tooLarge;
+        throw error;
       }
+      // Over the request's limit the stream ends cut, without an error
+      if (data.file.truncated) throw tooLarge;
       const fileBuffer = Buffer.concat(chunks);
 
       const passwordField = data.fields['password'];
